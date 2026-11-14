@@ -145,6 +145,19 @@ textarea.field{resize:vertical}
 hr{border:0;border-top:1px solid var(--line);margin:18px 0}
 #settings-form h3{font-size:15px;margin:0 0 8px}
 #import-edit .button{margin-top:7px}
+.import-modes{display:flex;gap:5px;margin:0 0 14px}
+.import-modes [aria-pressed=true]{background:var(--green-tint);border-color:#c7e7d1;color:var(--green-dark)}
+.weread-key-row{display:flex;align-items:stretch;gap:8px}
+.weread-key-row input{min-width:0}
+.weread-key-help{margin-top:7px}
+.weread-key-help a{color:var(--green-dark);text-decoration:underline;text-underline-offset:2px}
+.weread-results{border-top:1px solid var(--line);margin-top:15px;padding-top:13px}
+.weread-results h3{font-size:15px;margin:0 0 5px;overflow-wrap:anywhere}
+.weread-book-list{display:grid;gap:5px;list-style:none;padding:0;margin:6px 0;max-height:320px;overflow:auto}
+.weread-book{width:100%;display:grid;gap:3px;text-align:left;padding:8px 9px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);overflow-wrap:anywhere}
+.weread-book:hover:not(:disabled){background:var(--soft);border-color:#b7ddc3}
+.weread-book span{color:var(--muted);font-size:12px;line-height:1.45}
+#weread-more{margin-top:4px}
 .import-preview{max-height:350px;overflow:auto;margin-top:12px;display:grid;gap:7px}
 .import-preview .note-card{cursor:default;padding:10px 12px}
 .flomo-file{max-width:100%;overflow:hidden}

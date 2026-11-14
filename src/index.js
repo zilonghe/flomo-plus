@@ -1,4 +1,5 @@
 import { assets } from "./assets.generated.js";
+import { WeReadError, listWeReadBooks, listWeReadNotes } from "./weread.js";
 
 const apiHeaders = {
   "Cache-Control": "private, no-store",
@@ -185,7 +186,7 @@ function insertNote(db, account, id, payload) {
   ).bind(account, id, payload);
 }
 
-async function importFlomoNotes(db, account, input) {
+async function importNotes(db, account, input) {
   if (!Array.isArray(input.notes) || input.notes.length === 0 || input.notes.length > maxImportNotes) {
     throw new ApiError(400, `每批可导入 1 到 ${maxImportNotes} 条笔记。`);
   }
@@ -351,7 +352,11 @@ async function api(request, url, env) {
   if (request.method === "POST") {
     validateOrigin(request, url.origin);
     if (url.pathname === "/api/notes") return mutateNote(env.DB, user.id, await readJSON(request));
-    if (url.pathname === "/api/import/flomo") return importFlomoNotes(env.DB, user.id, await readJSON(request));
+    if (url.pathname === "/api/import/flomo" || url.pathname === "/api/import/weread") {
+      return importNotes(env.DB, user.id, await readJSON(request));
+    }
+    if (url.pathname === "/api/weread/books") return json(await listWeReadBooks(await readJSON(request)));
+    if (url.pathname === "/api/weread/notes") return json(await listWeReadNotes(await readJSON(request)));
     if (url.pathname === "/api/ai") return askAI(await readJSON(request));
   }
   return json({ error: "这个操作不可用。" }, 404);
@@ -364,7 +369,7 @@ export default {
       try {
         return await api(request, url, env);
       } catch (error) {
-        if (error instanceof ApiError) return json({ error: error.message }, error.status);
+        if (error instanceof ApiError || error instanceof WeReadError) return json({ error: error.message }, error.status);
         console.error("Journal API failed", { path: url.pathname, method: request.method });
         return json({ error: "暂时无法完成操作，请稍后重试。" }, 500);
       }

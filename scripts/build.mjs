@@ -20,7 +20,16 @@ const assets = Object.fromEntries(await Promise.all(
 const marker = /import\s*\{\s*assets\s*\}\s*from\s*["']\.\/assets\.generated\.js["'];?/;
 const server = await readFile(new URL("src/index.js", root), "utf8");
 if (!marker.test(server)) throw new Error("Worker assets import is missing");
-const bundle = server.replace(marker, () => `const assets = ${JSON.stringify(assets)};`);
+const weReadImport = /^import \{ WeReadError, listWeReadBooks, listWeReadNotes \} from "\.\/weread\.js";$/m;
+if (!weReadImport.test(server)) throw new Error("Worker WeRead import is missing");
+const weRead = await readFile(new URL("src/weread.js", root), "utf8");
+const bundledWeRead = `const { WeReadError, listWeReadBooks, listWeReadNotes } = (() => {
+${weRead.replace(/^export (?=(?:async function|class) )/gm, "")}
+return { WeReadError, listWeReadBooks, listWeReadNotes };
+})();`;
+const bundle = server
+  .replace(marker, () => `const assets = ${JSON.stringify(assets)};`)
+  .replace(weReadImport, () => bundledWeRead);
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(new URL("server/", dist), { recursive: true });

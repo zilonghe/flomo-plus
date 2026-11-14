@@ -18,6 +18,7 @@ const state = {
   composeDraft: null,
   importItems: null,
   importWorking: false,
+  wereadImport: null,
   flomoImport: null,
   flomoWorking: false,
   detailWorking: false,
@@ -173,6 +174,7 @@ async function refresh({ silent = false } = {}) {
       $('chat-input').value = '';
       $('import-text').value = '';
       importMode(null);
+      resetWereadImport();
       resetFlomoImport(true);
       for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog']) if ($(id).open) $(id).close();
       if ($('note-dialog').open) closeNote(true);
@@ -723,12 +725,220 @@ function importKey(note) {
 }
 
 function openImport() {
-  if (!state.loaded) {
+  if (!state.loaded || !state.user?.id) {
     notify('请先登录并完成同步');
     return;
   }
+  resetWereadImport();
   setError('import-error', '');
+  sidebar(false);
   $('import-dialog').showModal();
+}
+
+function resetWereadImport() {
+  state.wereadImport?.controller?.abort();
+  state.wereadImport = {
+    account: state.user?.id,
+    books: [], nextCursor: null, queried: false, controller: null,
+    preview: null, saving: false,
+  };
+  $('weread-key').value = '';
+  $('weread-connect-submit').disabled = false;
+  $('weread-key').disabled = false;
+  $('weread-connect').hidden = false;
+  $('weread-books').hidden = true;
+  $('weread-book-list').replaceChildren();
+  $('weread-preview').hidden = true;
+  $('weread-samples').replaceChildren();
+  $('weread-more').hidden = true;
+  $('weread-save').disabled = false;
+  $('weread-back').disabled = false;
+  $('import-dialog').querySelector('[data-close="import-dialog"]').disabled = false;
+  setError('weread-progress', '');
+  setError('weread-error', '');
+  setWereadMode(false);
+}
+
+function setWereadMode(manual) {
+  const session = state.wereadImport;
+  if (state.importWorking || session?.saving) return;
+  if (manual) {
+    session?.controller?.abort();
+    if (session) {
+      session.queried = false;
+      session.preview = null;
+      session.books = [];
+      session.nextCursor = null;
+    }
+    $('weread-key').value = '';
+  }
+  $('weread-official').hidden = manual;
+  $('import-form').hidden = !manual;
+  $('weread-mode-official').setAttribute('aria-pressed', String(!manual));
+  $('weread-mode-manual').setAttribute('aria-pressed', String(manual));
+  renderWereadBooks();
+  setError('weread-error', '');
+  setError('weread-progress', '');
+}
+
+function currentWereadSession(session) {
+  return session && state.wereadImport === session && state.user?.id === session.account
+    && $('import-dialog').open && !$('weread-official').hidden;
+}
+
+function renderWereadBooks() {
+  const session = state.wereadImport;
+  if (!session) return;
+  $('weread-connect').hidden = session.preview !== null;
+  $('weread-books').hidden = !session.queried || session.preview !== null;
+  $('weread-preview').hidden = session.preview === null;
+  if (session.preview) return;
+  $('weread-books-status').textContent = session.books.length ? '选择一本书预览笔记' : '没有找到有笔记的书。';
+  $('weread-book-list').replaceChildren(...session.books.map(({ id, title, author, noteCount, reviewCount }) => {
+    const button = el('button', 'weread-book');
+    button.type = 'button';
+    button.dataset.action = 'weread-book';
+    button.dataset.book = id;
+    button.disabled = session.controller !== null;
+    const counts = [author, '划线 ' + noteCount, '想法及点评 ' + reviewCount].filter(Boolean).join(' · ');
+    button.append(el('strong', '', title), el('span', '', counts));
+    const item = el('li');
+    item.append(button);
+    return item;
+  }));
+  $('weread-more').hidden = session.nextCursor === null;
+  $('weread-more').disabled = session.controller !== null;
+}
+
+function renderWereadPreview(session) {
+  const { preview } = session;
+  $('weread-connect').hidden = true;
+  $('weread-books').hidden = true;
+  $('weread-preview').hidden = false;
+  $('weread-book-title').textContent = preview.book.title;
+  const remaining = preview.pending.length;
+  $('weread-summary').textContent = remaining
+    ? '待导入 ' + remaining + ' 条笔记，确认后保存到当前微记账号。'
+    : '这本书没有新的笔记可以导入。';
+  const details = [];
+  if (preview.duplicated) details.push('已存在或此前删除 ' + preview.duplicated + ' 条');
+  if (preview.skipped) details.push('跳过 ' + preview.skipped + ' 条缺少正文或日期的笔记');
+  if (preview.skippedLarge) details.push('跳过 ' + preview.skippedLarge + ' 条超出大小限制的笔记');
+  setError('weread-skipped', details.length ? details.join('，') + '。' : '');
+  const samples = preview.pending.slice(0, bulkPreviewLimit);
+  $('weread-samples').replaceChildren(...samples.map(({ note }) => renderCard(note, tagsFor(note.body), false)));
+  setError('weread-sample-count', remaining > samples.length ? '仅预览前 ' + samples.length + ' 条。' : '');
+  $('weread-save').textContent = '导入 ' + remaining + ' 条';
+  $('weread-save').disabled = !remaining || session.saving;
+}
+
+async function readWeread(path, parameters, progress, apply) {
+  const session = state.wereadImport;
+  if (!currentWereadSession(session) || session.controller || session.saving) return;
+  const apiKey = $('weread-key').value.trim();
+  setError('weread-error', '');
+  setError('weread-progress', '');
+  if (!/^wrk-\S+$/u.test(apiKey)) {
+    setError('weread-error', '请输入从微信读书获取的 API Key，以 wrk- 开头。');
+    $('weread-key').focus();
+    return;
+  }
+  const controller = new AbortController();
+  session.controller = controller;
+  $('weread-key').disabled = $('weread-connect-submit').disabled = true;
+  renderWereadBooks();
+  setError('weread-progress', progress);
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  try {
+    const result = await request('/api/weread/' + path, { apiKey, ...parameters }, controller.signal);
+    if (currentWereadSession(session) && !controller.signal.aborted) apply(session, result);
+  } catch (error) {
+    if (currentWereadSession(session)) {
+      const message = controller.signal.aborted ? '读取超时，请重试。' : error.message;
+      setError('weread-error', message);
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (state.wereadImport === session) {
+      session.controller = null;
+      $('weread-key').disabled = $('weread-connect-submit').disabled = false;
+      setError('weread-progress', '');
+      renderWereadBooks();
+    }
+  }
+}
+
+function loadWereadBooks(more = false) {
+  const cursor = state.wereadImport?.nextCursor;
+  if (more && !Number.isSafeInteger(cursor)) return;
+  readWeread('books', more ? { lastSort: cursor } : {}, '正在读取有笔记的书籍…', (session, data) => {
+    if (!Array.isArray(data.books)) throw new Error('无法读取书籍列表，请重试。');
+    const books = new Map((more ? session.books : []).map((book) => [book.id, book]));
+    for (const book of data.books) books.set(book.id, book);
+    session.books = [...books.values()];
+    session.queried = true;
+    session.nextCursor = Number.isSafeInteger(data.nextCursor) && (!more || data.nextCursor !== cursor) ? data.nextCursor : null;
+  });
+}
+
+function previewWereadBook(button) {
+  const bookId = button.dataset.book;
+  const book = state.wereadImport?.books.find(({ id }) => String(id) === bookId);
+  if (!book) return;
+  readWeread('notes', { bookId }, '正在读取《' + book.title + '》的笔记…', (session, data) => {
+    if (!Array.isArray(data.notes)) throw new Error('无法读取该书笔记，请重试。');
+    const existing = new Set([...state.notes.values()].filter((note) => note.reading).map(importKey));
+    const { pending, duplicated, skippedLarge } = prepareBulkNotes(data.notes, (note) => existing.has(importKey(note)));
+    session.preview = {
+      account: session.account, book, pending, duplicated, skippedLarge,
+      total: pending.length, saved: 0, skippedDuringSave: 0, skipped: data.skipped || 0,
+    };
+    renderWereadPreview(session);
+  });
+}
+
+function backToWereadBooks() {
+  const session = state.wereadImport;
+  if (!session || session.saving) return;
+  session.preview = null;
+  $('weread-samples').replaceChildren();
+  renderWereadBooks();
+  setError('weread-progress', '');
+  setError('weread-error', '');
+}
+
+async function saveWereadNotes() {
+  const session = state.wereadImport;
+  const preview = session?.preview;
+  if (!session || !currentWereadSession(session) || session.saving || !preview?.pending.length) return;
+  session.saving = true;
+  $('weread-save').disabled = $('weread-back').disabled = true;
+  $('weread-mode-manual').disabled = $('weread-mode-official').disabled = true;
+  const close = $('import-dialog').querySelector('[data-close="import-dialog"]');
+  close.disabled = true;
+  setError('weread-error', '');
+  try {
+    await saveBulkNotes(preview, '/api/import/weread', 'weread-progress');
+    if (!currentWereadSession(session)) return;
+    session.preview = null;
+    $('weread-samples').replaceChildren();
+    renderWereadBooks();
+    state.filter = 'reading';
+    $('search').value = '';
+    renderFeed();
+    const skipped = preview.skippedDuringSave ? '，跳过 ' + preview.skippedDuringSave + ' 条已存在或此前删除的笔记' : '';
+    setError('weread-progress', '已导入《' + preview.book.title + '》的 ' + preview.saved + ' 条笔记' + skipped + '。');
+  } catch (error) {
+    if (currentWereadSession(session)) {
+      renderWereadPreview(session);
+      $('weread-save').textContent = '重试剩余 ' + preview.pending.length + ' 条';
+      setError('weread-error', error.message);
+    }
+  } finally {
+    session.saving = false;
+    $('weread-save').disabled = !preview.pending.length;
+    $('weread-back').disabled = $('weread-mode-manual').disabled = $('weread-mode-official').disabled = close.disabled = false;
+  }
 }
 
 function importMode(items) {
@@ -822,12 +1032,12 @@ async function pickImportFile(event) {
   }
 }
 
-const flomoBatchLimit = 20;
-const flomoBatchTarget = 560000;
-const flomoRequestLimit = 600000;
-const flomoPreviewLimit = 12;
+const bulkBatchLimit = 20;
+const bulkBatchTarget = 560000;
+const bulkRequestLimit = 600000;
+const bulkPreviewLimit = 12;
 const importEncoder = new TextEncoder();
-const flomoEnvelopeBytes = importEncoder.encode('{"notes":[]}').length;
+const bulkEnvelopeBytes = importEncoder.encode('{"notes":[]}').length;
 
 function openFlomoImport() {
   if (!state.loaded || !state.user?.id) {
@@ -872,7 +1082,7 @@ function renderFlomoPreview() {
   if (preview.skippedInvalidDate) skipped.push('跳过 ' + preview.skippedInvalidDate + ' 条日期无法识别的笔记');
   if (preview.skippedLarge) skipped.push('跳过 ' + preview.skippedLarge + ' 条超出大小限制的笔记');
   setError('flomo-skipped', skipped.length ? skipped.join('，') + '。' : '');
-  const samples = preview.pending.slice(0, flomoPreviewLimit);
+  const samples = preview.pending.slice(0, bulkPreviewLimit);
   const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
     hourCycle: 'h23', timeZone: preview.timeZone,
@@ -891,24 +1101,7 @@ async function previewFlomoImport() {
   const result = await parseFlomoFile(file, timeZone);
   if (state.user?.id !== account) return;
 
-  const seen = new Set();
-  const pending = [];
-  let duplicated = 0;
-  let skippedLarge = 0;
-  for (const imported of result.notes) {
-    const note = notePayload(imported);
-    if (seen.has(note.id) || state.notes.has(note.id) || state.deletedNotes.has(note.id)) {
-      duplicated++;
-      continue;
-    }
-    seen.add(note.id);
-    const bytes = importEncoder.encode(JSON.stringify(note)).length;
-    if (bytes + flomoEnvelopeBytes > flomoRequestLimit) {
-      skippedLarge++;
-      continue;
-    }
-    pending.push({ note, bytes });
-  }
+  const { pending, duplicated, skippedLarge } = prepareBulkNotes(result.notes);
   state.flomoImport = {
     account, timeZone, pending, duplicated, skippedLarge,
     total: pending.length, saved: 0, skippedDuringSave: 0,
@@ -919,30 +1112,52 @@ async function previewFlomoImport() {
   renderFlomoPreview();
 }
 
-function updateFlomoProgress(preview, completed = 0) {
-  const processed = preview.total - preview.pending.length + completed;
-  setError('flomo-progress', '已处理 ' + processed + ' / ' + preview.total + ' 条，已导入 ' + preview.saved + ' 条。');
+function prepareBulkNotes(notes, isDuplicate = () => false) {
+  const seen = new Set();
+  const pending = [];
+  let duplicated = 0;
+  let skippedLarge = 0;
+  for (const imported of notes) {
+    const note = notePayload(imported);
+    if (seen.has(note.id) || state.notes.has(note.id) || state.deletedNotes.has(note.id) || isDuplicate(note)) {
+      duplicated++;
+      continue;
+    }
+    seen.add(note.id);
+    const bytes = importEncoder.encode(JSON.stringify(note)).length;
+    if (bytes + bulkEnvelopeBytes > bulkRequestLimit) {
+      skippedLarge++;
+      continue;
+    }
+    pending.push({ note, bytes });
+  }
+  return { pending, duplicated, skippedLarge };
 }
 
-async function saveFlomoImport(preview) {
+function updateBulkProgress(preview, statusId, completed = 0) {
+  const processed = preview.total - preview.pending.length + completed;
+  setError(statusId, '已处理 ' + processed + ' / ' + preview.total + ' 条，已导入 ' + preview.saved + ' 条。');
+}
+
+async function saveBulkNotes(preview, path, statusId) {
   if (state.user?.id !== preview.account) throw new Error('账号已变化，请重新打开导入。');
   ++state.writeEpoch;
   ++state.writeCount;
   setSync('loading', '正在同步');
-  updateFlomoProgress(preview);
+  updateBulkProgress(preview, statusId);
   let completed = 0;
   try {
     while (completed < preview.pending.length) {
       if (state.user?.id !== preview.account) throw new Error('账号已变化，请重新打开导入。');
       const batch = [];
-      let bytes = flomoEnvelopeBytes;
-      for (const { note, bytes: noteBytes } of preview.pending.slice(completed, completed + flomoBatchLimit)) {
+      let bytes = bulkEnvelopeBytes;
+      for (const { note, bytes: noteBytes } of preview.pending.slice(completed, completed + bulkBatchLimit)) {
         // A single large record can still fit the service limit on its own.
-        if (batch.length && bytes + noteBytes + 1 > flomoBatchTarget) break;
+        if (batch.length && bytes + noteBytes + 1 > bulkBatchTarget) break;
         bytes += noteBytes + (batch.length ? 1 : 0);
         batch.push(note);
       }
-      const result = await request('/api/import/flomo', { notes: batch }, AbortSignal.timeout(45000));
+      const result = await request(path, { notes: batch }, AbortSignal.timeout(45000));
       if (state.user?.id !== preview.account) throw new Error('账号已变化，请重新打开导入。');
       if (!Array.isArray(result.notes) || !Number.isInteger(result.skipped)
         || result.skipped < 0 || result.notes.length + result.skipped !== batch.length) {
@@ -952,16 +1167,12 @@ async function saveFlomoImport(preview) {
       completed += batch.length;
       preview.saved += result.notes.length;
       preview.skippedDuringSave += result.skipped;
-      updateFlomoProgress(preview, completed);
+      updateBulkProgress(preview, statusId, completed);
     }
     setSync('ok', '已同步');
   } catch (error) {
     preview.pending = preview.pending.slice(completed);
-    if (state.flomoImport === preview) {
-      renderFlomoPreview();
-      updateFlomoProgress(preview);
-      $('flomo-submit').textContent = '重试剩余 ' + preview.pending.length + ' 条';
-    }
+    if (state.user?.id === preview.account) updateBulkProgress(preview, statusId);
     setSync('error', '同步未完成');
     if (error.status === 401 || error.status === 403) setAuthNotice('登录状态已失效，请重新登录。', true);
     renderFeed();
@@ -970,7 +1181,18 @@ async function saveFlomoImport(preview) {
     --state.writeCount;
     ++state.writeEpoch;
   }
+}
 
+async function saveFlomoImport(preview) {
+  try {
+    await saveBulkNotes(preview, '/api/import/flomo', 'flomo-progress');
+  } catch (error) {
+    if (state.flomoImport === preview) {
+      renderFlomoPreview();
+      $('flomo-submit').textContent = '重试剩余 ' + preview.pending.length + ' 条';
+    }
+    throw error;
+  }
   state.filter = 'journal';
   $('search').value = '';
   renderFeed();
@@ -1047,6 +1269,12 @@ const actions = {
   'retry-chat': persistChat,
   'pick-file': () => $('import-file').click(),
   'import-back': () => { if (!state.importWorking) { importMode(null); setError('import-error', ''); } },
+  'weread-mode-official': () => setWereadMode(false),
+  'weread-mode-manual': () => setWereadMode(true),
+  'weread-more': () => loadWereadBooks(true),
+  'weread-book': previewWereadBook,
+  'weread-back': backToWereadBooks,
+  'weread-save': saveWereadNotes,
   'flomo-back': () => { if (!state.flomoWorking) resetFlomoImport(); },
 };
 
@@ -1058,7 +1286,7 @@ document.addEventListener('click', (event) => {
   if (button.dataset.close) {
     if (button.dataset.close === 'note-dialog') closeNote();
     if (button.dataset.close === 'settings-dialog') $('settings-dialog').close();
-    if (button.dataset.close === 'import-dialog' && !state.importWorking) $('import-dialog').close();
+    if (button.dataset.close === 'import-dialog' && !state.importWorking && !state.wereadImport?.saving) $('import-dialog').close();
     if (button.dataset.close === 'flomo-dialog' && !state.flomoWorking) $('flomo-dialog').close();
   }
   if (button.dataset.action && actions[button.dataset.action]) actions[button.dataset.action](button);
@@ -1075,12 +1303,25 @@ document.addEventListener('click', (event) => {
 });
 
 $('note-dialog').addEventListener('cancel', (event) => { event.preventDefault(); closeNote(); });
-$('import-dialog').addEventListener('cancel', (event) => { if (state.importWorking) event.preventDefault(); });
+$('import-dialog').addEventListener('cancel', (event) => {
+  if (state.importWorking || state.wereadImport?.saving) event.preventDefault();
+});
+$('import-dialog').addEventListener('close', resetWereadImport);
 $('flomo-dialog').addEventListener('cancel', (event) => { if (state.flomoWorking) event.preventDefault(); });
 $('flomo-dialog').addEventListener('close', () => resetFlomoImport(true));
 $('settings-dialog').addEventListener('close', () => { $('openai-key').value = ''; });
 $('settings-form').addEventListener('submit', saveSettings);
 $('import-form').addEventListener('submit', importNotes);
+$('weread-connect').addEventListener('submit', (event) => { event.preventDefault(); loadWereadBooks(); });
+$('weread-key').addEventListener('input', () => {
+  const session = state.wereadImport;
+  if (!session?.queried) return;
+  session.queried = false;
+  session.books = [];
+  session.nextCursor = null;
+  renderWereadBooks();
+  setError('weread-error', '');
+});
 $('flomo-form').addEventListener('submit', importFlomoNotes);
 $('import-file').addEventListener('change', pickImportFile);
 $('chat-form').addEventListener('submit', sendChat);
@@ -1112,6 +1353,7 @@ if (/Mac|iPhone|iPad/.test(navigator.platform)) {
   $('search-shortcut').textContent = '⌘ K';
 }
 window.addEventListener('focus', () => refresh({ silent: true }));
+window.addEventListener('pagehide', () => { $('weread-key').value = ''; state.wereadImport?.controller?.abort(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh({ silent: true }); });
 setInterval(() => { if (!document.hidden) refresh({ silent: true }); }, 15000);
 refresh();

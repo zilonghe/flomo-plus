@@ -151,7 +151,41 @@
 
   <dialog id="import-dialog" class="dialog" aria-labelledby="import-title">
     <div class="dialog-header"><div><div class="date-line"><svg><use href="#i-book"></use></svg>读书摘录</div><h2 id="import-title">导入微信读书</h2></div><button class="icon-button" type="button" data-close="import-dialog" aria-label="关闭导入"><svg><use href="#i-close"></use></svg></button></div>
-    <form id="import-form" class="dialog-scroll">
+    <div class="dialog-scroll">
+      <div class="import-modes" role="group" aria-label="导入方式">
+        <button class="button button-secondary" id="weread-mode-official" type="button" data-action="weread-mode-official" aria-pressed="true">官方接口</button>
+        <button class="button button-secondary" id="weread-mode-manual" type="button" data-action="weread-mode-manual" aria-pressed="false">粘贴或选文件</button>
+      </div>
+      <section id="weread-official" aria-label="通过官方接口导入">
+        <form id="weread-connect" autocomplete="off">
+          <p class="help-text">使用微信读书官方 API Key，选择一本书，预览你的划线和想法。</p>
+          <label class="field-label" for="weread-key">微信读书 API Key</label>
+          <div class="weread-key-row">
+            <input class="field" id="weread-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="512" placeholder="wrk-…" aria-describedby="weread-key-help">
+            <button class="button button-primary" id="weread-connect-submit" type="submit">读取笔记本</button>
+          </div>
+          <p class="help-text weread-key-help" id="weread-key-help"><a href="https://weread.qq.com/r/weread-skills" target="_blank" rel="noopener noreferrer">获取官方 API Key</a>。密钥仅用于本次读取。</p>
+        </form>
+        <section id="weread-books" class="weread-results" aria-label="有笔记的书" hidden>
+          <p class="help-text" id="weread-books-status"></p>
+          <ul class="weread-book-list" id="weread-book-list"></ul>
+          <button class="button button-secondary" id="weread-more" type="button" data-action="weread-more" hidden>加载更多书籍</button>
+        </section>
+        <section id="weread-preview" class="weread-results" aria-label="导入预览" hidden>
+          <h3 id="weread-book-title"></h3>
+          <p class="help-text" id="weread-summary"></p>
+          <p class="help-text" id="weread-skipped" hidden></p>
+          <div class="import-preview" id="weread-samples"></div>
+          <p class="help-text weread-key-help" id="weread-sample-count" hidden></p>
+          <div class="dialog-actions">
+            <button class="button button-secondary" id="weread-back" type="button" data-action="weread-back">返回书籍列表</button>
+            <button class="button button-primary" id="weread-save" type="button" data-action="weread-save"></button>
+          </div>
+        </section>
+        <p class="help-text weread-key-help" id="weread-progress" role="status" hidden></p>
+        <p class="inline-error" id="weread-error" role="alert" hidden></p>
+      </section>
+      <form id="import-form" hidden>
       <p class="help-text">在微信读书网页版打开一本书，进入「笔记」并选择「复制全部笔记」。也可以上传 .txt 或 .md 文件。</p>
       <div id="import-edit">
         <label class="field-label" for="import-text">笔记原文</label>
@@ -165,7 +199,8 @@
         <button class="button button-secondary" id="import-back" type="button" data-action="import-back" hidden>返回</button>
         <button class="button button-primary" id="import-submit" type="submit">预览导入</button>
       </div>
-    </form>
+      </form>
+    </div>
   </dialog>
 
   <dialog id="flomo-dialog" class="dialog" aria-labelledby="flomo-title">
