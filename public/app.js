@@ -763,14 +763,16 @@ function setWereadMode(manual) {
   const session = state.wereadImport;
   if (state.importWorking || session?.saving) return;
   if (manual) {
-    session?.controller?.abort();
     if (session) {
+      session.controller?.abort();
+      session.controller = null;
       session.queried = false;
       session.preview = null;
       session.books = [];
       session.nextCursor = null;
     }
     $('weread-key').value = '';
+    $('weread-key').disabled = $('weread-connect-submit').disabled = false;
   }
   $('weread-official').hidden = manual;
   $('import-form').hidden = !manual;
@@ -853,13 +855,13 @@ async function readWeread(path, parameters, progress, apply) {
     const result = await request('/api/weread/' + path, { apiKey, ...parameters }, controller.signal);
     if (currentWereadSession(session) && !controller.signal.aborted) apply(session, result);
   } catch (error) {
-    if (currentWereadSession(session)) {
+    if (currentWereadSession(session) && session.controller === controller) {
       const message = controller.signal.aborted ? '读取超时，请重试。' : error.message;
       setError('weread-error', message);
     }
   } finally {
     clearTimeout(timeout);
-    if (state.wereadImport === session) {
+    if (state.wereadImport === session && session.controller === controller) {
       session.controller = null;
       $('weread-key').disabled = $('weread-connect-submit').disabled = false;
       setError('weread-progress', '');

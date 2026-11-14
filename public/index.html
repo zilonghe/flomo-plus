@@ -186,19 +186,19 @@
         <p class="inline-error" id="weread-error" role="alert" hidden></p>
       </section>
       <form id="import-form" hidden>
-      <p class="help-text">在微信读书网页版打开一本书，进入「笔记」并选择「复制全部笔记」。也可以上传 .txt 或 .md 文件。</p>
-      <div id="import-edit">
-        <label class="field-label" for="import-text">笔记原文</label>
-        <textarea class="field" id="import-text" rows="9" maxlength="350000" placeholder="粘贴复制的笔记"></textarea>
-        <input id="import-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
-        <button class="button button-secondary" type="button" data-action="pick-file"><svg><use href="#i-import"></use></svg>选择文件</button>
-      </div>
-      <div id="import-preview" class="import-preview" hidden></div>
-      <p id="import-error" class="inline-error" role="alert" hidden></p>
-      <div class="dialog-actions">
-        <button class="button button-secondary" id="import-back" type="button" data-action="import-back" hidden>返回</button>
-        <button class="button button-primary" id="import-submit" type="submit">预览导入</button>
-      </div>
+        <p class="help-text">在微信读书网页版打开一本书，进入「笔记」并选择「复制全部笔记」。也可以上传 .txt 或 .md 文件。</p>
+        <div id="import-edit">
+          <label class="field-label" for="import-text">笔记原文</label>
+          <textarea class="field" id="import-text" rows="9" maxlength="350000" placeholder="粘贴复制的笔记"></textarea>
+          <input id="import-file" type="file" accept=".txt,.md,text/plain,text/markdown" hidden>
+          <button class="button button-secondary" type="button" data-action="pick-file"><svg><use href="#i-import"></use></svg>选择文件</button>
+        </div>
+        <div id="import-preview" class="import-preview" hidden></div>
+        <p id="import-error" class="inline-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="button button-secondary" id="import-back" type="button" data-action="import-back" hidden>返回</button>
+          <button class="button button-primary" id="import-submit" type="submit">预览导入</button>
+        </div>
       </form>
     </div>
   </dialog>
