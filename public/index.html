@@ -63,6 +63,7 @@
       </div>
       <div class="side-footer">
         <div class="side-section side-tools">
+          <button class="nav-item" type="button" data-action="open-flomo-import"><svg><use href="#i-import"></use></svg><span>导入 flomo</span></button>
           <button class="nav-item" type="button" data-action="open-import"><svg><use href="#i-import"></use></svg><span>导入微信读书</span></button>
         </div>
       </div>
@@ -163,6 +164,39 @@
       <div class="dialog-actions">
         <button class="button button-secondary" id="import-back" type="button" data-action="import-back" hidden>返回</button>
         <button class="button button-primary" id="import-submit" type="submit">预览导入</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="flomo-dialog" class="dialog" aria-labelledby="flomo-title">
+    <div class="dialog-header">
+      <div><div class="date-line"><svg aria-hidden="true"><use href="#i-import"></use></svg>笔记迁移</div><h2 id="flomo-title">导入 flomo</h2></div>
+      <button class="icon-button" type="button" data-close="flomo-dialog" aria-label="关闭 flomo 导入"><svg><use href="#i-close"></use></svg></button>
+    </div>
+    <form id="flomo-form" class="dialog-scroll">
+      <div id="flomo-edit">
+        <p class="help-text">在 flomo 网页版打开「设置 → 账号详情」，在页面下方导出笔记。选择导出的 ZIP 压缩包或其中的 HTML 文件。</p>
+        <p class="help-text">保留文字、标签和原始记录时间。图片、音频和其他附件会跳过。文件在浏览器里解析，确认后才同步识别出的笔记。</p>
+        <label class="field-label" for="flomo-file">flomo 导出文件</label>
+        <input id="flomo-file" class="field flomo-file" type="file" accept=".zip,.html,.htm,application/zip,text/html">
+        <label class="field-label" for="flomo-zone">导出时区</label>
+        <select id="flomo-zone" class="field" aria-describedby="flomo-zone-help">
+          <option value="Asia/Shanghai">北京时间</option>
+          <option value="UTC">协调世界时 UTC</option>
+        </select>
+        <p class="help-text flomo-zone-help" id="flomo-zone-help">若导出的时间没有标注时区，会按这里选择的时区读取。</p>
+      </div>
+      <div id="flomo-preview" hidden>
+        <p id="flomo-summary" class="help-text"></p>
+        <p id="flomo-skipped" class="help-text" hidden></p>
+        <div id="flomo-samples" class="import-preview"></div>
+        <p id="flomo-sample-count" class="help-text flomo-zone-help" hidden></p>
+      </div>
+      <p id="flomo-progress" class="help-text flomo-zone-help" role="status" hidden></p>
+      <p id="flomo-error" class="inline-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" id="flomo-back" type="button" data-action="flomo-back" hidden>返回</button>
+        <button class="button button-primary" id="flomo-submit" type="submit">预览导入</button>
       </div>
     </form>
   </dialog>

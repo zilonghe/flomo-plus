@@ -23,6 +23,7 @@ const pageHeaders = {
 const noteID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const maxRequestBytes = 600_000;
+const maxImportNotes = 20;
 const noteContextLimit = 12_000;
 const previousTurnLimit = 4_000;
 
@@ -175,6 +176,31 @@ function noteResult(row) {
   return { note: { ...JSON.parse(row.payload), revision: row.revision } };
 }
 
+function insertNote(db, account, id, payload) {
+  return db.prepare(
+    `INSERT INTO journal_notes (account, id, revision, payload)
+     VALUES (?, ?, 1, ?)
+     ON CONFLICT (account, id) DO NOTHING
+     RETURNING id, revision, payload`
+  ).bind(account, id, payload);
+}
+
+async function importFlomoNotes(db, account, input) {
+  if (!Array.isArray(input.notes) || input.notes.length === 0 || input.notes.length > maxImportNotes) {
+    throw new ApiError(400, `每批可导入 1 到 ${maxImportNotes} 条笔记。`);
+  }
+
+  const notes = input.notes.map((entry) => {
+    if (!isObject(entry) || typeof entry.id !== "string" || !noteID.test(entry.id)) {
+      throw new ApiError(400, "导入的笔记编号有误。");
+    }
+    return noteData(entry, entry.id.toLowerCase());
+  });
+  const results = await db.batch(notes.map((note) => insertNote(db, account, note.id, JSON.stringify(note))));
+  const created = results.flatMap(({ results: rows }) => rows.map((row) => noteResult(row).note));
+  return json({ notes: created, skipped: notes.length - created.length });
+}
+
 async function listNotes(db, account) {
   const { results } = await db.prepare(
     "SELECT id, revision, payload FROM journal_notes WHERE account = ? ORDER BY id"
@@ -206,12 +232,7 @@ async function mutateNote(db, account, input) {
 
   let row;
   if (expected === 0 && !deleting) {
-    row = await db.prepare(
-      `INSERT INTO journal_notes (account, id, revision, payload)
-       VALUES (?, ?, 1, ?)
-       ON CONFLICT (account, id) DO NOTHING
-       RETURNING id, revision, payload`
-    ).bind(account, id, payload).first();
+    row = await insertNote(db, account, id, payload).first();
   } else if (expected > 0) {
     row = await db.prepare(
       `UPDATE journal_notes
@@ -330,6 +351,7 @@ async function api(request, url, env) {
   if (request.method === "POST") {
     validateOrigin(request, url.origin);
     if (url.pathname === "/api/notes") return mutateNote(env.DB, user.id, await readJSON(request));
+    if (url.pathname === "/api/import/flomo") return importFlomoNotes(env.DB, user.id, await readJSON(request));
     if (url.pathname === "/api/ai") return askAI(await readJSON(request));
   }
   return json({ error: "这个操作不可用。" }, 404);

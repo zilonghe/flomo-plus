@@ -1,10 +1,12 @@
 import { parseWeRead, readWeReadFile } from './weread.js';
+import { parseFlomoFile } from './flomo.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const excerptsMarker = '\n\nAI 摘录\n';
 const state = {
   notes: new Map(),
+  deletedNotes: new Set(),
   filter: 'all',
   user: null,
   loaded: false,
@@ -16,6 +18,8 @@ const state = {
   composeDraft: null,
   importItems: null,
   importWorking: false,
+  flomoImport: null,
+  flomoWorking: false,
   detailWorking: false,
   chatRequest: null,
   unsavedChat: null,
@@ -146,6 +150,7 @@ async function refresh({ silent = false } = {}) {
     const changed = previous.size !== current.size || [...current].some(([id, note]) => previous.get(id)?.revision !== note.revision);
     const openChanged = state.noteID && previous.get(state.noteID)?.revision !== current.get(state.noteID)?.revision;
     state.notes = current;
+    state.deletedNotes = new Set((result.deleted || []).map(({ id }) => id));
     const firstLoad = !state.loaded;
     state.loaded = true;
     setAuthNotice('');
@@ -159,6 +164,7 @@ async function refresh({ silent = false } = {}) {
       state.user = null;
       state.loaded = false;
       state.notes.clear();
+      state.deletedNotes.clear();
       state.apiKey = '';
       state.composeDraft = null;
       $('note-body').value = '';
@@ -167,7 +173,8 @@ async function refresh({ silent = false } = {}) {
       $('chat-input').value = '';
       $('import-text').value = '';
       importMode(null);
-      for (const id of ['settings-dialog', 'import-dialog']) if ($(id).open) $(id).close();
+      resetFlomoImport(true);
+      for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog']) if ($(id).open) $(id).close();
       if ($('note-dialog').open) closeNote(true);
       $('note-body').disabled = true;
       updateComposer();
@@ -201,8 +208,14 @@ function showRemoteDetail() {
 }
 
 function acceptVersion(data) {
-  if (data?.note) state.notes.set(data.note.id, data.note);
-  if (data?.deleted) state.notes.delete(data.deleted.id);
+  if (data?.note) {
+    state.notes.set(data.note.id, data.note);
+    state.deletedNotes.delete(data.note.id);
+  }
+  if (data?.deleted) {
+    state.notes.delete(data.deleted.id);
+    state.deletedNotes.add(data.deleted.id);
+  }
 }
 
 async function mutate(change) {
@@ -363,7 +376,7 @@ function renderFeed() {
   $('note-list').replaceChildren(fragment);
 }
 
-function renderCard(note, tags = [], interactive = true) {
+function renderCard(note, tags = [], interactive = true, dateFormatter) {
   const card = el(interactive ? 'button' : 'article', 'note-card');
   if (interactive) {
     card.type = 'button';
@@ -374,7 +387,7 @@ function renderCard(note, tags = [], interactive = true) {
   if (note.reading?.chapter) meta.append(el('span', '', note.reading.chapter));
   if (note.createdAt) {
     const date = new Date(note.createdAt);
-    meta.append(el('span', '', dayKey(date) + ' ' + dateTime.format(date)));
+    meta.append(el('span', '', dateFormatter?.format(date) ?? (dayKey(date) + ' ' + dateTime.format(date))));
   }
   if (interactive) {
     const menu = el('span', 'card-ellipsis', '···');
@@ -809,6 +822,192 @@ async function pickImportFile(event) {
   }
 }
 
+const flomoBatchLimit = 20;
+const flomoBatchTarget = 560000;
+const flomoRequestLimit = 600000;
+const flomoPreviewLimit = 12;
+const importEncoder = new TextEncoder();
+const flomoEnvelopeBytes = importEncoder.encode('{"notes":[]}').length;
+
+function openFlomoImport() {
+  if (!state.loaded || !state.user?.id) {
+    notify('请先登录并完成同步');
+    return;
+  }
+  const select = $('flomo-zone');
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (browserZone && ![...select.options].some((option) => option.value === browserZone)) {
+    select.add(new Option('当前设备（' + browserZone + '）', browserZone), 1);
+  }
+  sidebar(false);
+  $('flomo-dialog').showModal();
+}
+
+function resetFlomoImport(clearFile = false) {
+  state.flomoImport = null;
+  $('flomo-edit').hidden = false;
+  $('flomo-preview').hidden = true;
+  $('flomo-back').hidden = true;
+  $('flomo-samples').replaceChildren();
+  $('flomo-submit').textContent = '预览导入';
+  $('flomo-submit').disabled = false;
+  setError('flomo-progress', '');
+  setError('flomo-error', '');
+  if (clearFile) $('flomo-file').value = '';
+}
+
+function renderFlomoPreview() {
+  const preview = state.flomoImport;
+  const remaining = preview.pending.length;
+  $('flomo-edit').hidden = true;
+  $('flomo-preview').hidden = false;
+  $('flomo-back').hidden = false;
+  $('flomo-summary').textContent = remaining
+    ? '待导入 ' + remaining + ' 条笔记。确认后会保存到当前微记账号。'
+    : '没有新的笔记可以导入。';
+  const skipped = [];
+  if (preview.duplicated) skipped.push('已存在或此前删除 ' + preview.duplicated + ' 条');
+  if (preview.skippedAttachments) skipped.push('跳过 ' + preview.skippedAttachments + ' 个附件');
+  if (preview.skippedEmpty) skipped.push('跳过 ' + preview.skippedEmpty + ' 条没有文字的笔记');
+  if (preview.skippedInvalidDate) skipped.push('跳过 ' + preview.skippedInvalidDate + ' 条日期无法识别的笔记');
+  if (preview.skippedLarge) skipped.push('跳过 ' + preview.skippedLarge + ' 条超出大小限制的笔记');
+  setError('flomo-skipped', skipped.length ? skipped.join('，') + '。' : '');
+  const samples = preview.pending.slice(0, flomoPreviewLimit);
+  const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hourCycle: 'h23', timeZone: preview.timeZone,
+  });
+  $('flomo-samples').replaceChildren(...samples.map(({ note }) => renderCard(note, tagsFor(note.body), false, dateFormatter)));
+  setError('flomo-sample-count', remaining > samples.length ? '仅预览前 ' + samples.length + ' 条。' : '');
+  $('flomo-submit').textContent = '导入 ' + remaining + ' 条';
+  $('flomo-submit').disabled = remaining === 0;
+}
+
+async function previewFlomoImport() {
+  const file = $('flomo-file').files?.[0];
+  if (!file) throw new Error('请选择 flomo 导出的 ZIP 或 HTML 文件。');
+  const timeZone = $('flomo-zone').value;
+  const account = state.user.id;
+  const result = await parseFlomoFile(file, timeZone);
+  if (state.user?.id !== account) return;
+
+  const seen = new Set();
+  const pending = [];
+  let duplicated = 0;
+  let skippedLarge = 0;
+  for (const imported of result.notes) {
+    const note = notePayload(imported);
+    if (seen.has(note.id) || state.notes.has(note.id) || state.deletedNotes.has(note.id)) {
+      duplicated++;
+      continue;
+    }
+    seen.add(note.id);
+    const bytes = importEncoder.encode(JSON.stringify(note)).length;
+    if (bytes + flomoEnvelopeBytes > flomoRequestLimit) {
+      skippedLarge++;
+      continue;
+    }
+    pending.push({ note, bytes });
+  }
+  state.flomoImport = {
+    account, timeZone, pending, duplicated, skippedLarge,
+    total: pending.length, saved: 0, skippedDuringSave: 0,
+    skippedAttachments: result.skippedAttachments,
+    skippedEmpty: result.skippedEmpty,
+    skippedInvalidDate: result.skippedInvalidDate,
+  };
+  renderFlomoPreview();
+}
+
+function updateFlomoProgress(preview, completed = 0) {
+  const processed = preview.total - preview.pending.length + completed;
+  setError('flomo-progress', '已处理 ' + processed + ' / ' + preview.total + ' 条，已导入 ' + preview.saved + ' 条。');
+}
+
+async function saveFlomoImport(preview) {
+  if (state.user?.id !== preview.account) throw new Error('账号已变化，请重新打开导入。');
+  ++state.writeEpoch;
+  ++state.writeCount;
+  setSync('loading', '正在同步');
+  updateFlomoProgress(preview);
+  let completed = 0;
+  try {
+    while (completed < preview.pending.length) {
+      if (state.user?.id !== preview.account) throw new Error('账号已变化，请重新打开导入。');
+      const batch = [];
+      let bytes = flomoEnvelopeBytes;
+      for (const { note, bytes: noteBytes } of preview.pending.slice(completed, completed + flomoBatchLimit)) {
+        // A single large record can still fit the service limit on its own.
+        if (batch.length && bytes + noteBytes + 1 > flomoBatchTarget) break;
+        bytes += noteBytes + (batch.length ? 1 : 0);
+        batch.push(note);
+      }
+      const result = await request('/api/import/flomo', { notes: batch }, AbortSignal.timeout(45000));
+      if (state.user?.id !== preview.account) throw new Error('账号已变化，请重新打开导入。');
+      if (!Array.isArray(result.notes) || !Number.isInteger(result.skipped)
+        || result.skipped < 0 || result.notes.length + result.skipped !== batch.length) {
+        throw new Error('服务返回了无法识别的导入结果，可以重试剩余笔记。');
+      }
+      for (const note of result.notes) acceptVersion({ note });
+      completed += batch.length;
+      preview.saved += result.notes.length;
+      preview.skippedDuringSave += result.skipped;
+      updateFlomoProgress(preview, completed);
+    }
+    setSync('ok', '已同步');
+  } catch (error) {
+    preview.pending = preview.pending.slice(completed);
+    if (state.flomoImport === preview) {
+      renderFlomoPreview();
+      updateFlomoProgress(preview);
+      $('flomo-submit').textContent = '重试剩余 ' + preview.pending.length + ' 条';
+    }
+    setSync('error', '同步未完成');
+    if (error.status === 401 || error.status === 403) setAuthNotice('登录状态已失效，请重新登录。', true);
+    renderFeed();
+    throw error;
+  } finally {
+    --state.writeCount;
+    ++state.writeEpoch;
+  }
+
+  state.filter = 'journal';
+  $('search').value = '';
+  renderFeed();
+  const skipped = preview.skippedDuringSave ? '，跳过 ' + preview.skippedDuringSave + ' 条已存在或此前删除的笔记' : '';
+  $('flomo-dialog').close();
+  notify('已导入 ' + preview.saved + ' 条 flomo 笔记' + skipped);
+}
+
+async function importFlomoNotes(event) {
+  event.preventDefault();
+  if (!state.loaded || !state.user?.id || state.flomoWorking) return;
+  state.flomoWorking = true;
+  const submit = $('flomo-submit');
+  const back = $('flomo-back');
+  const close = $('flomo-dialog').querySelector('[data-close="flomo-dialog"]');
+  const file = $('flomo-file');
+  const zone = $('flomo-zone');
+  submit.disabled = back.disabled = close.disabled = file.disabled = zone.disabled = true;
+  setError('flomo-error', '');
+  try {
+    if (state.flomoImport) {
+      if (state.flomoImport.pending.length) await saveFlomoImport(state.flomoImport);
+    } else {
+      setError('flomo-progress', '正在读取导出文件…');
+      await previewFlomoImport();
+      setError('flomo-progress', '');
+    }
+  } catch (error) {
+    if (!state.flomoImport) setError('flomo-progress', '');
+    setError('flomo-error', error.message);
+  } finally {
+    state.flomoWorking = false;
+    submit.disabled = state.flomoImport?.pending.length === 0;
+    back.disabled = close.disabled = file.disabled = zone.disabled = false;
+  }
+}
+
 function sidebar(open) {
   $('sidebar').classList.toggle('open', open);
   $('mobile-toggle').setAttribute('aria-expanded', String(open));
@@ -826,6 +1025,7 @@ function focusCompose() {
 
 const actions = {
   'open-import': openImport,
+  'open-flomo-import': openFlomoImport,
   'open-settings': openSettings,
   'focus-compose': focusCompose,
   'insert-tag': () => {
@@ -847,6 +1047,7 @@ const actions = {
   'retry-chat': persistChat,
   'pick-file': () => $('import-file').click(),
   'import-back': () => { if (!state.importWorking) { importMode(null); setError('import-error', ''); } },
+  'flomo-back': () => { if (!state.flomoWorking) resetFlomoImport(); },
 };
 
 document.addEventListener('click', (event) => {
@@ -858,6 +1059,7 @@ document.addEventListener('click', (event) => {
     if (button.dataset.close === 'note-dialog') closeNote();
     if (button.dataset.close === 'settings-dialog') $('settings-dialog').close();
     if (button.dataset.close === 'import-dialog' && !state.importWorking) $('import-dialog').close();
+    if (button.dataset.close === 'flomo-dialog' && !state.flomoWorking) $('flomo-dialog').close();
   }
   if (button.dataset.action && actions[button.dataset.action]) actions[button.dataset.action](button);
   if (button.dataset.openNote) openNote(button.dataset.openNote);
@@ -874,9 +1076,12 @@ document.addEventListener('click', (event) => {
 
 $('note-dialog').addEventListener('cancel', (event) => { event.preventDefault(); closeNote(); });
 $('import-dialog').addEventListener('cancel', (event) => { if (state.importWorking) event.preventDefault(); });
+$('flomo-dialog').addEventListener('cancel', (event) => { if (state.flomoWorking) event.preventDefault(); });
+$('flomo-dialog').addEventListener('close', () => resetFlomoImport(true));
 $('settings-dialog').addEventListener('close', () => { $('openai-key').value = ''; });
 $('settings-form').addEventListener('submit', saveSettings);
 $('import-form').addEventListener('submit', importNotes);
+$('flomo-form').addEventListener('submit', importFlomoNotes);
 $('import-file').addEventListener('change', pickImportFile);
 $('chat-form').addEventListener('submit', sendChat);
 $('edit-form').addEventListener('submit', submitEdit);

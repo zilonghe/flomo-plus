@@ -16,13 +16,26 @@ const DB = {
     return {
       bind(...values) {
         const statement = database.prepare(sql);
+        const allRows = () => ({ results: statement.all(...values), success: true });
         return {
+          allRows,
           async first() { return statement.get(...values) ?? null; },
-          async all() { return { results: statement.all(...values), success: true }; },
+          async all() { return allRows(); },
           async run() { return { success: true, meta: { changes: statement.run(...values).changes } }; },
         };
       },
     };
+  },
+  async batch(statements) {
+    database.exec("BEGIN");
+    try {
+      const results = statements.map(statement => statement.allRows());
+      database.exec("COMMIT");
+      return results;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   },
 };
 
