@@ -25,6 +25,8 @@ const state = {
   chatRequest: null,
   unsavedChat: null,
   model: 'gpt-4.1-mini',
+  chatProvider: 'openai',
+  codexAvailable: false,
   apiKey: '',
 };
 
@@ -142,6 +144,8 @@ async function refresh({ silent = false } = {}) {
       const result = await request('/api/session');
       if (!result.user) throw new ApiError(401, null, '请先登录。');
       state.user = result.user;
+      state.codexAvailable = result.codexAvailable === true;
+      state.chatProvider = state.codexAvailable ? 'codex' : 'openai';
       updateProfile();
     }
     const result = await request('/api/notes');
@@ -167,6 +171,8 @@ async function refresh({ silent = false } = {}) {
       state.notes.clear();
       state.deletedNotes.clear();
       state.apiKey = '';
+      state.chatProvider = 'openai';
+      state.codexAvailable = false;
       state.composeDraft = null;
       $('note-body').value = '';
       $('search').value = '';
@@ -559,6 +565,9 @@ function chatCard(turn, index, body, saved = true) {
 function renderChat(note) {
   const turns = note.turns || [];
   const thread = $('chat-thread');
+  $('chat-privacy').textContent = state.chatProvider === 'codex'
+    ? '发送时会把当前笔记和近期对话交给私有主机上的 Codex。'
+    : '发送时会把当前笔记和近期对话提交给 OpenAI。';
   thread.replaceChildren(...turns.map((turn, index) => chatCard(turn, index, note.body)));
   $('chat-starters').hidden = Boolean(turns.length || state.chatRequest || state.unsavedChat);
   if (state.chatRequest) thread.append(el('p', 'help-text', 'AI 正在回复…'), actionButton('停止', 'cancel-chat'));
@@ -574,8 +583,9 @@ async function sendChat(event) {
   const text = $('chat-input').value.trim();
   const note = state.notes.get(state.noteID);
   if (!note || !text || state.chatRequest || state.unsavedChat) return;
-  if (!state.apiKey) {
-    setError('chat-error', '请先在设置里填写 OpenAI API Key。');
+  const useCodex = state.chatProvider === 'codex' && state.codexAvailable;
+  if (!useCodex && !state.apiKey) {
+    setError('chat-error', '请先配置 Codex 中转，或在设置里填写 OpenAI API Key。');
     openSettings();
     return;
   }
@@ -588,8 +598,7 @@ async function sendChat(event) {
     const data = await request('/api/ai', {
       note: note.body,
       history: [...(note.turns || []).slice(-11), question],
-      model: state.model,
-      apiKey: state.apiKey,
+      ...(useCodex ? { provider: 'codex' } : { provider: 'openai', model: state.model, apiKey: state.apiKey }),
     }, controller.signal);
     if (state.noteID !== note.id || controller.signal.aborted) return;
     state.unsavedChat = {
@@ -686,7 +695,20 @@ async function saveExcerpt(turnIndex) {
   }
 }
 
+function updateAISettings() {
+  const select = $('chat-provider');
+  select.querySelector('option[value=codex]').disabled = !state.codexAvailable;
+  $('codex-status').textContent = state.codexAvailable
+    ? 'Codex 中转已配置。通过主机登录的 ChatGPT 账号使用 Codex。'
+    : 'Codex 中转未配置。启动私有中转并在站点中配置后，即可选择。';
+  const usingOpenAI = select.value !== 'codex';
+  $('openai-fields').hidden = !usingOpenAI;
+  $('openai-key').disabled = $('openai-model').disabled = !usingOpenAI;
+}
+
 function openSettings() {
+  $('chat-provider').value = state.chatProvider;
+  updateAISettings();
   $('openai-key').value = state.apiKey;
   $('openai-model').value = state.model;
   setError('settings-error', '');
@@ -695,17 +717,27 @@ function openSettings() {
 
 function saveSettings(event) {
   event.preventDefault();
+  if ($('chat-provider').value === 'codex' && state.codexAvailable) {
+    state.chatProvider = 'codex';
+    $('settings-dialog').close();
+    setError('chat-error', '');
+    if (state.notes.has(state.noteID)) renderChat(state.notes.get(state.noteID));
+    notify('已选择 Codex');
+    return;
+  }
   const apiKey = $('openai-key').value.trim();
   const model = $('openai-model').value.trim();
   if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(model) || (apiKey && !/^[!-~]{10,512}$/.test(apiKey))) {
     setError('settings-error', '请填写有效的模型名称和 OpenAI API Key。');
     return;
   }
+  state.chatProvider = 'openai';
   state.apiKey = apiKey;
   state.model = model;
   $('openai-key').value = '';
   $('settings-dialog').close();
   if (apiKey) setError('chat-error', '');
+  if (state.notes.has(state.noteID)) renderChat(state.notes.get(state.noteID));
   notify('设置已保存');
 }
 
@@ -1313,6 +1345,7 @@ $('flomo-dialog').addEventListener('cancel', (event) => { if (state.flomoWorking
 $('flomo-dialog').addEventListener('close', () => resetFlomoImport(true));
 $('settings-dialog').addEventListener('close', () => { $('openai-key').value = ''; });
 $('settings-form').addEventListener('submit', saveSettings);
+$('chat-provider').addEventListener('change', updateAISettings);
 $('import-form').addEventListener('submit', importNotes);
 $('weread-connect').addEventListener('submit', (event) => { event.preventDefault(); loadWereadBooks(); });
 $('weread-key').addEventListener('input', () => {

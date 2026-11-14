@@ -6,6 +6,10 @@
 
 网页版 AI 使用你输入的 OpenAI API Key。密钥在当前页面内存中保留，刷新页面后需重新填写。仅在发送问题时用该密钥请求 AI，笔记与近期对话会随请求提交。iOS 的 API Key 单独保存在系统钥匙串。
 
+## 通过自己的 Codex 主机对话
+
+在自己的 Mac 或 Linux 主机运行 [Codex 中转](relay/README.md)，在 Codex 登录 ChatGPT 账号，再配置站点的 `CODEX_RELAY_URL` 和 `CODEX_RELAY_TOKEN`。网页版设置会显示「Codex · ChatGPT 订阅」，此模式发送当前正文和近期对话到该主机。已有 OpenAI API Key 模式也可继续选用。
+
 ## 从微信读书导入
 
 在「导入微信读书」里可连接微信读书官方 API。登录 [微信读书 Skill 官方页面](https://weread.qq.com/r/weread-skills)，获取 API Key 后填入微记，读取有笔记的书籍列表。选书并预览划线和个人想法，确认后保存。官方接口仅提供书签数量。

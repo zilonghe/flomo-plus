@@ -9,6 +9,8 @@ const paths = {
   "/flomo.js": ["flomo.js", "text/javascript; charset=utf-8"],
   "/weread.js": ["weread.js", "text/javascript; charset=utf-8"],
   "/styles.css": ["styles.css", "text/css; charset=utf-8"],
+  "/relay/server.mjs": ["../relay/server.mjs", "application/octet-stream"],
+  "/relay/README.md": ["../relay/README.md", "text/plain; charset=utf-8"],
 };
 
 const assets = Object.fromEntries(await Promise.all(

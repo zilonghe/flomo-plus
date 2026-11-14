@@ -144,6 +144,8 @@ textarea.field{resize:vertical}
 .help-text + .help-text{margin-top:6px}
 hr{border:0;border-top:1px solid var(--line);margin:18px 0}
 #settings-form h3{font-size:15px;margin:0 0 8px}
+.ai-provider-help{margin:7px 0 9px}
+.ai-provider-help a{color:var(--green-dark);text-decoration:underline;text-underline-offset:2px}
 #import-edit .button{margin-top:7px}
 .import-modes{display:flex;gap:5px;margin:0 0 14px}
 .import-modes [aria-pressed=true]{background:var(--green-tint);border-color:#c7e7d1;color:var(--green-dark)}

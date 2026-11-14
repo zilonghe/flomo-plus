@@ -258,6 +258,58 @@ function clipped(text, limit) {
   return text.length <= limit ? text : `${text.slice(0, limit)}\n［内容已截断］`;
 }
 
+function codexRelay(env) {
+  const token = env.CODEX_RELAY_TOKEN;
+  const address = env.CODEX_RELAY_URL;
+  if (typeof token !== "string" || !/^[A-Za-z0-9_-]{32,128}$/.test(token) || typeof address !== "string") return null;
+  try {
+    const url = new URL(address);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash ||
+        url.pathname !== "/journal/reply") return null;
+    return { url, token };
+  } catch {
+    return null;
+  }
+}
+
+async function askCodex(input, relay, clientSignal) {
+  if (!relay) throw new ApiError(503, "Codex 中转还未配置。");
+  if (typeof input.note !== "string" || !input.note.trim()) throw new ApiError(400, "笔记正文为空。");
+  const history = validateTurns(input.history);
+  if (history.at(-1)?.role !== "user") throw new ApiError(400, "请输入你想问的问题。");
+
+  let response;
+  try {
+    response = await fetch(relay.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${relay.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        note: clipped(input.note, noteContextLimit),
+        history: history.slice(-12).map(turn => ({
+          role: turn.role,
+          text: clipped(turn.text, previousTurnLimit),
+        })),
+      }),
+      signal: AbortSignal.any([clientSignal, AbortSignal.timeout(110_000)]),
+      redirect: "error",
+    });
+  } catch {
+    throw new ApiError(502, "暂时无法连接 Codex，请检查中转主机是否在线。");
+  }
+
+  if (response.status === 429) throw new ApiError(429, "Codex 正忙或达到额度上限，请稍后再试。");
+  if (response.status === 503) throw new ApiError(503, "Codex 暂时不可用，请检查中转主机的登录状态。");
+  if (!response.ok) throw new ApiError(502, "Codex 中转未完成请求，请检查主机状态。");
+  const result = await response.json().catch(() => null);
+  const reply = typeof result?.reply === "string" ? result.reply.trim() : "";
+  if (!reply || reply.length > 60_000) throw new ApiError(502, "Codex 没有返回可保存的回复。");
+  return json({ reply });
+}
+
 async function askAI(input) {
   const { note, apiKey } = input;
   const model = typeof input.model === "string" ? input.model.trim() : "";
@@ -346,7 +398,7 @@ async function api(request, url, env) {
     return json({ error: "登录账号已变化，请重新连接后同步。" }, 403);
   }
   if (request.method === "GET") {
-    if (url.pathname === "/api/session") return json({ user });
+    if (url.pathname === "/api/session") return json({ user, codexAvailable: codexRelay(env) !== null });
     if (url.pathname === "/api/notes") return listNotes(env.DB, user.id);
   }
   if (request.method === "POST") {
@@ -357,7 +409,14 @@ async function api(request, url, env) {
     }
     if (url.pathname === "/api/weread/books") return json(await listWeReadBooks(await readJSON(request)));
     if (url.pathname === "/api/weread/notes") return json(await listWeReadNotes(await readJSON(request)));
-    if (url.pathname === "/api/ai") return askAI(await readJSON(request));
+    if (url.pathname === "/api/ai") {
+      const input = await readJSON(request);
+      if (input.provider === "codex") return askCodex(input, codexRelay(env), request.signal);
+      if (input.provider !== undefined && input.provider !== "openai") {
+        throw new ApiError(400, "请选择已支持的 AI 服务。");
+      }
+      return askAI(input);
+    }
   }
   return json({ error: "这个操作不可用。" }, 404);
 }
@@ -381,10 +440,15 @@ export default {
       const response = connectionPage(Boolean(currentUser(request)));
       return request.method === "HEAD" ? new Response(null, response) : response;
     }
+    if (url.pathname.startsWith("/relay/") && !currentUser(request)) return html("", 401);
     const asset = Object.hasOwn(assets, url.pathname) && assets[url.pathname];
     if (!asset) return html("<!doctype html><meta charset=utf-8><title>页面未找到</title><a href=/>返回微记</a>", 404);
     return new Response(request.method === "HEAD" ? null : asset.body, {
-      headers: { ...pageHeaders, "Content-Type": asset.type },
+      headers: {
+        ...pageHeaders,
+        "Content-Type": asset.type,
+        ...(url.pathname === "/relay/server.mjs" ? { "Content-Disposition": 'attachment; filename="server.mjs"' } : {}),
+      },
     });
   },
 };

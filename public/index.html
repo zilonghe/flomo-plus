@@ -143,7 +143,7 @@
           <textarea class="field" id="chat-input" rows="2" maxlength="4000" placeholder="问问这条笔记…" aria-label="问题"></textarea>
           <button class="button button-primary" type="submit" id="chat-send"><svg><use href="#i-send"></use></svg><span>发送</span></button>
         </form>
-        <p class="privacy-note">发送时会把当前笔记和近期对话提交给 OpenAI。</p>
+        <p class="privacy-note" id="chat-privacy">发送时会把当前笔记和近期对话提交给 OpenAI。</p>
         <p id="chat-error" class="inline-error" role="alert" hidden></p>
       </section>
     </div>
@@ -244,11 +244,19 @@
       <p class="help-text">在 iOS 微记里使用同一 ChatGPT 账号登录，即可同步笔记及对话。</p>
       <hr>
       <h3>AI 服务</h3>
-      <p class="help-text">配置自己的 OpenAI API Key。密钥只在当前网页打开期间保留。</p>
-      <label class="field-label" for="openai-key">OpenAI API Key</label>
-      <input class="field" id="openai-key" type="password" autocomplete="off" maxlength="600" spellcheck="false" placeholder="sk-…">
-      <label class="field-label" for="openai-model">模型</label>
-      <input class="field" id="openai-model" type="text" maxlength="100" autocomplete="off" spellcheck="false" value="gpt-4.1-mini">
+      <label class="field-label" for="chat-provider">对话服务</label>
+      <select class="field" id="chat-provider">
+        <option value="openai">OpenAI API Key</option>
+        <option value="codex" disabled>Codex · ChatGPT 订阅</option>
+      </select>
+      <p class="help-text ai-provider-help"><span id="codex-status"></span> <a href="/relay/README.md" target="_blank" rel="noopener noreferrer">部署说明</a> · <a href="/relay/server.mjs" download>下载中转</a></p>
+      <div id="openai-fields">
+        <p class="help-text">OpenAI API Key 只在当前网页打开期间保留。</p>
+        <label class="field-label" for="openai-key">OpenAI API Key</label>
+        <input class="field" id="openai-key" type="password" autocomplete="off" maxlength="600" spellcheck="false" placeholder="sk-…">
+        <label class="field-label" for="openai-model">模型</label>
+        <input class="field" id="openai-model" type="text" maxlength="100" autocomplete="off" spellcheck="false" value="gpt-4.1-mini">
+      </div>
       <p id="settings-error" class="inline-error" role="alert" hidden></p>
       <div class="dialog-actions"><button class="button button-primary" type="submit">保存设置</button></div>
     </form>
