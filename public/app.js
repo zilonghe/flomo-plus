@@ -1,7 +1,7 @@
 import { parseWeRead, readWeReadFile } from './weread.js';
 import { parseFlomoFile } from './flomo.js';
 import { randomUUID } from './crypto.js';
-import { tagsFor, buildTagTree, tokenizeBody, sampleRandomNotes } from './ux-helpers.js';
+import { tagsFor, buildTagTree, tokenizeBody, appendCitedText } from './ux-helpers.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -17,7 +17,6 @@ const state = {
   dayFilter: null,
   bookFilter: null,
   sortOrder: 'newest',
-  randomIds: [],
   feedItems: [],
   feedRendered: 0,
   inlineEdit: null,
@@ -47,7 +46,7 @@ const state = {
   apiKey: '',
 };
 
-const filters = { all: '全部笔记', journal: '日志', reading: '读书摘录', random: '随机漫步' };
+const filters = { all: '全部笔记', journal: '日志', reading: '读书摘录' };
 const dateLong = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
 const dateTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 let toastTimer;
@@ -114,17 +113,19 @@ class ApiError extends Error {
     super(data?.error || message);
     this.status = status;
     this.current = data?.current;
+    this.deleted = data?.deleted;
   }
 }
 
-async function request(path, body, signal) {
+async function request(path, body, signal, method = body === undefined ? 'GET' : 'POST') {
+  const epoch = accountEpoch;
   const headers = { Accept: 'application/json' };
   if (state.user?.id) headers['X-Journal-Account'] = state.user.id;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let response;
   try {
     response = await fetch(path, {
-      method: body === undefined ? 'GET' : 'POST',
+      method,
       credentials: 'same-origin',
       cache: 'no-store',
       redirect: 'error',
@@ -137,7 +138,9 @@ async function request(path, body, signal) {
     throw new Error('网络连接失败，请检查连接后重试。');
   }
   const data = await response.json().catch(() => null);
+  if (epoch !== accountEpoch) throw new DOMException('账号已变化', 'AbortError');
   if (!response.ok || !data) {
+    if (response.status === 401 || response.status === 403) resetAccount();
     throw new ApiError(response.status, data, response.status === 401 ? '登录状态已过期，请重新登录。' : '服务暂时无法响应，请稍后重试。');
   }
   return data;
@@ -151,6 +154,50 @@ function updateProfile() {
   $('avatar').textContent = state.user ? (Array.from(label)[0] || '微').toUpperCase() : '微';
   $('sign-out').hidden = !state.user;
   $('settings-account').textContent = email ? '已登录 · ' + email : state.user ? '已使用 ChatGPT 账号登录。' : '请先使用 ChatGPT 账号登录。';
+}
+
+let accountEpoch = 0;
+function resetAccount() {
+  accountEpoch++;
+  ai.sending?.abort();
+  resetAIDrawer();
+  closeRandomWalk({ restore: false });
+  state.user = null;
+  state.loaded = false;
+  state.notes.clear();
+  state.deletedNotes.clear();
+  state.noteIndex = null;
+  state.dayFilter = null;
+  state.bookFilter = null;
+  state.inlineEdit = null;
+  state.orphanDrafts.clear();
+  renderOrphanDraft();
+  state.inlineDeleteId = null;
+  state.openMenuId = null;
+  closeTagSuggest();
+  state.apiKey = '';
+  state.chatProvider = 'openai';
+  state.codexAvailable = false;
+  state.composeDraft = null;
+  $('note-body').value = '';
+  clearSearchInput();
+  $('edit-body').value = '';
+  $('chat-input').value = '';
+  $('import-text').value = '';
+  importMode(null);
+  resetWereadImport();
+  resetFlomoImport(true);
+  for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog']) if ($(id).open) $(id).close();
+  if ($('note-dialog').open) closeNote(true);
+  $('detail-body').replaceChildren();
+  $('chat-thread').replaceChildren();
+  $('openai-key').value = '';
+  $('note-body').disabled = true;
+  syncComposerUI();
+  rebuildNoteIndex();
+  renderFeedList({ reset: true });
+  updateProfile();
+  setAuthNotice('登录状态已失效，请使用 ChatGPT 账号登录。', true);
 }
 
 async function refresh({ silent = false } = {}) {
@@ -190,40 +237,9 @@ async function refresh({ silent = false } = {}) {
     setSync('ok', '已同步');
   } catch (error) {
     if (error.status === 401 || error.status === 403) {
-      state.user = null;
-      state.loaded = false;
-      state.notes.clear();
-      state.deletedNotes.clear();
-      state.noteIndex = null;
-      state.dayFilter = null;
-      state.bookFilter = null;
-      state.randomIds = [];
-      state.inlineEdit = null;
-      state.orphanDrafts.clear();
-      renderOrphanDraft();
-      state.inlineDeleteId = null;
-      state.openMenuId = null;
-      closeTagSuggest();
-      state.apiKey = '';
-      state.chatProvider = 'openai';
-      state.codexAvailable = false;
-      state.composeDraft = null;
-      $('note-body').value = '';
-      clearSearchInput();
-      $('edit-body').value = '';
-      $('chat-input').value = '';
-      $('import-text').value = '';
-      importMode(null);
-      resetWereadImport();
-      resetFlomoImport(true);
-      for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog']) if ($(id).open) $(id).close();
-      if ($('note-dialog').open) closeNote(true);
-      $('note-body').disabled = true;
-      syncComposerUI();
-      rebuildNoteIndex();
-      renderFeedList({ reset: true });
-      updateProfile();
-      setAuthNotice('登录状态已失效，请使用 ChatGPT 账号登录。', true);
+      if (state.user || state.loaded) resetAccount();
+    } else if (error.name === 'AbortError') {
+      return;
     } else if (!state.loaded) {
       state.refreshing = false;
       setAuthNotice(error.message);
@@ -272,6 +288,7 @@ async function mutate(change) {
     setSync('ok', '已同步');
     rebuildNoteIndex();
     renderFeedList({ reset: true, preservePage: true });
+    if (change.id === rw.id) reconcileWalkFocus(data);
     return data;
   } catch (error) {
     if (error.status === 409) {
@@ -521,12 +538,6 @@ function renderActiveFilters() {
     chip.dataset.clearFilter = 'book';
     chips.push(chip);
   }
-  if (state.filter === 'random') {
-    const chip = el('button', 'filter-chip filter-chip-action', '换一批');
-    chip.type = 'button';
-    chip.dataset.action = 'reshuffle-random';
-    chips.push(chip);
-  }
   box.replaceChildren(...chips);
   box.hidden = chips.length === 0;
 }
@@ -683,30 +694,8 @@ function renderFeedList({ reset = true, preservePage = false } = {}) {
   }
 
   const query = $('search').value.trim().toLocaleLowerCase();
-  let source = index.all;
-  if (state.filter === 'random') {
-    const kept = [];
-    const seen = new Set();
-    for (const id of state.randomIds) {
-      if (state.notes.has(id) && !seen.has(id)) {
-        seen.add(id);
-        kept.push(id);
-      }
-    }
-    const target = Math.min(10, index.all.length);
-    if (kept.length < target) {
-      const pool = index.all.filter((n) => !seen.has(n.id));
-      for (const note of sampleRandomNotes(pool, target - kept.length)) {
-        kept.push(note.id);
-      }
-    }
-    state.randomIds = kept;
-    source = kept.map((id) => state.notes.get(id)).filter(Boolean);
-  }
-
-  const shown = source.filter((note) => {
+  const shown = index.all.filter((note) => {
     const matchesFilter = state.filter === 'all'
-      || state.filter === 'random'
       || (state.filter === 'reading' && note.reading)
       || (state.filter === 'journal' && !note.reading)
       || (state.filter.startsWith('tag:') && matchesTagPrefix(index.byNote.get(note.id) || [], state.filter.slice(4)));
@@ -718,7 +707,7 @@ function renderFeedList({ reset = true, preservePage = false } = {}) {
     return fields.some((value) => value?.toLocaleLowerCase().includes(query));
   });
 
-  if (state.filter !== 'random') shown.sort(compareFeedByTime);
+  shown.sort(compareFeedByTime);
 
   $('feed-count').textContent = '共 ' + shown.length + ' 条笔记';
   $('feed-count').hidden = false;
@@ -1280,18 +1269,26 @@ function finishCompose(note) {
 }
 
 function openNote(id) {
-  if (!state.notes.has(id)) return;
+  if (!state.notes.has(id)) return false;
+  const dialog = $('note-dialog');
+  if (dialog.open && state.noteID === id) return true;
+  if (dialog.open && (state.detailWorking || !mayCloseNote())) return false;
+  state.chatRequest?.abort();
+  state.chatRequest = null;
   state.noteID = id;
   state.editRevision = null;
   state.unsavedChat = null;
   $('chat-input').value = '';
+  $('note-chat-related').checked = true;
   $('chat-send').disabled = false;
   $('delete-confirm').hidden = true;
   $('detail-actions').hidden = false;
   setError('detail-error', '');
   setError('chat-error', '');
   renderDetail();
-  $('note-dialog').showModal();
+  if (!dialog.open) dialog.showModal();
+  dialog.querySelector('.dialog-scroll').scrollTop = 0;
+  return true;
 }
 
 function mayCloseNote() {
@@ -1380,7 +1377,9 @@ async function deleteNote() {
 
 function chatCard(turn, index, body, saved = true) {
   const card = el('article', 'chat-turn ' + turn.role);
-  card.append(el('p', 'chat-role', turn.role === 'assistant' ? 'AI' : '我'), el('p', 'chat-text', turn.text));
+  const text = el('p', 'chat-text');
+  appendCitedText(text, turn.text, turn.citations);
+  card.append(el('p', 'chat-role', turn.role === 'assistant' ? 'AI' : '我'), text);
   if (turn.role === 'assistant' && saved) {
     const excerpt = excerptsMarker + turn.text.trim();
     if (body.endsWith(excerpt) || body.includes(excerpt + excerptsMarker)) {
@@ -1415,8 +1414,8 @@ async function sendChat(event) {
   const text = $('chat-input').value.trim();
   const note = state.notes.get(state.noteID);
   if (!note || !text || state.chatRequest || state.unsavedChat) return;
-  const useCodex = state.chatProvider === 'codex' && state.codexAvailable;
-  if (!useCodex && !state.apiKey) {
+  const settings = providerSettings();
+  if (settings.provider === 'openai' && !settings.apiKey) {
     setError('chat-error', '请先配置 Codex 中转，或在设置里填写 OpenAI API Key。');
     openSettings();
     return;
@@ -1429,15 +1428,17 @@ async function sendChat(event) {
   try {
     const data = await request('/api/ai', {
       note: note.body,
+      noteId: note.id,
+      includeRelated: $('note-chat-related').checked,
       history: [...(note.turns || []).slice(-11), question],
-      ...(useCodex ? { provider: 'codex' } : { provider: 'openai', model: state.model, apiKey: state.apiKey }),
+      ...settings,
     }, controller.signal);
     if (state.noteID !== note.id || controller.signal.aborted) return;
     state.unsavedChat = {
       id: note.id,
       history: note.turns || [],
       question,
-      reply: { role: 'assistant', text: data.reply },
+      reply: { role: 'assistant', text: data.reply, ...(data.citations ? { citations: data.citations } : {}) },
     };
     $('chat-input').value = '';
     await persistChat();
@@ -1453,7 +1454,8 @@ async function sendChat(event) {
 }
 
 function sameTurns(a, b) {
-  return a.length === b.length && a.every((turn, index) => turn.role === b[index].role && turn.text === b[index].text);
+  return a.length === b.length && a.every((turn, index) => turn.role === b[index].role && turn.text === b[index].text
+    && JSON.stringify(turn.citations ?? []) === JSON.stringify(b[index].citations ?? []));
 }
 
 async function persistChat() {
@@ -2320,7 +2322,480 @@ function focusCompose() {
   }
 }
 
+const rw = { id: null, history: [], zoom: 1, scrollY: 0, seq: 0, opener: null };
+const refreshAnchor = document.createComment('位置：同步按钮');
+$('refresh-button').before(refreshAnchor);
+
+function applyWalkZoom() {
+  $('rw-stage').style.transform = `translate(0px, 0px) scale(${rw.zoom})`;
+  $('rw-zoom-label').textContent = Math.round(rw.zoom * 100) + '%';
+}
+
+function drawWalkLinks() {
+  const stage = $('rw-stage');
+  const svg = stage.querySelector('svg.rw-links');
+  const focus = $('rw-focus').firstElementChild;
+  if ($('random-walk-overlay').hidden || !focus) {
+    svg.replaceChildren();
+    return;
+  }
+  const bounds = stage.getBoundingClientRect();
+  const x = value => Math.round((value - bounds.left) / rw.zoom);
+  const y = value => Math.round((value - bounds.top) / rw.zoom);
+  const from = focus.getBoundingClientRect();
+  const paths = Array.from($('rw-related').children, (card) => {
+    const to = card.getBoundingClientRect();
+    const path = document.createElementNS(SVG_NS, 'path');
+    if (to.left >= from.right) {
+      const start = x(from.right), end = x(to.left), middle = (start + end) / 2;
+      const sy = y(from.top + from.height / 2), ey = y(to.top + to.height / 2);
+      path.setAttribute('d', `M ${start} ${sy} C ${middle} ${sy}, ${middle} ${ey}, ${end} ${ey}`);
+    } else {
+      const sx = x(from.left + from.width / 2), ex = x(to.left + to.width / 2);
+      const sy = y(from.bottom), ey = y(to.top), mid = (sy + ey) / 2;
+      path.setAttribute('d', `M ${sx} ${sy} C ${sx} ${mid}, ${ex} ${mid}, ${ex} ${ey}`);
+    }
+    return path;
+  });
+  svg.replaceChildren(...paths);
+}
+
+function walkFocusCard(note) {
+  const card = el('article', 'rw-focus-card');
+  card.dataset.noteId = note.id;
+  card.append(el('p', 'date-line', dateLong.format(new Date(note.createdAt))),
+    el('h3', '', note.reading?.bookTitle || '日志'),
+    el('p', 'rw-focus-body', note.body));
+  const buttons = el('div', 'rw-card-actions');
+  for (const [label, action] of [['编辑', 'edit'], ['对话', 'chat'], ['复制', 'copy'], ['删除', 'delete']]) {
+    buttons.append(actionButton(label, 'rw-' + action + '-focus'));
+  }
+  card.append(buttons);
+  return card;
+}
+
+async function pivotWalk(id, remember = true) {
+  const local = state.notes.get(id);
+  if (!local) return;
+  const seq = ++rw.seq;
+  if (remember && rw.id && rw.id !== id) rw.history.push(rw.id);
+  rw.id = id;
+  $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = !rw.history.length;
+  $('rw-focus').replaceChildren(walkFocusCard(local));
+  $('rw-related').replaceChildren();
+  drawWalkLinks();
+  setError('rw-status', '正在寻找相关笔记…');
+  try {
+    const result = await request('/api/notes/' + id + '/related?limit=10');
+    if (seq !== rw.seq) return;
+    $('rw-focus').replaceChildren(walkFocusCard(result.focus));
+    $('rw-related').replaceChildren(...result.related.map(({ note, id: relatedId, relevancePercent }) => {
+      const button = el('button', 'rw-related-card');
+      button.type = 'button';
+      button.dataset.action = 'rw-pivot';
+      button.dataset.noteId = relatedId;
+      button.append(el('span', 'rw-related-text', note.body.slice(0, 140)), el('span', 'rw-score', relevancePercent + '%'));
+      return button;
+    }));
+    $('rw-related').scrollTop = 0;
+    setError('rw-status', result.related.length ? '' : '还没有其他笔记。');
+    drawWalkLinks();
+  } catch (error) {
+    if (seq === rw.seq) setError('rw-status', error.message);
+  }
+}
+
+function reconcileWalkFocus(data) {
+  if (data.note) { pivotWalk(data.note.id, false); return; }
+  if (!data.deleted) return;
+  rw.history = rw.history.filter(id => id !== data.deleted.id);
+  rw.id = null;
+  rw.seq++;
+  $('rw-focus').replaceChildren();
+  $('rw-related').replaceChildren();
+  drawWalkLinks();
+  shuffleWalk();
+}
+
+function shuffleWalk() {
+  const choices = [...state.notes.keys()].filter(id => id !== rw.id);
+  if (choices.length) pivotWalk(choices[Math.floor(Math.random() * choices.length)]);
+  else if (!rw.id) setError('rw-status', '先记录一条笔记再开始漫步。');
+}
+
+function openRandomWalk(button) {
+  if (!state.loaded || !$('random-walk-overlay').hidden) return;
+  rw.scrollY = window.scrollY;
+  rw.opener = button;
+  rw.zoom = 1;
+  applyWalkZoom();
+  $('random-walk-overlay').hidden = false;
+  $('random-walk-overlay').querySelector('.rw-controls').prepend($('refresh-button'));
+  $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = true;
+  $('random-walk-overlay').querySelector('[data-action="rw-close"]').focus({ preventScroll: true });
+  sidebar(false);
+  shuffleWalk();
+}
+
+function closeRandomWalk({ restore = true } = {}) {
+  if ($('random-walk-overlay').hidden) return;
+  $('random-walk-overlay').hidden = true;
+  refreshAnchor.after($('refresh-button'));
+  rw.seq++;
+  rw.id = null;
+  rw.history = [];
+  $('rw-focus').replaceChildren();
+  $('rw-related').replaceChildren();
+  drawWalkLinks();
+  setError('rw-status', '');
+  if (restore) {
+    rw.opener?.focus({ preventScroll: true });
+    window.scrollTo(0, rw.scrollY);
+  }
+  rw.opener = null;
+}
+
+function walkNoteAction(action) {
+  const note = state.notes.get(rw.id);
+  if (!note) return;
+  if (action === 'copy') { copyText(note.body, $('rw-focus')); return; }
+  if (!openNote(note.id)) return;
+  if (action === 'edit') toggleEdit(true);
+  if (action === 'chat') $('chat-input').focus();
+  if (action === 'delete') $('delete-confirm').hidden = false;
+}
+
+function emptyAIState() {
+  return { session: null, sessions: [], profile: null, source: null, pins: new Set(), sending: null,
+    profileTask: null, loadingSession: false, requestKey: null, selectedPanel: null, atIndex: null, loadSeq: 0 };
+}
+let ai = emptyAIState();
+
+function providerSettings() {
+  return state.chatProvider === 'codex' && state.codexAvailable
+    ? { provider: 'codex' } : { provider: 'openai', model: state.model, apiKey: state.apiKey };
+}
+
+function resetAIDrawer() {
+  closeAIDrawer();
+  ai = emptyAIState();
+  $('ai-drawer-input').value = '';
+  $('ai-note-picker-search').value = '';
+  $('ai-note-picker-results').replaceChildren();
+  $('ai-use-all-notes').checked = true;
+  setError('ai-drawer-error', '');
+  renderAIPins();
+  renderAISessions();
+  renderAIThread();
+  renderAIProfile();
+  syncAIControls();
+}
+
+function closeNotePicker(refocus = false) {
+  $('ai-note-picker').hidden = true;
+  ai.atIndex = null;
+  if (refocus) $('ai-drawer-input').focus({ preventScroll: true });
+}
+
+function closeAIDrawer(refocus = false) {
+  ai.loadSeq++;
+  $('ai-drawer').hidden = true;
+  $('ai-fab').setAttribute('aria-expanded', 'false');
+  closeNotePicker();
+  showAIPanel(null);
+  if (refocus && $('random-walk-overlay').hidden) $('ai-fab').focus({ preventScroll: true });
+}
+
+function openAIDrawer() {
+  if (!state.loaded) { notify('请先登录并完成同步'); return; }
+  $('ai-drawer').hidden = false;
+  $('ai-fab').setAttribute('aria-expanded', 'true');
+  $('ai-drawer-input').focus({ preventScroll: true });
+}
+
+function renderAISessions() {
+  $('ai-session-list').replaceChildren(...ai.sessions.map(session => {
+    const row = el('div', 'ai-session-row');
+    const select = actionButton(session.title, 'ai-select-session');
+    select.dataset.sessionId = session.id;
+    if (session.id === ai.session?.id) select.setAttribute('aria-current', 'true');
+    const remove = actionButton('删除', 'ai-delete-session');
+    remove.dataset.sessionId = session.id;
+    remove.setAttribute('aria-label', '删除对话：' + session.title);
+    row.append(select, remove);
+    return row;
+  }));
+  if (!ai.sessions.length) $('ai-session-list').append(el('p', 'help-text', '还没有对话。'));
+}
+
+function renderAIThread() {
+  const turns = ai.session?.turns ?? ai.source?.turns?.slice(-11) ?? [];
+  const thread = $('ai-drawer-thread');
+  thread.replaceChildren(...turns.map(turn => {
+    const message = el('div', 'ai-msg ai-msg-' + turn.role);
+    appendCitedText(message, turn.text, turn.citations);
+    return message;
+  }));
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function renderAIProfile() {
+  $('ai-profile-enabled').checked = ai.profile?.enabled ?? true;
+  $('ai-profile-text').value = ai.profile?.content ?? '';
+}
+
+function renderAIPins() {
+  $('ai-pinned-notes').replaceChildren(...[...ai.pins].flatMap(id => {
+    const note = state.notes.get(id);
+    if (!note) return [];
+    const name = note.reading?.bookTitle || note.body.trim().split('\n')[0].slice(0, 28);
+    const button = el('button', 'filter-chip', name + ' ×');
+    button.type = 'button';
+    button.dataset.removePin = id;
+    button.setAttribute('aria-label', '移除引用：' + name);
+    return [button];
+  }));
+}
+
+function renderNotePicker() {
+  const query = $('ai-note-picker-search').value.trim().toLocaleLowerCase();
+  const found = (state.noteIndex?.all ?? []).filter(note => !ai.pins.has(note.id) &&
+    (!query || [note.body, note.reading?.bookTitle, note.reading?.chapter, note.reading?.author]
+      .some(text => text?.toLocaleLowerCase().includes(query)))).slice(0, 40);
+  const options = found.map(note => {
+    const title = note.reading?.bookTitle ? note.reading.bookTitle + ' · ' : '';
+    const button = el('button', 'ai-picker-option', title + note.body.trim().slice(0, 96));
+    button.type = 'button';
+    button.dataset.pickNoteId = note.id;
+    return button;
+  });
+  $('ai-note-picker-results').replaceChildren(...(options.length ? options : [el('p', 'help-text', '没有匹配的笔记。')]));
+}
+
+function openNotePicker(query = '', atIndex = null) {
+  if (ai.pins.size >= 10) { setError('ai-drawer-error', '最多引用 10 条笔记。'); return; }
+  ai.atIndex = atIndex;
+  $('ai-note-picker').hidden = false;
+  $('ai-note-picker-search').value = query;
+  renderNotePicker();
+  $('ai-note-picker-search').focus({ preventScroll: true });
+}
+
+function pinFromPicker(id) {
+  if (!state.notes.has(id) || ai.pins.size >= 10) return;
+  ai.pins.add(id);
+  if (ai.atIndex !== null) {
+    const input = $('ai-drawer-input');
+    if (input.value[ai.atIndex] === '@') input.setRangeText('', ai.atIndex, ai.atIndex + 1, 'end');
+  }
+  renderAIPins();
+  closeNotePicker(true);
+}
+
+function showAIPanel(panel) {
+  ai.selectedPanel = panel;
+  $('ai-session-list').hidden = panel !== 'sessions';
+  $('ai-profile-panel').hidden = panel !== 'profile';
+}
+
+async function toggleAIPanel(panel) {
+  if (ai.selectedPanel === panel) { ai.loadSeq++; showAIPanel(null); return; }
+  const view = ai;
+  const seq = ++view.loadSeq;
+  showAIPanel(null);
+  closeNotePicker();
+  try {
+    if (panel === 'profile' && view.profileTask) await view.profileTask;
+    if (ai !== view || view.loadSeq !== seq || $('ai-drawer').hidden) return;
+    const result = await request('/api/ai/' + (panel === 'sessions' ? 'sessions' : 'profile'));
+    if (ai !== view || view.loadSeq !== seq || $('ai-drawer').hidden) return;
+    if (panel === 'sessions') { view.sessions = result.sessions; renderAISessions(); }
+    else { view.profile = result.profile; renderAIProfile(); }
+    showAIPanel(panel);
+  } catch (error) {
+    if (ai === view && view.loadSeq === seq) setError('ai-drawer-error', error.message);
+  }
+}
+
+function syncAIControls() {
+  const send = $('ai-drawer-send');
+  send.disabled = Boolean(ai.sending || ai.loadingSession);
+  $('ai-drawer-input').readOnly = Boolean(ai.sending);
+  send.querySelector('span').textContent = ai.sending ? '发送中…' : '发送';
+  for (const control of $('ai-profile-panel').querySelectorAll('button, textarea, input')) {
+    control.disabled = Boolean(ai.profileTask);
+  }
+}
+
+function editAIProfile(generate) {
+  const view = ai;
+  if (view.profileTask) return;
+  const body = generate ? providerSettings() : {
+    content: $('ai-profile-text').value, enabled: $('ai-profile-enabled').checked,
+  };
+  setError('ai-drawer-error', '');
+  view.profileTask = request('/api/ai/profile' + (generate ? '/generate' : ''), body).then(result => {
+    if (ai !== view) return;
+    view.profile = result.profile;
+    renderAIProfile();
+  }).catch(error => {
+    if (ai === view) setError('ai-drawer-error', error.message);
+  }).finally(() => {
+    view.profileTask = null;
+    if (ai === view) syncAIControls();
+  });
+  syncAIControls();
+}
+
+function newAISession(source = null) {
+  if (ai.sending) return false;
+  ai.session = null;
+  ai.source = source;
+  ai.pins = new Set(source ? [source.id] : []);
+  ai.requestKey = null;
+  $('ai-drawer-input').value = '';
+  $('ai-use-all-notes').checked = true;
+  setError('ai-drawer-error', '');
+  ai.loadSeq++;
+  showAIPanel(null);
+  closeNotePicker();
+  renderAIThread();
+  renderAIPins();
+  return true;
+}
+
+async function selectAISession(id) {
+  const view = ai;
+  if (view.sending || view.loadingSession) return;
+  view.loadingSession = true;
+  syncAIControls();
+  try {
+    const result = await request('/api/ai/sessions/' + id);
+    if (ai !== view || !newAISession()) return;
+    view.session = result.session;
+    renderAIThread();
+    $('ai-drawer-input').focus({ preventScroll: true });
+  } catch (error) {
+    if (ai === view) setError('ai-drawer-error', error.message);
+  } finally {
+    view.loadingSession = false;
+    if (ai === view) syncAIControls();
+  }
+}
+
+async function deleteAISession(id) {
+  const view = ai;
+  if (view.session?.id === id && view.sending) return;
+  try {
+    await request('/api/ai/sessions/' + id, undefined, undefined, 'DELETE');
+    if (ai !== view) return;
+    if (view.session?.id === id) { newAISession(); showAIPanel('sessions'); }
+    view.sessions = view.sessions.filter(session => session.id !== id);
+    renderAISessions();
+  } catch (error) {
+    if (ai === view) setError('ai-drawer-error', error.message);
+  }
+}
+
+async function sendDrawerChat(event) {
+  event.preventDefault();
+  const view = ai;
+  const input = $('ai-drawer-input');
+  const message = input.value.trim();
+  if (!state.loaded || !message || view.sending || view.loadingSession) return;
+  const settings = providerSettings();
+  if (settings.provider === 'openai' && !settings.apiKey) {
+    setError('ai-drawer-error', '请先在设置里填写 OpenAI API Key。');
+    openSettings();
+    return;
+  }
+  const body = {
+    ...settings, message, referencedNoteIds: [...view.pins],
+    useAllNotes: $('ai-use-all-notes').checked,
+    ...(view.session ? { sessionId: view.session.id, expectedVersion: view.session.version } : {}),
+    ...(!view.session && view.source ? { sourceNoteId: view.source.id } : {}),
+  };
+  const signature = JSON.stringify({ ...body, apiKey: undefined });
+  if (view.requestKey?.signature !== signature) view.requestKey = { signature, id: randomUUID() };
+  const controller = new AbortController();
+  view.sending = controller;
+  syncAIControls();
+  setError('ai-drawer-error', '');
+  try {
+    if (view.profileTask) await view.profileTask;
+    if (ai !== view) return;
+    const result = await request('/api/ai/chat', { ...body, clientRequestId: view.requestKey.id }, controller.signal);
+    if (ai !== view) return;
+    view.session = result.session;
+    view.sessions = [view.session, ...view.sessions.filter(session => session.id !== view.session.id)].slice(0, 50);
+    view.requestKey = null;
+    input.value = '';
+    renderAIThread();
+    renderAISessions();
+  } catch (error) {
+    if (ai !== view) return;
+    if (error.status === 409) {
+      if (error.current) view.session = error.current;
+      else if (error.deleted) view.session = null;
+      renderAIThread();
+    }
+    setError('ai-drawer-error', error.message);
+  } finally {
+    view.sending = null;
+    if (ai === view) syncAIControls();
+  }
+}
+
+function promoteNoteChat() {
+  const note = state.notes.get(state.noteID);
+  if (!note || ai.sending || ai.loadingSession || !mayCloseNote()) return;
+  closeNote(true);
+  if (!newAISession(note)) return;
+  closeRandomWalk();
+  openAIDrawer();
+}
+
+const walkResize = new ResizeObserver(drawWalkLinks);
+walkResize.observe($('rw-stage'));
+$('rw-related').addEventListener('scroll', drawWalkLinks, { passive: true });
+$('ai-drawer-form').addEventListener('submit', sendDrawerChat);
+$('ai-note-picker-search').addEventListener('input', renderNotePicker);
+$('ai-drawer-input').addEventListener('input', event => {
+  const input = event.target;
+  const index = input.selectionStart - 1;
+  if (!event.isComposing && event.data === '@' && input.value[index] === '@') openNotePicker('', index);
+});
+$('sign-out').addEventListener('click', resetAccount);
+
 const actions = {
+  'open-random-walk': openRandomWalk,
+  'rw-close': () => closeRandomWalk(),
+  'rw-shuffle': shuffleWalk,
+  'rw-pivot': (button) => pivotWalk(button.dataset.noteId),
+  'rw-prev': () => {
+    while (rw.history.length) {
+      const previous = rw.history.pop();
+      if (state.notes.has(previous)) { pivotWalk(previous, false); return; }
+    }
+    $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = true;
+  },
+  'rw-zoom-in': () => { rw.zoom = Math.min(1.8, rw.zoom + 0.15); applyWalkZoom(); },
+  'rw-zoom-out': () => { rw.zoom = Math.max(0.55, rw.zoom - 0.15); applyWalkZoom(); },
+  'rw-center': () => { rw.zoom = 1; applyWalkZoom(); },
+  'rw-edit-focus': () => walkNoteAction('edit'),
+  'rw-chat-focus': () => walkNoteAction('chat'),
+  'rw-copy-focus': () => walkNoteAction('copy'),
+  'rw-delete-focus': () => walkNoteAction('delete'),
+  'toggle-ai-drawer': () => $('ai-drawer').hidden ? openAIDrawer() : closeAIDrawer(true),
+  'ai-toggle-sessions': () => toggleAIPanel('sessions'),
+  'ai-open-profile': () => toggleAIPanel('profile'),
+  'ai-new-session': () => { if (!ai.loadingSession && newAISession()) $('ai-drawer-input').focus({ preventScroll: true }); },
+  'ai-select-session': (button) => selectAISession(button.dataset.sessionId),
+  'ai-delete-session': (button) => deleteAISession(button.dataset.sessionId),
+  'ai-generate-profile': () => editAIProfile(true),
+  'ai-save-profile': () => editAIProfile(false),
+  'ai-pick-note': () => $('ai-note-picker').hidden ? openNotePicker() : closeNotePicker(true),
+  'promote-note-chat': promoteNoteChat,
   'open-import': openImport,
   'open-flomo-import': openFlomoImport,
   'open-settings': openSettings,
@@ -2377,10 +2852,6 @@ const actions = {
   },
   'toggle-sort': () => {
     state.sortOrder = state.sortOrder === 'newest' ? 'oldest' : 'newest';
-    renderFeedList({ reset: true });
-  },
-  'reshuffle-random': () => {
-    state.randomIds = sampleRandomNotes(state.noteIndex?.all || [], 10).map((n) => n.id);
     renderFeedList({ reset: true });
   },
   'load-more': () => appendNextPage(),
@@ -2453,6 +2924,21 @@ document.addEventListener('click', (event) => {
   if (state.tagSuggest.open && !event.target.closest('.composer-input-wrap')) closeTagSuggest();
   const button = event.target.closest('button');
   if (!button || button.disabled) return;
+  if (button.dataset.citeNoteId) {
+    if (!openNote(button.dataset.citeNoteId)) {
+      if (!state.notes.has(button.dataset.citeNoteId)) notify('这条笔记已不可用');
+    }
+    return;
+  }
+  if (button.dataset.removePin) {
+    ai.pins.delete(button.dataset.removePin);
+    renderAIPins();
+    return;
+  }
+  if (button.dataset.pickNoteId) {
+    pinFromPicker(button.dataset.pickNoteId);
+    return;
+  }
   if (button.dataset.suggestIndex !== undefined) {
     applyTagSuggest(Number(button.dataset.suggestIndex));
     return;
@@ -2596,6 +3082,13 @@ document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
   if (event.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
+    if (!$('ai-note-picker').hidden || !$('ai-drawer').hidden || !$('random-walk-overlay').hidden) {
+      event.preventDefault();
+      if (!$('ai-note-picker').hidden) closeNotePicker(true);
+      else if (!$('ai-drawer').hidden) closeAIDrawer(true);
+      else closeRandomWalk();
+      return;
+    }
     if (state.tagSuggest.open) {
       event.preventDefault();
       suppressNextTagSuggestKeyup = true;

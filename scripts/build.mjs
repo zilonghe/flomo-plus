@@ -31,9 +31,18 @@ const bundledWeRead = `const { WeReadError, listWeReadBooks, listWeReadNotes } =
 ${weRead.replace(/^export (?=(?:async function|class) )/gm, "")}
 return { WeReadError, listWeReadBooks, listWeReadNotes };
 })();`;
+const retrievalImport = /^import \{([^}]+)\} from "\.\/retrieval\.js";$/m;
+const retrievalNames = server.match(retrievalImport)?.[1];
+if (!retrievalNames) throw new Error("Worker retrieval import is missing");
+const retrieval = await readFile(new URL("src/retrieval.js", root), "utf8");
+const bundledRetrieval = `const {${retrievalNames}} = (() => {
+${retrieval.replace(/^export (?=function )/gm, "")}
+return {${retrievalNames}};
+})();`;
 const bundle = server
   .replace(marker, () => `const assets = ${JSON.stringify(assets)};`)
-  .replace(weReadImport, () => bundledWeRead);
+  .replace(weReadImport, () => bundledWeRead)
+  .replace(retrievalImport, () => bundledRetrieval);
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(new URL("server/", dist), { recursive: true });

@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
+import { createSemanticEngine } from "../src/semantic.js";
 
 const host = process.env.HOST || "127.0.0.1";
 const authToken = (process.env.PREVIEW_AUTH_TOKEN || "").trim();
@@ -40,6 +41,11 @@ for (const file of (await readdir(migrations)).filter(file => file.endsWith(".sq
   }
 }
 
+const SEMANTIC = createSemanticEngine({
+  database,
+  env: { ...process.env, EMBEDDING_CACHE_DIR: process.env.EMBEDDING_CACHE_DIR || dirname(dbPath) + "/models" },
+});
+
 const DB = {
   prepare(sql) {
     return {
@@ -68,6 +74,7 @@ const DB = {
   },
 };
 
+const env = { ...process.env, DB, SEMANTIC };
 const server = createServer(async (incoming, outgoing) => {
   try {
     if (authToken) {
@@ -106,7 +113,7 @@ const server = createServer(async (incoming, outgoing) => {
       method: incoming.method, headers,
       ...(hasBody ? { body: Readable.toWeb(incoming), duplex: "half" } : {}),
     });
-    const response = await worker.fetch(request, { ...process.env, DB });
+    const response = await worker.fetch(request, env);
     outgoing.writeHead(response.status, Object.fromEntries(response.headers));
     if (response.body) Readable.fromWeb(response.body).pipe(outgoing);
     else outgoing.end();
@@ -117,4 +124,8 @@ const server = createServer(async (incoming, outgoing) => {
 
 const portIndex = process.argv.indexOf("--port");
 const port = Number(process.env.PORT || (portIndex >= 0 && process.argv[portIndex + 1]) || 5173);
-server.listen(port, host, () => console.log(`Local preview ready on port ${port}`));
+server.listen(port, host, () => {
+  console.log(`Local preview ready on port ${port}`);
+  const accounts = database.prepare("SELECT DISTINCT account FROM journal_notes").all();
+  for (const { account } of accounts) setImmediate(() => SEMANTIC.syncAccount(account));
+});

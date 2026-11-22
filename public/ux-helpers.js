@@ -85,18 +85,20 @@ export function tokenizeBody(body) {
   return tokens;
 }
 
-export function sampleRandomNotes(notes, count = 10, rng = Math.random) {
-  const copy = [...notes];
-  const limit = Math.min(Math.max(0, count), copy.length);
-  for (let i = 0; i < limit; i++) {
-    const span = copy.length - i;
-    const offset = Math.min(span - 1, Math.max(0, Math.floor(rng() * span)));
-    const j = i + offset;
-    if (j !== i) {
-      const tmp = copy[i];
-      copy[i] = copy[j];
-      copy[j] = tmp;
-    }
+export function appendCitedText(node, text, citations = []) {
+  const refs = new Map(citations.map(citation => [citation.ref, citation]));
+  let start = 0;
+  for (const match of text.matchAll(/\[(N\d+)\]/g)) {
+    const citation = refs.get(match[1]);
+    if (!citation) continue;
+    const button = node.ownerDocument.createElement('button');
+    button.type = 'button';
+    button.className = 'citation-chip';
+    button.dataset.citeNoteId = citation.noteId;
+    button.textContent = match[0];
+    button.title = citation.bookTitle || '查看原笔记';
+    node.append(text.slice(start, match.index), button);
+    start = match.index + match[0].length;
   }
-  return copy.slice(0, limit);
+  node.append(text.slice(start));
 }
