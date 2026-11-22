@@ -21,6 +21,7 @@ const state = {
   feedItems: [],
   feedRendered: 0,
   inlineEdit: null,
+  orphanDraft: null,
   inlineDeleteId: null,
   openMenuId: null,
   tagSuggest: { open: false, items: [], activeIndex: 0, start: 0, end: 0 },
@@ -179,8 +180,8 @@ async function refresh({ silent = false } = {}) {
     setAuthNotice('');
     $('note-body').disabled = false;
     updateComposer();
+    reconcileInlineEditState();
     if (changed || firstLoad) {
-      syncInlineEditAfterRefresh();
       rebuildNoteIndex();
       renderFeedList({ reset: true });
     }
@@ -197,6 +198,7 @@ async function refresh({ silent = false } = {}) {
       state.bookFilter = null;
       state.randomIds = [];
       state.inlineEdit = null;
+      state.orphanDraft = null;
       state.inlineDeleteId = null;
       state.openMenuId = null;
       closeTagSuggest();
@@ -264,6 +266,7 @@ async function mutate(change) {
   try {
     const data = await request('/api/notes', change);
     acceptVersion(data);
+    reconcileInlineEditState();
     setSync('ok', '已同步');
     rebuildNoteIndex();
     renderFeedList({ reset: true });
@@ -271,6 +274,7 @@ async function mutate(change) {
   } catch (error) {
     if (error.status === 409) {
       acceptVersion(error.current);
+      reconcileInlineEditState();
       rebuildNoteIndex();
       renderFeedList({ reset: true });
       setSync('ok', '已同步');
@@ -447,6 +451,17 @@ function renderTagNode(node) {
   return wrap;
 }
 
+function sortTagTree(nodes, sortMode) {
+  const compare = sortMode === 'alpha'
+    ? (a, b) => a.name.localeCompare(b.name, 'zh-CN')
+    : (a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN');
+  nodes.sort(compare);
+  for (const node of nodes) {
+    if (node.children.length) sortTagTree(node.children, sortMode);
+  }
+  return nodes;
+}
+
 function renderTagList() {
   const sortBtn = $('tag-sort-btn');
   if (sortBtn) sortBtn.textContent = state.tagSort === 'count' ? '按数量' : '按字母';
@@ -477,6 +492,21 @@ function syncSortButton() {
 function renderActiveFilters() {
   const box = $('active-filters');
   const chips = [];
+  const searchQuery = $('search').value.trim();
+  if (searchQuery) {
+    const chip = el('button', 'filter-chip', '搜索：' + searchQuery + ' ×');
+    chip.type = 'button';
+    chip.dataset.clearFilter = 'search';
+    chips.push(chip);
+  }
+  if (state.filter.startsWith('tag:')) {
+    const tagKey = state.filter.slice(4);
+    const tagDisplay = state.noteIndex?.tagNames.get(tagKey) || tagKey;
+    const chip = el('button', 'filter-chip', '标签：#' + tagDisplay + ' ×');
+    chip.type = 'button';
+    chip.dataset.clearFilter = 'tag';
+    chips.push(chip);
+  }
   if (state.dayFilter) {
     const chip = el('button', 'filter-chip', '日期：' + state.dayFilter + ' ×');
     chip.type = 'button';
@@ -501,11 +531,20 @@ function renderActiveFilters() {
 
 function renderOrphanDraft() {
   const box = $('inline-orphan-draft');
-  if (state.inlineEdit?.deletedRemotely) {
-    $('orphan-draft-body').value = state.inlineEdit.draft;
+  if (state.orphanDraft) {
+    $('orphan-draft-body').value = state.orphanDraft.draft;
     box.hidden = false;
   } else {
     box.hidden = true;
+  }
+}
+
+function reconcileInlineEditState() {
+  if (!state.inlineEdit) return;
+  if (!state.notes.has(state.inlineEdit.id)) {
+    state.orphanDraft = { id: state.inlineEdit.id, draft: state.inlineEdit.draft };
+    state.inlineEdit = null;
+    renderOrphanDraft();
   }
 }
 
@@ -529,6 +568,7 @@ function showEmpty(iconName, title, message, button) {
 function renderFeedList({ reset = true } = {}) {
   if (!state.noteIndex) rebuildNoteIndex();
   const index = state.noteIndex;
+  reconcileInlineEditState();
   renderOrphanDraft();
   syncNavActive();
   syncHeatmapActive();
@@ -551,10 +591,23 @@ function renderFeedList({ reset = true } = {}) {
   const query = $('search').value.trim().toLocaleLowerCase();
   let source = index.all;
   if (state.filter === 'random') {
-    if (!state.randomIds.length && index.all.length) {
-      state.randomIds = sampleRandomNotes(index.all, 10).map((n) => n.id);
+    const kept = [];
+    const seen = new Set();
+    for (const id of state.randomIds) {
+      if (state.notes.has(id) && !seen.has(id)) {
+        seen.add(id);
+        kept.push(id);
+      }
     }
-    source = state.randomIds.map((id) => state.notes.get(id)).filter(Boolean);
+    const target = Math.min(10, index.all.length);
+    if (kept.length < target) {
+      const pool = index.all.filter((n) => !seen.has(n.id));
+      for (const note of sampleRandomNotes(pool, target - kept.length)) {
+        kept.push(note.id);
+      }
+    }
+    state.randomIds = kept;
+    source = kept.map((id) => state.notes.get(id)).filter(Boolean);
   }
 
   const shown = source.filter((note) => {
@@ -565,7 +618,7 @@ function renderFeedList({ reset = true } = {}) {
       || (state.filter.startsWith('tag:') && matchesTagPrefix(index.byNote.get(note.id) || [], state.filter.slice(4)));
     if (!matchesFilter) return false;
     if (state.dayFilter && dayKey(new Date(note.createdAt)) !== state.dayFilter) return false;
-    if (state.bookFilter && (note.reading?.bookTitle || '微信读书') !== state.bookFilter) return false;
+    if (state.bookFilter && (!note.reading || (note.reading.bookTitle || '微信读书') !== state.bookFilter)) return false;
     if (!query) return true;
     const fields = [note.body, note.reading?.bookTitle, note.reading?.chapter, note.reading?.author];
     return fields.some((value) => value?.toLocaleLowerCase().includes(query));
@@ -590,22 +643,41 @@ function renderFeedList({ reset = true } = {}) {
     return;
   }
 
+  let minVisible = 0;
+  let restoreFocus = null;
   if (reset) {
+    if (state.inlineEdit) {
+      const editIdx = shown.findIndex((note) => note.id === state.inlineEdit.id);
+      if (editIdx >= FEED_PAGE_SIZE) {
+        minVisible = Math.max(state.feedRendered, Math.ceil((editIdx + 1) / FEED_PAGE_SIZE) * FEED_PAGE_SIZE);
+      }
+      const activeTa = findCardEl(state.inlineEdit.id)?.querySelector('textarea');
+      if (activeTa && document.activeElement === activeTa) {
+        restoreFocus = { start: activeTa.selectionStart, end: activeTa.selectionEnd };
+      }
+    }
     disconnectFeedObserver();
     state.feedRendered = 0;
     $('note-list').replaceChildren();
   }
-  appendNextPage();
+  appendNextPage(minVisible);
+  if (restoreFocus && state.inlineEdit) {
+    const ta = findCardEl(state.inlineEdit.id)?.querySelector('textarea');
+    if (ta) {
+      ta.focus();
+      try { ta.setSelectionRange(restoreFocus.start, restoreFocus.end); } catch {}
+    }
+  }
 }
 
-function appendNextPage() {
+function appendNextPage(minCount = 0) {
   const list = $('note-list');
   const existingMore = list.querySelector('[data-action="load-more"]');
   if (existingMore) existingMore.remove();
   disconnectFeedObserver();
 
   const start = state.feedRendered;
-  const end = Math.min(start + FEED_PAGE_SIZE, state.feedItems.length);
+  const end = Math.min(Math.max(start + FEED_PAGE_SIZE, minCount), state.feedItems.length);
   if (start < end) {
     const fragment = document.createDocumentFragment();
     const byNote = state.noteIndex?.byNote;
@@ -643,7 +715,7 @@ function rerenderCard(id) {
   const note = state.notes.get(id);
   if (!existing || !note) return null;
   const next = renderCard(note, state.noteIndex?.byNote.get(id) || [], true);
-  if (existing.classList.contains('expanded') && !state.inlineEdit?.id) {
+  if (existing.classList.contains('expanded') && state.inlineEdit?.id !== id) {
     next.classList.add('expanded');
     const btn = next.querySelector('[data-action="toggle-expand"]');
     if (btn) btn.textContent = '收起';
@@ -655,8 +727,19 @@ function rerenderCard(id) {
 function closeCardMenu() {
   if (!state.openMenuId) return;
   const prev = state.openMenuId;
+  const activeTa = state.inlineEdit?.id === prev ? findCardEl(prev)?.querySelector('textarea') : null;
+  const restore = activeTa && document.activeElement === activeTa
+    ? { start: activeTa.selectionStart, end: activeTa.selectionEnd }
+    : null;
   state.openMenuId = null;
-  rerenderCard(prev);
+  const next = rerenderCard(prev);
+  if (restore) {
+    const ta = next?.querySelector('textarea');
+    if (ta) {
+      ta.focus();
+      try { ta.setSelectionRange(restore.start, restore.end); } catch {}
+    }
+  }
 }
 
 function renderCard(note, tags = [], interactive = true, dateFormatter) {
@@ -708,6 +791,8 @@ function renderCard(note, tags = [], interactive = true, dateFormatter) {
   menuBtn.setAttribute('aria-expanded', String(menuOpen));
   menuWrap.append(menuBtn);
 
+  const isEditing = state.inlineEdit?.id === note.id;
+
   if (menuOpen) {
     const menu = el('div', 'card-menu');
     menu.setAttribute('role', 'menu');
@@ -715,6 +800,7 @@ function renderCard(note, tags = [], interactive = true, dateFormatter) {
     editItem.type = 'button';
     editItem.dataset.action = 'card-inline-edit';
     editItem.dataset.noteId = note.id;
+    editItem.disabled = Boolean(state.inlineEdit?.saving);
     const copyItem = el('button', 'card-menu-item', '复制');
     copyItem.type = 'button';
     copyItem.dataset.action = 'card-copy';
@@ -722,36 +808,39 @@ function renderCard(note, tags = [], interactive = true, dateFormatter) {
     const aiItem = el('button', 'card-menu-item', 'AI 对话');
     aiItem.type = 'button';
     aiItem.dataset.openNote = note.id;
-    const deleteItem = el('button', 'card-menu-item card-menu-danger', '删除');
-    deleteItem.type = 'button';
-    deleteItem.dataset.action = 'card-inline-delete';
-    deleteItem.dataset.noteId = note.id;
-    menu.append(editItem, copyItem, aiItem, deleteItem);
+    if (isEditing) {
+      menu.append(editItem, copyItem, aiItem);
+    } else {
+      const deleteItem = el('button', 'card-menu-item card-menu-danger', '删除');
+      deleteItem.type = 'button';
+      deleteItem.dataset.action = 'card-inline-delete';
+      deleteItem.dataset.noteId = note.id;
+      menu.append(editItem, copyItem, aiItem, deleteItem);
+    }
     menuWrap.append(menu);
   }
   meta.append(menuWrap);
   card.append(meta);
 
-  const isEditing = state.inlineEdit?.id === note.id && !state.inlineEdit.deletedRemotely;
   if (isEditing) {
     const form = el('form', 'inline-edit-form');
     const textarea = el('textarea', 'field inline-edit-textarea');
     textarea.rows = 5;
     textarea.maxLength = 40000;
     textarea.value = state.inlineEdit.draft;
+    textarea.readOnly = Boolean(state.inlineEdit.saving);
     textarea.setAttribute('aria-label', '编辑笔记');
     textarea.addEventListener('input', () => {
-      if (state.inlineEdit?.id === note.id) state.inlineEdit.draft = textarea.value;
+      if (state.inlineEdit?.id === note.id) {
+        if (state.inlineEdit.saving) return;
+        state.inlineEdit.draft = textarea.value;
+      }
     });
     textarea.addEventListener('keydown', (event) => {
       if (event.isComposing) return;
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
-        form.requestSubmit();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        cancelInlineEdit();
+        if (!state.inlineEdit?.saving) form.requestSubmit();
       }
     });
     const err = el('p', 'inline-error', state.inlineEdit.conflictError || '');
@@ -786,7 +875,7 @@ function renderCard(note, tags = [], interactive = true, dateFormatter) {
   card.append(bodyEl);
 
   const rawBody = note.body || '';
-  if (rawBody.split('\n').length >= 6 || rawBody.length > 260) {
+  if ((rawBody.match(/\n/g)?.length || 0) >= 6 || rawBody.length > 260) {
     card.classList.add('is-collapsible');
     const expandBtn = el('button', 'card-expand', '展开');
     expandBtn.type = 'button';
@@ -818,17 +907,29 @@ function renderCard(note, tags = [], interactive = true, dateFormatter) {
   return card;
 }
 
-function syncInlineEditAfterRefresh() {
-  if (!state.inlineEdit || state.inlineEdit.deletedRemotely) return;
-  if (!state.notes.has(state.inlineEdit.id)) {
-    state.inlineEdit.deletedRemotely = true;
-  }
-}
-
 function startInlineEdit(id) {
   const note = state.notes.get(id);
   if (!note) return;
-  const prevEditId = state.inlineEdit && !state.inlineEdit.deletedRemotely ? state.inlineEdit.id : null;
+  if (state.inlineEdit?.saving) {
+    closeCardMenu();
+    return;
+  }
+  if (state.inlineEdit?.id === id) {
+    closeCardMenu();
+    const ta = findCardEl(id)?.querySelector('textarea');
+    if (ta) ta.focus();
+    return;
+  }
+  if (state.inlineEdit) {
+    const currentBody = state.notes.get(state.inlineEdit.id)?.body || '';
+    if (state.inlineEdit.draft !== currentBody) {
+      if (!confirm('当前有未保存的编辑草稿，放弃并切换编辑其他笔记？')) {
+        closeCardMenu();
+        return;
+      }
+    }
+  }
+  const prevEditId = state.inlineEdit ? state.inlineEdit.id : null;
   const prevMenuId = state.openMenuId;
   const prevDelId = state.inlineDeleteId;
   state.openMenuId = null;
@@ -839,12 +940,10 @@ function startInlineEdit(id) {
     draft: note.body,
     conflictError: '',
     saving: false,
-    deletedRemotely: false,
   };
   if (prevEditId && prevEditId !== id) rerenderCard(prevEditId);
   if (prevMenuId && prevMenuId !== id && prevMenuId !== prevEditId) rerenderCard(prevMenuId);
   if (prevDelId && prevDelId !== id && prevDelId !== prevEditId && prevDelId !== prevMenuId) rerenderCard(prevDelId);
-  renderOrphanDraft();
   const card = rerenderCard(id);
   const ta = card?.querySelector('textarea');
   if (ta) {
@@ -857,21 +956,20 @@ function cancelInlineEdit() {
   if (!state.inlineEdit || state.inlineEdit.saving) return;
   const id = state.inlineEdit.id;
   state.inlineEdit = null;
-  renderOrphanDraft();
   rerenderCard(id);
 }
 
 async function submitInlineEdit(event) {
   event.preventDefault();
   const edit = state.inlineEdit;
-  if (!edit || edit.saving || edit.deletedRemotely) return;
+  if (!edit || edit.saving) return;
   const note = state.notes.get(edit.id);
   if (!note) {
-    edit.deletedRemotely = true;
-    renderOrphanDraft();
+    reconcileInlineEditState();
     return;
   }
-  const body = edit.draft.trim();
+  const submittedDraft = edit.draft;
+  const body = submittedDraft.trim();
   if (!body) {
     edit.conflictError = '笔记内容不能为空。';
     rerenderCard(edit.id);
@@ -881,22 +979,29 @@ async function submitInlineEdit(event) {
   edit.conflictError = '';
   rerenderCard(edit.id);
   try {
-    await mutate({
+    const data = await mutate({
       id: note.id,
       expectedRevision: edit.revision,
       note: notePayload({ ...note, body }),
     });
-    if (state.inlineEdit === edit) state.inlineEdit = null;
+    if (state.inlineEdit === edit) {
+      if (state.inlineEdit.draft === submittedDraft) {
+        state.inlineEdit = null;
+      } else {
+        edit.saving = false;
+        edit.revision = data?.note?.revision ?? state.notes.get(note.id)?.revision ?? edit.revision;
+      }
+    }
     rerenderCard(note.id);
-    renderOrphanDraft();
     notify('修改已同步');
   } catch (error) {
+    if (error.status === 409 && error.current?.deleted) {
+      reconcileInlineEditState();
+      return;
+    }
     if (state.inlineEdit !== edit) return;
     edit.saving = false;
-    if (error.status === 409 && error.current?.deleted) {
-      edit.deletedRemotely = true;
-      renderOrphanDraft();
-    } else if (error.status === 409 && error.current?.note) {
+    if (error.status === 409 && error.current?.note) {
       edit.revision = error.current.note.revision;
       edit.conflictError = '另一端已修改这条笔记，草稿已保留。再次点击保存将以当前内容覆盖。';
       rerenderCard(edit.id);
@@ -2176,7 +2281,8 @@ const actions = {
   'clear-filters': () => { state.dayFilter = null; state.bookFilter = null; renderFeedList({ reset: true }); },
   'toggle-tag-sort': () => {
     state.tagSort = state.tagSort === 'count' ? 'alpha' : 'count';
-    rebuildNoteIndex();
+    if (state.noteIndex) sortTagTree(state.noteIndex.tagTree, state.tagSort);
+    renderTagList();
   },
   'toggle-sort': () => {
     state.sortOrder = state.sortOrder === 'newest' ? 'oldest' : 'newest';
@@ -2197,7 +2303,7 @@ const actions = {
   'card-inline-edit': (button) => startInlineEdit(button.dataset.noteId),
   'cancel-inline-edit': cancelInlineEdit,
   'dismiss-orphan-draft': () => {
-    state.inlineEdit = null;
+    state.orphanDraft = null;
     renderOrphanDraft();
   },
   'card-copy': (button) => {
@@ -2209,6 +2315,7 @@ const actions = {
   },
   'card-inline-delete': (button) => {
     const id = button.dataset.noteId;
+    if (state.inlineEdit?.id === id) return;
     const prevDel = state.inlineDeleteId;
     state.openMenuId = null;
     state.inlineDeleteId = id;
@@ -2280,6 +2387,8 @@ document.addEventListener('click', (event) => {
   if (button.dataset.clearFilter) {
     if (button.dataset.clearFilter === 'day') state.dayFilter = null;
     if (button.dataset.clearFilter === 'book') state.bookFilter = null;
+    if (button.dataset.clearFilter === 'search') clearSearchInput();
+    if (button.dataset.clearFilter === 'tag') state.filter = 'all';
     renderFeedList({ reset: true });
     return;
   }
@@ -2359,10 +2468,21 @@ $('import-file').addEventListener('change', pickImportFile);
 $('chat-form').addEventListener('submit', sendChat);
 $('edit-form').addEventListener('submit', submitEdit);
 $('composer').addEventListener('submit', createNote);
+const TAG_SUGGEST_NAV_KEYS = new Set(['Escape', 'ArrowUp', 'ArrowDown', 'Enter', 'Tab']);
 $('note-body').addEventListener('input', syncComposerUI);
+$('note-body').addEventListener('click', updateTagSuggest);
+$('note-body').addEventListener('keyup', (event) => {
+  if (event.isComposing || TAG_SUGGEST_NAV_KEYS.has(event.key)) return;
+  updateTagSuggest();
+});
 $('note-body').addEventListener('blur', closeTagSuggest);
 $('search').addEventListener('input', () => {
   clearTimeout(searchTimer);
+  searchTimer = null;
+  if (!$('search').value.trim()) {
+    renderFeedList({ reset: true });
+    return;
+  }
   searchTimer = setTimeout(() => {
     searchTimer = null;
     renderFeedList({ reset: true });
@@ -2373,6 +2493,24 @@ $('mobile-toggle').addEventListener('click', () => sidebar(!$('sidebar').classLi
 
 document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
+  if (event.key === 'Escape') {
+    if (state.tagSuggest.open) {
+      event.preventDefault();
+      closeTagSuggest();
+      return;
+    }
+    if (state.openMenuId) {
+      event.preventDefault();
+      closeCardMenu();
+      return;
+    }
+    if (state.inlineEdit) {
+      event.preventDefault();
+      cancelInlineEdit();
+      return;
+    }
+    return;
+  }
   if (event.target.id === 'note-body' && state.tagSuggest.open) {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -2387,28 +2525,6 @@ document.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === 'Tab') {
       event.preventDefault();
       applyTagSuggest(state.tagSuggest.activeIndex);
-      return;
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeTagSuggest();
-      return;
-    }
-  }
-  if (event.key === 'Escape') {
-    if (state.tagSuggest.open) {
-      event.preventDefault();
-      closeTagSuggest();
-      return;
-    }
-    if (state.openMenuId) {
-      event.preventDefault();
-      closeCardMenu();
-      return;
-    }
-    if (state.inlineEdit && !state.inlineEdit.deletedRemotely) {
-      event.preventDefault();
-      cancelInlineEdit();
       return;
     }
   }
