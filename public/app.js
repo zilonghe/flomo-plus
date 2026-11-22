@@ -769,16 +769,20 @@ function openImport() {
 
 function resetWereadImport() {
   state.wereadImport?.controller?.abort();
+  state.wereadImport?.batchController?.abort();
   state.wereadImport = {
     account: state.user?.id,
-    books: [], nextCursor: null, queried: false, controller: null,
-    preview: null, saving: false,
+    books: [], selected: new Set(), nextCursor: null, queried: false, controller: null,
+    batchController: null, preview: null, saving: false,
   };
   $('weread-key').value = '';
   $('weread-connect-submit').disabled = false;
   $('weread-key').disabled = false;
   $('weread-connect').hidden = false;
   $('weread-books').hidden = true;
+  $('weread-books-bar').hidden = true;
+  $('weread-select-all').checked = false;
+  $('weread-select-all').indeterminate = false;
   $('weread-book-list').replaceChildren();
   $('weread-preview').hidden = true;
   $('weread-samples').replaceChildren();
@@ -820,6 +824,27 @@ function currentWereadSession(session) {
     && $('import-dialog').open && !$('weread-official').hidden;
 }
 
+function updateWereadBatchControls(session) {
+  const total = session.books.length;
+  const selected = session.selected.size;
+  const busy = session.controller !== null || session.saving;
+  $('weread-books-bar').hidden = !total;
+  const selectAll = $('weread-select-all');
+  selectAll.checked = total > 0 && selected === total;
+  selectAll.indeterminate = selected > 0 && selected < total;
+  selectAll.disabled = busy;
+  const batchButton = $('weread-batch-save');
+  if (session.saving) {
+    batchButton.textContent = '停止导入';
+    batchButton.disabled = !session.batchController || session.batchController.signal.aborted;
+  } else {
+    batchButton.textContent = selected > 0 && selected < total
+      ? '导入所选 (' + selected + ' 本)'
+      : '导入全部 (' + total + ' 本)';
+    batchButton.disabled = !total || session.controller !== null;
+  }
+}
+
 function renderWereadBooks() {
   const session = state.wereadImport;
   if (!session) return;
@@ -827,21 +852,31 @@ function renderWereadBooks() {
   $('weread-books').hidden = !session.queried || session.preview !== null;
   $('weread-preview').hidden = session.preview === null;
   if (session.preview) return;
-  $('weread-books-status').textContent = session.books.length ? '选择一本书预览笔记' : '没有找到有笔记的书。';
+  const busy = session.controller !== null || session.saving;
+  $('weread-books-status').textContent = session.books.length
+    ? '勾选批量导入，或点击单本书预览（共 ' + session.books.length + ' 本）'
+    : '没有找到有笔记的书。';
   $('weread-book-list').replaceChildren(...session.books.map(({ id, title, author, noteCount, reviewCount }) => {
+    const check = el('input', 'weread-book-check');
+    check.type = 'checkbox';
+    check.dataset.bookSelect = id;
+    check.checked = session.selected.has(id);
+    check.disabled = busy;
+    check.setAttribute('aria-label', '选择《' + title + '》');
     const button = el('button', 'weread-book');
     button.type = 'button';
     button.dataset.action = 'weread-book';
     button.dataset.book = id;
-    button.disabled = session.controller !== null;
+    button.disabled = busy;
     const counts = [author, '划线 ' + noteCount, '想法及点评 ' + reviewCount].filter(Boolean).join(' · ');
     button.append(el('strong', '', title), el('span', '', counts));
-    const item = el('li');
-    item.append(button);
+    const item = el('li', 'weread-book-item');
+    item.append(check, button);
     return item;
   }));
   $('weread-more').hidden = session.nextCursor === null;
-  $('weread-more').disabled = session.controller !== null;
+  $('weread-more').disabled = busy;
+  updateWereadBatchControls(session);
 }
 
 function renderWereadPreview(session) {
@@ -902,17 +937,186 @@ async function readWeread(path, parameters, progress, apply) {
   }
 }
 
-function loadWereadBooks(more = false) {
-  const cursor = state.wereadImport?.nextCursor;
-  if (more && !Number.isSafeInteger(cursor)) return;
-  readWeread('books', more ? { lastSort: cursor } : {}, '正在读取有笔记的书籍…', (session, data) => {
-    if (!Array.isArray(data.books)) throw new Error('无法读取书籍列表，请重试。');
-    const books = new Map((more ? session.books : []).map((book) => [book.id, book]));
-    for (const book of data.books) books.set(book.id, book);
-    session.books = [...books.values()];
-    session.queried = true;
-    session.nextCursor = Number.isSafeInteger(data.nextCursor) && (!more || data.nextCursor !== cursor) ? data.nextCursor : null;
+function sleepWithSignal(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason || new DOMException('Aborted', 'AbortError')); return; }
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+async function requestWithTimeout(path, body, parentSignal, ms = 45000) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parentSignal.reason);
+  if (parentSignal?.aborted) { controller.abort(parentSignal.reason); }
+  else parentSignal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(new DOMException('Timeout', 'TimeoutError')), ms);
+  try {
+    return await request(path, body, controller.signal);
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', onAbort);
+  }
+}
+
+async function loadWereadBooks(more = false) {
+  const session = state.wereadImport;
+  if (!currentWereadSession(session) || session.controller || session.saving) return;
+  const apiKey = $('weread-key').value.trim();
+  setError('weread-error', '');
+  setError('weread-progress', '');
+  if (!/^wrk-\S+$/u.test(apiKey)) {
+    setError('weread-error', '请输入从微信读书获取的 API Key，以 wrk- 开头。');
+    $('weread-key').focus();
+    return;
+  }
+  let cursor = more ? session.nextCursor : null;
+  if (more && !Number.isSafeInteger(cursor)) return;
+  const controller = new AbortController();
+  session.controller = controller;
+  $('weread-key').disabled = $('weread-connect-submit').disabled = true;
+  renderWereadBooks();
+  const books = new Map((more ? session.books : []).map((book) => [book.id, book]));
+  if (!more) session.selected.clear();
+  try {
+    // Load up to 25 pages (~1000 books) automatically so "Import All" covers the full bookshelf.
+    for (let page = 0; page < 25; page++) {
+      setError('weread-progress', books.size ? '正在读取书籍列表（已找到 ' + books.size + ' 本）…' : '正在读取有笔记的书籍…');
+      const data = await requestWithTimeout('/api/weread/books', cursor == null ? { apiKey } : { apiKey, lastSort: cursor }, controller.signal);
+      if (!currentWereadSession(session) || controller.signal.aborted) return;
+      if (!Array.isArray(data.books)) throw new Error('无法读取书籍列表，请重试。');
+      for (const book of data.books) books.set(book.id, book);
+      session.books = [...books.values()];
+      session.queried = true;
+      const next = Number.isSafeInteger(data.nextCursor) && data.nextCursor !== cursor ? data.nextCursor : null;
+      session.nextCursor = next;
+      if (next === null) break;
+      cursor = next;
+      await sleepWithSignal(120, controller.signal);
+    }
+  } catch (error) {
+    if (currentWereadSession(session) && session.controller === controller) {
+      const message = error.name === 'AbortError' || error.name === 'TimeoutError' ? '读取超时，请重试。' : error.message;
+      setError('weread-error', message);
+    }
+  } finally {
+    if (state.wereadImport === session && session.controller === controller) {
+      session.controller = null;
+      $('weread-key').disabled = $('weread-connect-submit').disabled = false;
+      setError('weread-progress', '');
+      renderWereadBooks();
+    }
+  }
+}
+
+async function saveSelectedWereadBooks() {
+  const session = state.wereadImport;
+  if (!session || !currentWereadSession(session) || session.controller) return;
+  if (session.saving) {
+    session.batchController?.abort();
+    updateWereadBatchControls(session);
+    return;
+  }
+  const targets = session.selected.size
+    ? session.books.filter((book) => session.selected.has(book.id))
+    : [...session.books];
+  if (!targets.length) return;
+  const apiKey = $('weread-key').value.trim();
+  setError('weread-error', '');
+  setError('weread-progress', '');
+  if (!/^wrk-\S+$/u.test(apiKey)) {
+    setError('weread-error', '请输入从微信读书获取的 API Key，以 wrk- 开头。');
+    $('weread-key').focus();
+    return;
+  }
+  const batchController = new AbortController();
+  session.saving = true;
+  session.batchController = batchController;
+  $('weread-key').disabled = $('weread-connect-submit').disabled = true;
+  $('weread-mode-manual').disabled = $('weread-mode-official').disabled = true;
+  const close = $('import-dialog').querySelector('[data-close="import-dialog"]');
+  close.disabled = true;
+  renderWereadBooks();
+
+  let doneBooks = 0;
+  let totalSaved = 0;
+  let totalDuplicated = 0;
+  let totalSkipped = 0;
+  const failed = [];
+  const remainingIds = new Set(targets.map((book) => book.id));
+  let stopped = false;
+
+  try {
+    for (let index = 0; index < targets.length; index++) {
+      if (batchController.signal.aborted || !currentWereadSession(session)) { stopped = true; break; }
+      const book = targets[index];
+      const prefix = '第 ' + (index + 1) + '/' + targets.length + ' 本《' + book.title + '》：';
+      setError('weread-progress', prefix + '正在读取笔记…');
+      let data;
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            data = await requestWithTimeout('/api/weread/notes', { apiKey, bookId: book.id }, batchController.signal);
+            break;
+          } catch (error) {
+            if (error.status === 429 && attempt === 0 && !batchController.signal.aborted) {
+              setError('weread-progress', prefix + '触发限流，稍候重试…');
+              await sleepWithSignal(2500, batchController.signal);
+              continue;
+            }
+            throw error;
+          }
+        }
+        if (!Array.isArray(data?.notes)) throw new Error('无法读取该书笔记');
+        const existing = new Set([...state.notes.values()].filter((note) => note.reading).map(importKey));
+        const { pending, duplicated, skippedLarge } = prepareBulkNotes(data.notes, (note) => existing.has(importKey(note)));
+        const preview = {
+          account: session.account, book, prefix, pending, duplicated, skippedLarge,
+          total: pending.length, saved: 0, skippedDuringSave: 0, skipped: data.skipped || 0,
+        };
+        if (preview.pending.length) {
+          await saveBulkNotes(preview, '/api/import/weread', 'weread-progress');
+        }
+        doneBooks++;
+        totalSaved += preview.saved;
+        totalDuplicated += preview.duplicated + preview.skippedDuringSave;
+        totalSkipped += preview.skipped + preview.skippedLarge;
+        remainingIds.delete(book.id);
+      } catch (error) {
+        if (batchController.signal.aborted) { stopped = true; break; }
+        failed.push('《' + book.title + '》：' + error.message);
+        if (error.status === 400 || error.status === 401 || error.status === 403 || error.status === 503) break;
+      }
+      if (index + 1 < targets.length && !batchController.signal.aborted) {
+        try { await sleepWithSignal(250, batchController.signal); } catch { stopped = true; break; }
+      }
+    }
+  } finally {
+    session.saving = false;
+    session.batchController = null;
+    $('weread-key').disabled = $('weread-connect-submit').disabled = false;
+    $('weread-mode-manual').disabled = $('weread-mode-official').disabled = close.disabled = false;
+    session.selected = remainingIds;
+    if (currentWereadSession(session)) {
+      renderWereadBooks();
+      if (totalSaved > 0) {
+        state.filter = 'reading';
+        $('search').value = '';
+        renderFeed();
+      }
+      const parts = [
+        (stopped ? '已停止：完成 ' : '已完成 ') + doneBooks + ' / ' + targets.length + ' 本',
+        '导入 ' + totalSaved + ' 条',
+      ];
+      if (totalDuplicated) parts.push('跳过已存在 ' + totalDuplicated + ' 条');
+      if (totalSkipped) parts.push('忽略无效 ' + totalSkipped + ' 条');
+      setError('weread-progress', parts.join('，') + '。');
+      if (failed.length) {
+        setError('weread-error', failed.length + ' 本导入失败（已保留勾选方便重试）：' + failed.slice(0, 3).join('；') + (failed.length > 3 ? '…' : ''));
+      }
+    }
+  }
 }
 
 function previewWereadBook(button) {
@@ -1170,7 +1374,7 @@ function prepareBulkNotes(notes, isDuplicate = () => false) {
 
 function updateBulkProgress(preview, statusId, completed = 0) {
   const processed = preview.total - preview.pending.length + completed;
-  setError(statusId, '已处理 ' + processed + ' / ' + preview.total + ' 条，已导入 ' + preview.saved + ' 条。');
+  setError(statusId, (preview.prefix || '') + '已处理 ' + processed + ' / ' + preview.total + ' 条，已导入 ' + preview.saved + ' 条。');
 }
 
 async function saveBulkNotes(preview, path, statusId) {
@@ -1306,6 +1510,7 @@ const actions = {
   'weread-mode-official': () => setWereadMode(false),
   'weread-mode-manual': () => setWereadMode(true),
   'weread-more': () => loadWereadBooks(true),
+  'weread-batch-save': saveSelectedWereadBooks,
   'weread-book': previewWereadBook,
   'weread-back': backToWereadBooks,
   'weread-save': saveWereadNotes,
@@ -1348,11 +1553,27 @@ $('settings-form').addEventListener('submit', saveSettings);
 $('chat-provider').addEventListener('change', updateAISettings);
 $('import-form').addEventListener('submit', importNotes);
 $('weread-connect').addEventListener('submit', (event) => { event.preventDefault(); loadWereadBooks(); });
+$('weread-select-all').addEventListener('change', (event) => {
+  const session = state.wereadImport;
+  if (!session || session.controller || session.saving) return;
+  session.selected = event.target.checked ? new Set(session.books.map((book) => book.id)) : new Set();
+  for (const box of $('weread-book-list').querySelectorAll('.weread-book-check')) box.checked = event.target.checked;
+  updateWereadBatchControls(session);
+});
+$('weread-book-list').addEventListener('change', (event) => {
+  const box = event.target.closest('.weread-book-check');
+  const session = state.wereadImport;
+  if (!box || !session || session.controller || session.saving) return;
+  if (box.checked) session.selected.add(box.dataset.bookSelect);
+  else session.selected.delete(box.dataset.bookSelect);
+  updateWereadBatchControls(session);
+});
 $('weread-key').addEventListener('input', () => {
   const session = state.wereadImport;
   if (!session?.queried) return;
   session.queried = false;
   session.books = [];
+  session.selected.clear();
   session.nextCursor = null;
   renderWereadBooks();
   setError('weread-error', '');
@@ -1388,7 +1609,7 @@ if (/Mac|iPhone|iPad/.test(navigator.platform)) {
   $('search-shortcut').textContent = '⌘ K';
 }
 window.addEventListener('focus', () => refresh({ silent: true }));
-window.addEventListener('pagehide', () => { $('weread-key').value = ''; state.wereadImport?.controller?.abort(); });
+window.addEventListener('pagehide', () => { $('weread-key').value = ''; state.wereadImport?.controller?.abort(); state.wereadImport?.batchController?.abort(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh({ silent: true }); });
 setInterval(() => { if (!document.hidden) refresh({ silent: true }); }, 15000);
 refresh();

@@ -155,8 +155,13 @@ hr{border:0;border-top:1px solid var(--line);margin:18px 0}
 .weread-key-help a{color:var(--green-dark);text-decoration:underline;text-underline-offset:2px}
 .weread-results{border-top:1px solid var(--line);margin-top:15px;padding-top:13px}
 .weread-results h3{font-size:15px;margin:0 0 5px;overflow-wrap:anywhere}
+.weread-books-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px}
+.weread-books-bar[hidden]{display:none}
+.weread-select-all{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink);cursor:pointer;user-select:none}
+.weread-select-all input,.weread-book-check{width:15px;height:15px;margin:0;accent-color:var(--green-dark);cursor:pointer;flex:none}
 .weread-book-list{display:grid;gap:5px;list-style:none;padding:0;margin:6px 0;max-height:320px;overflow:auto}
-.weread-book{width:100%;display:grid;gap:3px;text-align:left;padding:8px 9px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);overflow-wrap:anywhere}
+.weread-book-item{display:flex;align-items:center;gap:8px}
+.weread-book{flex:1;min-width:0;width:100%;display:grid;gap:3px;text-align:left;padding:8px 9px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);overflow-wrap:anywhere}
 .weread-book:hover:not(:disabled){background:var(--soft);border-color:#b7ddc3}
 .weread-book span{color:var(--muted);font-size:12px;line-height:1.45}
 #weread-more{margin-top:4px}

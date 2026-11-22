@@ -167,6 +167,10 @@
           <p class="help-text weread-key-help" id="weread-key-help"><a href="https://weread.qq.com/r/weread-skills" target="_blank" rel="noopener noreferrer">获取官方 API Key</a>。密钥仅用于本次读取。</p>
         </form>
         <section id="weread-books" class="weread-results" aria-label="有笔记的书" hidden>
+          <div class="weread-books-bar" id="weread-books-bar" hidden>
+            <label class="weread-select-all"><input type="checkbox" id="weread-select-all"><span>全选</span></label>
+            <button class="button button-primary" id="weread-batch-save" type="button" data-action="weread-batch-save"></button>
+          </div>
           <p class="help-text" id="weread-books-status"></p>
           <ul class="weread-book-list" id="weread-book-list"></ul>
           <button class="button button-secondary" id="weread-more" type="button" data-action="weread-more" hidden>加载更多书籍</button>
