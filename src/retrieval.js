@@ -13,7 +13,11 @@ export function tokenizeForFts(text) {
 }
 
 export function buildFtsQuery(query) {
-  return tokenizeForFts(query).map(token => '"' + token + '"').join(' OR ');
+  return ftsQueryForTokens(tokenizeForFts(query));
+}
+
+export function ftsQueryForTokens(tokens) {
+  return tokens.map(token => '"' + token + '"').join(' OR ');
 }
 
 export function normalizeVector(arr) {
@@ -61,15 +65,18 @@ export function extractNoteTags(body) {
     .map(([, tag]) => tag.toLowerCase()).filter(tag => /[^\p{N}]/u.test(tag)))];
 }
 
-function sharedNoteTags(a, b) {
-  const tags = new Set(extractNoteTags(b.body));
-  return extractNoteTags(a.body).filter(tag => tags.has(tag));
+export function noteMetadata(note) {
+  return { tags: extractNoteTags(note.body), bookTitle: note.reading?.bookTitle?.trim().toLowerCase(), createdAt: note.createdAt };
+}
+
+function metaScore(a, b, sharedTags) {
+  const sameBook = a.bookTitle && a.bookTitle === b.bookTitle;
+  return Math.min(1, (sameBook ? 0.7 : 0) + sharedTags.length * 0.35);
 }
 
 export function metaOverlapScore(a, b) {
-  const book = a.reading?.bookTitle?.trim().toLowerCase();
-  const sameBook = book && book === b.reading?.bookTitle?.trim().toLowerCase();
-  return Math.min(1, (sameBook ? 0.7 : 0) + sharedNoteTags(a, b).length * 0.35);
+  const left = noteMetadata(a), right = noteMetadata(b);
+  return metaScore(left, right, left.tags.filter(tag => right.tags.includes(tag)));
 }
 
 export function fuseHybridScore({ cosine = 0, ftsNorm = 0, metaOverlap = 0, hasVectors, isQuery }) {
@@ -82,34 +89,51 @@ export function tokenOverlap(queryTokens, noteTokens, isQuery) {
   return matches / (isQuery ? queryTokens.size || 1 : Math.sqrt(queryTokens.size * noteTokens.length) || 1);
 }
 
-export function rankNotes(notes, { focus, query, limit = 10, excludeIds = [], vector, vectors, matches } = {}) {
-  const isQuery = !focus;
+export function rankNoteIds(metadata, { focusId, queryTokens, limit = 10, excludeIds = [], vector, vectors, matches }) {
+  const isQuery = focusId === undefined;
+  const focus = metadata.get(focusId);
   const excluded = new Set(excludeIds);
-  if (focus) excluded.add(focus.id);
-  const tokens = new Set(tokenizeForFts(focus ? noteIndexText(focus) : query));
+  if (!isQuery) excluded.add(focusId);
+  const tokens = new Set(queryTokens);
   if (isQuery && !tokens.size) return [];
-  return notes.filter(note => !excluded.has(note.id)).map(note => {
-    const candidateVector = vectors?.get(note.id)?.vector;
+  const ranked = [];
+  for (const [id, note] of metadata) {
+    if (excluded.has(id)) continue;
+    const candidateVector = vectors?.get(id)?.vector;
     const hasVectors = Boolean(vector && candidateVector && vector.length === candidateVector.length);
-    const noteTokens = matches ? matches.get(note.id) : tokenizeForFts(noteIndexText(note));
+    const noteTokens = matches.get(id);
+    const sharedTags = focus?.tags.length && note.tags.length ? focus.tags.filter(tag => note.tags.includes(tag)) : [];
     const score = fuseHybridScore({
       cosine: hasVectors ? cosineSimilarity(vector, candidateVector) : 0,
       ftsNorm: noteTokens ? tokenOverlap(tokens, noteTokens, isQuery) : 0,
-      metaOverlap: focus ? metaOverlapScore(focus, note) : 0,
+      metaOverlap: focus ? metaScore(focus, note, sharedTags) : 0,
       hasVectors, isQuery,
     });
-    return { id: note.id, note, score, relevancePercent: Math.round(score * 100), sharedTags: focus ? sharedNoteTags(focus, note) : [] };
-  }).filter(item => !isQuery || item.score > 0)
-    .sort((a, b) => b.score - a.score || String(b.note.createdAt).localeCompare(String(a.note.createdAt)) || a.id.localeCompare(b.id))
+    if (score > 0) ranked.push({ id, score, relevancePercent: Math.round(score * 100), sharedTags });
+  }
+  return ranked.sort((a, b) => b.score - a.score || String(metadata.get(b.id).createdAt).localeCompare(String(metadata.get(a.id).createdAt)) || a.id.localeCompare(b.id))
     .slice(0, limit);
 }
 
+function rankLexicalNotes(notes, queryTokens, opts, focus) {
+  const byId = new Map(), metadata = new Map(), matches = new Map();
+  for (const note of notes) {
+    byId.set(note.id, note);
+    metadata.set(note.id, noteMetadata(note));
+    matches.set(note.id, tokenizeForFts(noteIndexText(note)));
+  }
+  if (focus) metadata.set(focus.id, noteMetadata(focus));
+  return rankNoteIds(metadata, { ...opts, queryTokens, matches, focusId: focus?.id })
+    .map(item => ({ ...item, note: byId.get(item.id) }));
+}
+
 export function lexicalFallbackRelated(focusNote, allNotes, limit) {
-  return rankNotes(allNotes, { focus: focusNote, limit });
+  return rankLexicalNotes(allNotes, tokenizeForFts(noteIndexText(focusNote)), { limit }, focusNote);
 }
 
 export function lexicalFallbackSearch(query, allNotes, opts) {
-  return rankNotes(allNotes, { ...opts, query });
+  const tokens = tokenizeForFts(query);
+  return tokens.length ? rankLexicalNotes(allNotes, tokens, opts) : [];
 }
 
 export function escapeContextTags(text) {

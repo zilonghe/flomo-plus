@@ -109,11 +109,14 @@ const server = createServer(async (incoming, outgoing) => {
     headers.set("oai-authenticated-user-full-name-encoding", "percent-encoded-utf-8");
     const url = new URL(incoming.url, `http://${incoming.headers.host}`);
     const hasBody = incoming.method !== "GET" && incoming.method !== "HEAD";
+    const controller = new AbortController();
+    outgoing.once("close", () => { if (!outgoing.writableFinished) controller.abort(); });
     const request = new Request(url, {
-      method: incoming.method, headers,
+      method: incoming.method, headers, signal: controller.signal,
       ...(hasBody ? { body: Readable.toWeb(incoming), duplex: "half" } : {}),
     });
     const response = await worker.fetch(request, env);
+    if (controller.signal.aborted) return;
     outgoing.writeHead(response.status, Object.fromEntries(response.headers));
     if (response.body) Readable.fromWeb(response.body).pipe(outgoing);
     else outgoing.end();

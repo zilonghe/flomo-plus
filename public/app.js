@@ -43,6 +43,7 @@ const state = {
   model: 'gpt-4.1-mini',
   chatProvider: 'openai',
   codexAvailable: false,
+  codexMode: null,
   apiKey: '',
 };
 
@@ -160,6 +161,7 @@ let accountEpoch = 0;
 function resetAccount() {
   accountEpoch++;
   ai.sending?.abort();
+  ai.profileRequest?.abort();
   resetAIDrawer();
   closeRandomWalk({ restore: false });
   state.user = null;
@@ -178,6 +180,7 @@ function resetAccount() {
   state.apiKey = '';
   state.chatProvider = 'openai';
   state.codexAvailable = false;
+  state.codexMode = null;
   state.composeDraft = null;
   $('note-body').value = '';
   clearSearchInput();
@@ -212,6 +215,7 @@ async function refresh({ silent = false } = {}) {
       if (!result.user) throw new ApiError(401, null, '请先登录。');
       state.user = result.user;
       state.codexAvailable = result.codexAvailable === true;
+      state.codexMode = result.codexMode;
       state.chatProvider = state.codexAvailable ? 'codex' : 'openai';
       updateProfile();
     }
@@ -1286,6 +1290,7 @@ function openNote(id) {
   setError('detail-error', '');
   setError('chat-error', '');
   renderDetail();
+  refreshNoteChatProfile();
   if (!dialog.open) dialog.showModal();
   dialog.querySelector('.dialog-scroll').scrollTop = 0;
   return true;
@@ -1393,12 +1398,32 @@ function chatCard(turn, index, body, saved = true) {
   return card;
 }
 
+function updateNoteChatPrivacy() {
+  const destination = providerSettings().provider === 'openai' ? 'OpenAI'
+    : state.codexMode === 'gateway' ? 'Codex 服务端网关' : 'Codex 中转';
+  const materials = ['当前笔记', '近期对话'];
+  if ($('note-chat-related').checked) {
+    materials.push('匹配的历史笔记');
+    if (ai.profile === undefined) materials.push('个人画像（如已启用）');
+    else if (ai.profile?.enabled && ai.profile.content.trim()) materials.push('长期个人画像');
+  }
+  $('chat-privacy').textContent = '发送给 ' + destination + '：' + materials.join('、') + '。';
+}
+
+async function refreshNoteChatProfile() {
+  const view = ai;
+  const previous = view.profile;
+  if (view.profileTask) return;
+  const result = await request('/api/ai/profile').catch(() => null);
+  if (ai !== view || view.profileTask || view.profile !== previous) return;
+  view.profile = result?.profile;
+  updateNoteChatPrivacy();
+}
+
 function renderChat(note) {
   const turns = note.turns || [];
   const thread = $('chat-thread');
-  $('chat-privacy').textContent = state.chatProvider === 'codex'
-    ? '发送时会把当前笔记和近期对话交给私有主机上的 Codex。'
-    : '发送时会把当前笔记和近期对话提交给 OpenAI。';
+  updateNoteChatPrivacy();
   thread.replaceChildren(...turns.map((turn, index) => chatCard(turn, index, note.body)));
   $('chat-starters').hidden = Boolean(turns.length || state.chatRequest || state.unsavedChat);
   if (state.chatRequest) thread.append(el('p', 'help-text', 'AI 正在回复…'), actionButton('停止', 'cancel-chat'));
@@ -1532,7 +1557,7 @@ async function saveExcerpt(turnIndex) {
 function updateAISettings() {
   const select = $('chat-provider');
   select.querySelector('option[value=codex]').disabled = !state.codexAvailable;
-  $('codex-status').textContent = state.codexAvailable
+  $('codex-status').textContent = state.codexMode === 'gateway' ? '已配置 Codex 服务端网关。' : state.codexAvailable
     ? 'Codex 中转已配置。通过主机登录的 ChatGPT 账号使用 Codex。'
     : 'Codex 中转未配置。启动私有中转并在站点中配置后，即可选择。';
   const usingOpenAI = select.value !== 'codex';
@@ -2343,7 +2368,7 @@ function drawWalkLinks() {
   const x = value => Math.round((value - bounds.left) / rw.zoom);
   const y = value => Math.round((value - bounds.top) / rw.zoom);
   const from = focus.getBoundingClientRect();
-  const paths = Array.from($('rw-related').children, (card) => {
+  const paths = Array.from($('rw-related').querySelectorAll('.rw-related-card'), (card) => {
     const to = card.getBoundingClientRect();
     const path = document.createElementNS(SVG_NS, 'path');
     if (to.left >= from.right) {
@@ -2389,16 +2414,17 @@ async function pivotWalk(id, remember = true) {
     const result = await request('/api/notes/' + id + '/related?limit=10');
     if (seq !== rw.seq) return;
     $('rw-focus').replaceChildren(walkFocusCard(result.focus));
-    $('rw-related').replaceChildren(...result.related.map(({ note, id: relatedId, relevancePercent }) => {
+    const cards = result.related.map(({ note, id: relatedId, relevancePercent }) => {
       const button = el('button', 'rw-related-card');
       button.type = 'button';
       button.dataset.action = 'rw-pivot';
       button.dataset.noteId = relatedId;
       button.append(el('span', 'rw-related-text', note.body.slice(0, 140)), el('span', 'rw-score', relevancePercent + '%'));
       return button;
-    }));
+    });
+    $('rw-related').replaceChildren(...(cards.length ? cards : [el('p', 'help-text', '暂无相关笔记')]));
     $('rw-related').scrollTop = 0;
-    setError('rw-status', result.related.length ? '' : '还没有其他笔记。');
+    setError('rw-status', '');
     drawWalkLinks();
   } catch (error) {
     if (seq === rw.seq) setError('rw-status', error.message);
@@ -2466,8 +2492,8 @@ function walkNoteAction(action) {
 }
 
 function emptyAIState() {
-  return { session: null, sessions: [], profile: null, source: null, pins: new Set(), sending: null,
-    profileTask: null, loadingSession: false, requestKey: null, selectedPanel: null, atIndex: null, loadSeq: 0 };
+  return { session: null, sessions: [], profile: undefined, source: null, pins: new Set(), sending: null,
+    profileTask: null, profileRequest: null, loadingSession: false, requestKey: null, selectedPanel: null, atIndex: null, loadSeq: 0 };
 }
 let ai = emptyAIState();
 
@@ -2542,6 +2568,7 @@ function renderAIThread() {
 function renderAIProfile() {
   $('ai-profile-enabled').checked = ai.profile?.enabled ?? true;
   $('ai-profile-text').value = ai.profile?.content ?? '';
+  updateNoteChatPrivacy();
 }
 
 function renderAIPins() {
@@ -2634,13 +2661,15 @@ function editAIProfile(generate) {
     content: $('ai-profile-text').value, enabled: $('ai-profile-enabled').checked,
   };
   setError('ai-drawer-error', '');
-  view.profileTask = request('/api/ai/profile' + (generate ? '/generate' : ''), body).then(result => {
+  view.profileRequest = generate ? new AbortController() : null;
+  view.profileTask = request('/api/ai/profile' + (generate ? '/generate' : ''), body, view.profileRequest?.signal).then(result => {
     if (ai !== view) return;
     view.profile = result.profile;
     renderAIProfile();
   }).catch(error => {
-    if (ai === view) setError('ai-drawer-error', error.message);
+    if (ai === view && error.name !== 'AbortError') setError('ai-drawer-error', error.message);
   }).finally(() => {
+    view.profileRequest = null;
     view.profileTask = null;
     if (ai === view) syncAIControls();
   });
@@ -2759,6 +2788,10 @@ const walkResize = new ResizeObserver(drawWalkLinks);
 walkResize.observe($('rw-stage'));
 $('rw-related').addEventListener('scroll', drawWalkLinks, { passive: true });
 $('ai-drawer-form').addEventListener('submit', sendDrawerChat);
+$('note-chat-related').addEventListener('change', () => {
+  updateNoteChatPrivacy();
+  if ($('note-chat-related').checked) refreshNoteChatProfile();
+});
 $('ai-note-picker-search').addEventListener('input', renderNotePicker);
 $('ai-drawer-input').addEventListener('input', event => {
   const input = event.target;

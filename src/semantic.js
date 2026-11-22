@@ -1,6 +1,6 @@
 import {
-  blobToVector, buildFtsQuery, contentHashHex, normalizeVector, noteIndexText, rankNotes,
-  tokenizeForFts, vectorToBlob,
+  blobToVector, contentHashHex, ftsQueryForTokens, normalizeVector, noteIndexText, noteMetadata,
+  rankNoteIds, tokenizeForFts, vectorToBlob,
 } from './retrieval.js';
 
 function makeEmbedder(env) {
@@ -42,13 +42,16 @@ function makeEmbedder(env) {
     };
   }
   const model = env.EMBEDDING_MODEL || 'Xenova/bge-small-zh-v1.5';
-  let load;
+  let pipelinePromise = null;
   return {
     provider: 'local', model, dims: 512,
     async embed(texts, { isQuery } = {}) {
-      load ??= import('@huggingface/transformers').then(({ pipeline }) =>
-        pipeline('feature-extraction', model, { dtype: 'q8', cache_dir: env.EMBEDDING_CACHE_DIR }));
-      const extract = await load;
+      pipelinePromise ??= import('@huggingface/transformers').then(({ pipeline }) =>
+        pipeline('feature-extraction', model, { dtype: 'q8', cache_dir: env.EMBEDDING_CACHE_DIR })).catch(error => {
+        pipelinePromise = null;
+        throw error;
+      });
+      const extract = await pipelinePromise;
       const inputs = isQuery ? texts.map(text => '为这个句子生成表示以用于检索相关文章：' + text) : texts;
       return (await extract(inputs, { pooling: 'cls', normalize: true })).tolist();
     },
@@ -61,7 +64,6 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
   }
   const { provider, model } = embedder;
   let dims = embedder.dims;
-  let embeddingError = null;
   const accounts = new Map();
   const queue = new Map();
   let running;
@@ -69,6 +71,11 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
   const prepare = sql => database.prepare(sql);
   const allNotes = prepare('SELECT id, payload FROM journal_notes WHERE account = ? AND payload IS NOT NULL');
   const currentNote = prepare('SELECT payload FROM journal_notes WHERE account = ? AND id = ? AND payload IS NOT NULL');
+  const selectedNotes = prepare(`SELECT n.id, n.payload FROM json_each(?) AS ids CROSS JOIN journal_notes AS n
+    WHERE n.account = ? AND n.id = ids.value AND n.payload IS NOT NULL`);
+  const lexicalSource = prepare(`SELECT id, json_extract(payload, '$.body') AS body, json_extract(payload, '$.createdAt') AS createdAt,
+    json_extract(payload, '$.reading.bookTitle') AS bookTitle, json_extract(payload, '$.reading.chapter') AS chapter,
+    json_extract(payload, '$.reading.author') AS author FROM journal_notes WHERE account = ? AND payload IS NOT NULL`);
   const countNotes = prepare('SELECT count(*) AS count FROM journal_notes WHERE account = ? AND payload IS NOT NULL');
   const accountFts = prepare('SELECT rowid, note_id, tokens FROM note_fts WHERE account = ?');
   const deleteFts = prepare('DELETE FROM note_fts WHERE rowid = ? AND account = ?');
@@ -82,7 +89,9 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     model = excluded.model, dims = excluded.dims, content_hash = excluded.content_hash, vector = excluded.vector, updated_at = excluded.updated_at`);
 
   function accountState(account) {
-    if (!accounts.has(account)) accounts.set(account, { ready: false, error: null, fts: new Map(), vectors: new Map() });
+    if (!accounts.has(account)) accounts.set(account, {
+      ready: false, error: null, embeddingError: null, metadata: new Map(), fts: new Map(), vectors: new Map(), coldTokens: null,
+    });
     return accounts.get(account);
   }
 
@@ -105,6 +114,7 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     if (!note) {
       if (existing) deleteFts.run(existing.rowid, account);
       deleteVector.run(account, id);
+      state.metadata.delete(id);
       state.fts.delete(id);
       state.vectors.delete(id);
       queue.delete(key);
@@ -112,6 +122,7 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     }
     const text = noteIndexText(note);
     const contentHash = contentHashHex(text);
+    state.metadata.set(id, { ...noteMetadata(note), contentHash });
     const tokens = tokenizeForFts(text).join(' ');
     if (!existing) state.fts.set(id, { rowid: addFts.run(account, id, tokens).lastInsertRowid, tokens });
     else if (existing.tokens !== tokens) {
@@ -122,13 +133,11 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
       deleteVector.run(account, id);
       state.vectors.delete(id);
     }
-    if (embedder.embed && !embeddingError && (vector?.contentHash !== contentHash || (dims && vector.vector.length !== dims))) {
-      if (!inFlight.some(job => job.account === account && job.id === id && job.contentHash === contentHash)) {
-        queue.set(key, { account, id, contentHash, text });
-        return;
-      }
+    if (embedder.embed && (vector?.contentHash !== contentHash || (dims && vector.vector.length !== dims))) {
+      queue.set(key, { account, id, contentHash, text });
+    } else {
+      queue.delete(key);
     }
-    queue.delete(key);
   }
 
   async function embedTexts(texts, isQuery) {
@@ -143,9 +152,9 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
   }
 
   function startQueue() {
-    if (running || !queue.size || embeddingError) return;
+    if (running || !queue.size) return;
     running = (async () => {
-      while (queue.size && !embeddingError) {
+      while (queue.size) {
         await new Promise(resolve => setImmediate(resolve));
         const account = queue.values().next().value?.account;
         for (const [key, job] of queue) {
@@ -167,10 +176,14 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
               written.push({ account, id, contentHash, vector: vectors[i] });
             });
           });
-          for (const { account, id, ...entry } of written) accountState(account).vectors.set(id, entry);
+          for (const { account, id, ...entry } of written) {
+            const state = accountState(account);
+            if (state.metadata.get(id)?.contentHash === entry.contentHash) state.vectors.set(id, entry);
+            const key = jobKey(account, id);
+            if (queue.get(key)?.contentHash === entry.contentHash) queue.delete(key);
+          }
         } catch (error) {
-          embeddingError = error.message || '无法生成笔记向量。';
-          queue.clear();
+          accountState(account).embeddingError = error.message || '无法生成笔记向量。';
         } finally {
           inFlight = [];
         }
@@ -185,6 +198,8 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     const state = accountState(account);
     state.ready = false;
     state.error = error.message || '更新语义索引失败。';
+    state.metadata.clear();
+    state.coldTokens = null;
     state.fts.clear();
     state.vectors.clear();
     for (const [key, job] of queue) if (job.account === account) queue.delete(key);
@@ -196,9 +211,12 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
 
   async function syncAccount(account, { waitForEmbeddings = false } = {}) {
     const state = accountState(account);
+    state.embeddingError = null;
     try {
       transact(() => {
         const active = allNotes.all(account);
+        state.metadata = new Map();
+        state.coldTokens = null;
         state.fts = new Map();
         for (const row of accountFts.all(account)) {
           if (state.fts.has(row.note_id)) deleteFts.run(row.rowid, account);
@@ -244,46 +262,69 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     const state = accountState(account);
     const pending = [...queue.values(), ...inFlight].filter(job => job.account === account).length;
     return {
-      provider, model, indexed: embeddingError ? 0 : state.vectors.size,
+      provider, model, indexed: state.vectors.size,
       total: countNotes.get(account).count, pending, indexing: pending > 0,
-      ftsReady: state.ready, lastError: state.error ?? embeddingError,
+      ftsReady: state.ready, lastError: state.error ?? state.embeddingError,
     };
   }
 
-  function corpus(account, query) {
-    const notes = allNotes.all(account).map(({ payload }) => JSON.parse(payload));
+  function retrievalState(account) {
     const state = accountState(account);
-    const match = buildFtsQuery(query);
-    const matches = state.ready ? new Map(match ? queryFts.all(match, account)
-      .map(row => [row.note_id, row.tokens ? row.tokens.split(' ') : []]) : []) : undefined;
-    return { notes, matches, state };
+    // A cold chat may read the corpus before reconciliation, without writing an index before the model replies.
+    if (!state.ready && !state.coldTokens) {
+      const tokens = new Map();
+      const metadata = new Map();
+      for (const { id, body, createdAt, bookTitle, chapter, author } of lexicalSource.all(account)) {
+        const note = { body, createdAt, reading: { bookTitle, chapter, author } };
+        const text = noteIndexText(note);
+        metadata.set(id, { ...noteMetadata(note), contentHash: contentHashHex(text) });
+        tokens.set(id, tokenizeForFts(text));
+      }
+      state.metadata = metadata;
+      state.coldTokens = tokens;
+    }
+    return state;
+  }
+
+  const splitTokens = tokens => tokens ? tokens.split(' ') : [];
+
+  function retrieve(account, state, queryTokens, options) {
+    const match = ftsQueryForTokens(queryTokens);
+    const matches = state.coldTokens ?? new Map(match ? queryFts.all(match, account)
+      .map(row => [row.note_id, splitTokens(row.tokens)]) : []);
+    const ranked = rankNoteIds(state.metadata, { ...options, queryTokens, matches, vectors: state.vectors });
+    if (!ranked.length) return [];
+    const payloads = new Map(selectedNotes.all(JSON.stringify(ranked.map(item => item.id)), account)
+      .map(({ id, payload }) => [id, JSON.parse(payload)]));
+    return ranked.filter(item => payloads.has(item.id)).map(item => ({ ...item, note: payloads.get(item.id) }));
   }
 
   async function getRelatedNotes(account, noteId, limit = 10, { readOnly = false } = {}) {
     if (!readOnly && !accountState(account).ready) await syncAccount(account);
     const row = currentNote.get(account, noteId);
     if (!row) return null;
-    const focus = JSON.parse(row.payload);
-    const { notes, matches, state } = corpus(account, noteIndexText(focus));
-    const vector = !embeddingError && state.vectors.get(noteId)?.vector;
-    return { focus, mode: vector ? 'hybrid' : 'lexical', indexed: getStatus(account).indexed, total: notes.length,
-      related: rankNotes(notes, { focus, limit, matches, vector, vectors: state.vectors }) };
+    const state = retrievalState(account);
+    const queryTokens = state.coldTokens?.get(noteId) ?? splitTokens(state.fts.get(noteId)?.tokens);
+    const vector = state.vectors.get(noteId)?.vector;
+    const related = retrieve(account, state, queryTokens, { focusId: noteId, limit, vector });
+    return { focus: JSON.parse(row.payload), mode: vector ? 'hybrid' : 'lexical', indexed: state.vectors.size,
+      total: state.metadata.size, related };
   }
 
   async function searchNotes(account, query, { limit = 10, excludeIds = [], readOnly = false } = {}) {
     if (!readOnly && !accountState(account).ready) await syncAccount(account);
+    const queryTokens = tokenizeForFts(query);
+    if (!queryTokens.length) return { mode: 'lexical', items: [] };
     let vector;
-    if (!embeddingError && accountState(account).vectors.size && buildFtsQuery(query)) {
+    if (accountState(account).vectors.size) {
       try { [vector] = await embedTexts([query], true); }
       catch (error) {
-        embeddingError = error.message || '无法生成查询向量。';
-        queue.clear();
+        accountState(account).embeddingError = error.message || '无法生成查询向量。';
       }
     }
-    const { notes, matches, state } = corpus(account, query);
-    if (embeddingError) vector = undefined;
+    const state = retrievalState(account);
     return { mode: vector ? 'hybrid' : 'lexical',
-      items: rankNotes(notes, { query, limit, excludeIds, matches, vector, vectors: state.vectors }) };
+      items: retrieve(account, state, queryTokens, { limit, excludeIds, vector }) };
   }
 
   return { syncAccount, onNotesChanged, recordError, waitIdle, getStatus, getRelatedNotes, searchNotes };
