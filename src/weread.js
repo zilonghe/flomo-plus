@@ -1,6 +1,6 @@
 const gateway = "https://i.weread.qq.com/api/agent/gateway";
 // Match the version in Tencent/WeChatReading/skills/SKILL.md.
-const skillVersion = "1.0.5";
+const skillVersion = "1.0.6";
 const firstReviewCount = 100;
 const maxReviews = 5000;
 const maxReviewPages = 50;
@@ -105,17 +105,22 @@ async function requestGateway(key, apiName, parameters, expectedField, signal) {
   if (!isRecord(result)) throw responseError();
   const data = isRecord(result.data) ? result.data : null;
 
-  if (result.upgrade_info != null || data?.upgrade_info != null) {
-    throw new WeReadError(503, "微信读书官方接口要求升级，当前导入已暂停。请稍后再试。");
-  }
+  const hasUpgradeInfo = result.upgrade_info != null || data?.upgrade_info != null;
   const errorCode = integer(result.errcode ?? data?.errcode);
   if (errorCode === -2010 || errorCode === -2012) throw invalidKey();
   if (errorCode != null && errorCode !== 0) {
+    if (hasUpgradeInfo) {
+      throw new WeReadError(503, "微信读书官方接口要求升级，当前导入已暂停。请稍后再试。");
+    }
     throw new WeReadError(502, "微信读书没有完成这次请求，请稍后再试。");
   }
 
+  // Per Tencent/WeChatReading/skills/SKILL.md, upgrade_info is non-blocking when payload data is present.
   if (Object.hasOwn(result, expectedField)) return result;
   if (data && Object.hasOwn(data, expectedField)) return data;
+  if (hasUpgradeInfo) {
+    throw new WeReadError(503, "微信读书官方接口要求升级，当前导入已暂停。请稍后再试。");
+  }
   throw responseError();
 }
 
