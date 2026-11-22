@@ -111,13 +111,8 @@
         </form>
 
         <section id="feed" class="feed" aria-label="笔记时间线">
-          <div id="inline-orphan-draft" class="orphan-draft notice" hidden>
-            <div class="orphan-draft-head">
-              <span>这条笔记已在另一端删除，未保存的草稿已保留，可复制后关闭：</span>
-              <button type="button" class="button button-secondary" data-action="dismiss-orphan-draft">关闭</button>
-            </div>
-            <textarea id="orphan-draft-body" class="field" rows="4" readonly aria-label="保留的草稿"></textarea>
-          </div>
+          <div id="inline-orphan-draft" class="orphan-draft-list" hidden></div>
+          <div id="inline-draft-banner" class="orphan-draft notice" hidden></div>
           <div class="feed-header">
             <p class="feed-count" id="feed-count" hidden></p>
             <div class="active-filters" id="active-filters" hidden></div>

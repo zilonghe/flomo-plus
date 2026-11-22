@@ -95,6 +95,8 @@ kbd{font-family:inherit;font-size:10px;line-height:1.15;color:var(--faint);paddi
 .save-note svg{font-size:17px;stroke-width:2.3}
 .save-note:disabled{opacity:1;background:#ececec;color:#747474;border-color:#ececec}
 .feed{margin-top:13px}
+.orphan-draft-list{display:grid;gap:8px;margin-bottom:16px}
+.orphan-draft-list .notice{margin-bottom:0}
 .orphan-draft{display:grid;gap:8px}
 .orphan-draft-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .feed-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;min-height:25px;margin:0 1px 8px;padding:0 1px}

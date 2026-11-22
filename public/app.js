@@ -21,7 +21,7 @@ const state = {
   feedItems: [],
   feedRendered: 0,
   inlineEdit: null,
-  orphanDraft: null,
+  orphanDrafts: new Map(),
   inlineDeleteId: null,
   openMenuId: null,
   tagSuggest: { open: false, items: [], activeIndex: 0, start: 0, end: 0 },
@@ -53,6 +53,7 @@ const dateTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-
 let toastTimer;
 let searchTimer = null;
 let feedObserver = null;
+let suppressNextTagSuggestKeyup = false;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -183,7 +184,7 @@ async function refresh({ silent = false } = {}) {
     reconcileInlineEditState();
     if (changed || firstLoad) {
       rebuildNoteIndex();
-      renderFeedList({ reset: true });
+      renderFeedList({ reset: true, preservePage: true });
     }
     if (openChanged && $('note-dialog').open) showRemoteDetail();
     setSync('ok', '已同步');
@@ -198,7 +199,8 @@ async function refresh({ silent = false } = {}) {
       state.bookFilter = null;
       state.randomIds = [];
       state.inlineEdit = null;
-      state.orphanDraft = null;
+      state.orphanDrafts.clear();
+      renderOrphanDraft();
       state.inlineDeleteId = null;
       state.openMenuId = null;
       closeTagSuggest();
@@ -269,14 +271,14 @@ async function mutate(change) {
     reconcileInlineEditState();
     setSync('ok', '已同步');
     rebuildNoteIndex();
-    renderFeedList({ reset: true });
+    renderFeedList({ reset: true, preservePage: true });
     return data;
   } catch (error) {
     if (error.status === 409) {
       acceptVersion(error.current);
       reconcileInlineEditState();
       rebuildNoteIndex();
-      renderFeedList({ reset: true });
+      renderFeedList({ reset: true, preservePage: true });
       setSync('ok', '已同步');
     } else {
       setSync('error', '同步未完成');
@@ -531,20 +533,112 @@ function renderActiveFilters() {
 
 function renderOrphanDraft() {
   const box = $('inline-orphan-draft');
-  if (state.orphanDraft) {
-    $('orphan-draft-body').value = state.orphanDraft.draft;
-    box.hidden = false;
-  } else {
-    box.hidden = true;
+  const fragment = document.createDocumentFragment();
+  for (const item of state.orphanDrafts.values()) {
+    const card = el('div', 'orphan-draft notice');
+    card.dataset.orphanId = item.id;
+    const head = el('div', 'orphan-draft-head');
+    const dismiss = actionButton('关闭', 'dismiss-orphan-draft');
+    dismiss.dataset.orphanId = item.id;
+    head.append(el('span', '', '这条笔记已在另一端删除，未保存的草稿已保留，可复制后关闭：'), dismiss);
+    const textarea = el('textarea', 'field');
+    textarea.rows = 4;
+    textarea.readOnly = true;
+    textarea.setAttribute('aria-label', '保留的草稿');
+    textarea.value = item.draft;
+    card.append(head, textarea);
+    fragment.append(card);
   }
+  box.replaceChildren(fragment);
+  box.hidden = state.orphanDrafts.size === 0;
 }
 
 function reconcileInlineEditState() {
-  if (!state.inlineEdit) return;
-  if (!state.notes.has(state.inlineEdit.id)) {
-    state.orphanDraft = { id: state.inlineEdit.id, draft: state.inlineEdit.draft };
+  const edit = state.inlineEdit;
+  if (edit && !state.notes.has(edit.id)) {
+    const { id, draft } = edit;
+    state.orphanDrafts.set(id, { id, draft });
     state.inlineEdit = null;
     renderOrphanDraft();
+    renderInlineDraftBanner();
+  }
+}
+
+function focusedTextareaSelection(textarea) {
+  if (textarea && document.activeElement === textarea) {
+    return [textarea.selectionStart, textarea.selectionEnd, textarea.selectionDirection];
+  }
+  return null;
+}
+
+function restoreTextareaSelection(textarea, selection) {
+  if (!textarea || !selection) return;
+  textarea.focus({ preventScroll: true });
+  textarea.setSelectionRange(...selection);
+}
+
+function renderInlineDraftBanner() {
+  const box = $('inline-draft-banner');
+  const edit = state.inlineEdit;
+  const card = edit && findCardEl(edit.id);
+  const selection = focusedTextareaSelection(box.querySelector('textarea'));
+  if (!edit || !state.notes.has(edit.id) || card) {
+    box.hidden = true;
+    box.replaceChildren();
+    if (card) {
+      edit.showInBanner = false;
+      restoreTextareaSelection(card.querySelector('textarea'), selection);
+    }
+    return;
+  }
+
+  const back = el('button', 'button button-primary', '回到草稿');
+  back.type = 'button';
+  back.dataset.action = 'return-to-inline-draft';
+  const cancel = actionButton('放弃草稿', 'cancel-inline-edit');
+  cancel.disabled = edit.saving;
+  const actionsRow = el('div', 'inline-edit-actions');
+  actionsRow.append(back, cancel);
+  box.replaceChildren(el('span', '', '有一条未保存的编辑草稿不在当前视图'), actionsRow);
+  if (edit.showInBanner) box.append(renderInlineEditForm(edit, false));
+  box.hidden = false;
+  restoreTextareaSelection(box.querySelector('textarea'), selection);
+}
+
+function compareFeedByTime(a, b) {
+  const order = Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id);
+  return state.sortOrder === 'oldest' ? order : -order;
+}
+
+function returnToInlineDraft() {
+  const edit = state.inlineEdit;
+  if (!edit) return;
+  const note = state.notes.get(edit.id);
+  if (!note) {
+    reconcileInlineEditState();
+    return;
+  }
+  if (!state.feedItems.some((note) => note.id === edit.id)) {
+    state.filter = 'all';
+    state.dayFilter = null;
+    state.bookFilter = null;
+    clearSearchInput();
+  }
+
+  let idx = 0;
+  for (const other of state.notes.values()) {
+    if (compareFeedByTime(other, note) < 0) idx++;
+  }
+  if (idx >= FEED_PAGE_SIZE && state.notes.size - 1 - idx < idx) {
+    state.sortOrder = state.sortOrder === 'newest' ? 'oldest' : 'newest';
+  }
+  edit.showInBanner = true;
+  renderFeedList({ reset: true });
+  const textarea = findCardEl(edit.id)?.querySelector('textarea')
+    || $('inline-draft-banner').querySelector('textarea');
+  if (textarea) {
+    textarea.focus({ preventScroll: true });
+    textarea.scrollIntoView({ block: 'nearest' });
   }
 }
 
@@ -565,11 +659,10 @@ function showEmpty(iconName, title, message, button) {
   $('note-list').replaceChildren(section);
 }
 
-function renderFeedList({ reset = true } = {}) {
+function renderFeedList({ reset = true, preservePage = false } = {}) {
   if (!state.noteIndex) rebuildNoteIndex();
   const index = state.noteIndex;
   reconcileInlineEditState();
-  renderOrphanDraft();
   syncNavActive();
   syncHeatmapActive();
   syncSortButton();
@@ -585,6 +678,7 @@ function renderFeedList({ reset = true } = {}) {
     state.feedItems = [];
     state.feedRendered = 0;
     showEmpty('note', state.refreshing ? '正在打开笔记' : '暂时无法打开笔记', '');
+    renderInlineDraftBanner();
     return;
   }
 
@@ -624,10 +718,7 @@ function renderFeedList({ reset = true } = {}) {
     return fields.some((value) => value?.toLocaleLowerCase().includes(query));
   });
 
-  if (state.filter !== 'random') {
-    const dir = state.sortOrder === 'oldest' ? 1 : -1;
-    shown.sort((a, b) => (Date.parse(a.createdAt) - Date.parse(b.createdAt)) * dir);
-  }
+  if (state.filter !== 'random') shown.sort(compareFeedByTime);
 
   $('feed-count').textContent = '共 ' + shown.length + ' 条笔记';
   $('feed-count').hidden = false;
@@ -640,33 +731,32 @@ function renderFeedList({ reset = true } = {}) {
     else if (state.dayFilter || state.bookFilter) showEmpty('search', '当前筛选下没有笔记', '可以清除筛选查看全部笔记。', actionButton('清除筛选', 'clear-filters'));
     else if (state.filter === 'reading') showEmpty('book', '还没有读书摘录', '', actionButton('导入微信读书', 'open-import'));
     else showEmpty('note', '从一条笔记开始', '记下一件今天想留住的事。', actionButton('写第一条笔记', 'focus-compose'));
+    renderInlineDraftBanner();
     return;
   }
 
   let minVisible = 0;
   let restoreFocus = null;
   if (reset) {
-    if (state.inlineEdit) {
-      const editIdx = shown.findIndex((note) => note.id === state.inlineEdit.id);
-      if (editIdx >= FEED_PAGE_SIZE) {
-        minVisible = Math.max(state.feedRendered, Math.ceil((editIdx + 1) / FEED_PAGE_SIZE) * FEED_PAGE_SIZE);
-      }
-      const activeTa = findCardEl(state.inlineEdit.id)?.querySelector('textarea');
-      if (activeTa && document.activeElement === activeTa) {
-        restoreFocus = { start: activeTa.selectionStart, end: activeTa.selectionEnd };
+    const prevRendered = state.feedRendered;
+    const editCard = state.inlineEdit && findCardEl(state.inlineEdit.id);
+    if (preservePage) {
+      minVisible = Math.max(FEED_PAGE_SIZE, prevRendered);
+      if (editCard) {
+        const editIdx = shown.findIndex((note) => note.id === state.inlineEdit.id);
+        if (editIdx >= minVisible && editIdx < minVisible + FEED_PAGE_SIZE) {
+          minVisible = Math.ceil((editIdx + 1) / FEED_PAGE_SIZE) * FEED_PAGE_SIZE;
+        }
       }
     }
+    restoreFocus = focusedTextareaSelection(editCard?.querySelector('textarea'));
     disconnectFeedObserver();
     state.feedRendered = 0;
     $('note-list').replaceChildren();
   }
   appendNextPage(minVisible);
   if (restoreFocus && state.inlineEdit) {
-    const ta = findCardEl(state.inlineEdit.id)?.querySelector('textarea');
-    if (ta) {
-      ta.focus();
-      try { ta.setSelectionRange(restoreFocus.start, restoreFocus.end); } catch {}
-    }
+    restoreTextareaSelection(findCardEl(state.inlineEdit.id)?.querySelector('textarea'), restoreFocus);
   }
 }
 
@@ -701,6 +791,7 @@ function appendNextPage(minCount = 0) {
       feedObserver.observe(more);
     }
   }
+  renderInlineDraftBanner();
 }
 
 function findCardEl(id) {
@@ -728,18 +819,46 @@ function closeCardMenu() {
   if (!state.openMenuId) return;
   const prev = state.openMenuId;
   const activeTa = state.inlineEdit?.id === prev ? findCardEl(prev)?.querySelector('textarea') : null;
-  const restore = activeTa && document.activeElement === activeTa
-    ? { start: activeTa.selectionStart, end: activeTa.selectionEnd }
-    : null;
+  const selection = focusedTextareaSelection(activeTa);
   state.openMenuId = null;
   const next = rerenderCard(prev);
-  if (restore) {
-    const ta = next?.querySelector('textarea');
-    if (ta) {
-      ta.focus();
-      try { ta.setSelectionRange(restore.start, restore.end); } catch {}
+  restoreTextareaSelection(next?.querySelector('textarea'), selection);
+}
+
+function renderInlineEditForm(edit, showCancel = true) {
+  const form = el('form', 'inline-edit-form inline-editor');
+  const textarea = el('textarea', 'field inline-edit-textarea');
+  textarea.rows = 5;
+  textarea.maxLength = 40000;
+  textarea.value = edit.draft;
+  textarea.readOnly = edit.saving;
+  textarea.setAttribute('aria-label', '编辑笔记');
+  textarea.addEventListener('input', () => {
+    if (state.inlineEdit === edit && !edit.saving) edit.draft = textarea.value;
+  });
+  textarea.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      if (state.inlineEdit === edit && !edit.saving) form.requestSubmit();
     }
+  });
+  const err = el('p', 'inline-error', edit.conflictError);
+  err.setAttribute('role', 'alert');
+  err.hidden = !edit.conflictError;
+  const actionsRow = el('div', 'inline-edit-actions');
+  if (showCancel) {
+    const cancel = actionButton('取消', 'cancel-inline-edit');
+    cancel.disabled = edit.saving;
+    actionsRow.append(cancel);
   }
+  const save = el('button', 'button button-primary', edit.saving ? '保存中…' : '保存');
+  save.type = 'submit';
+  save.disabled = edit.saving;
+  actionsRow.append(save);
+  form.append(textarea, err, actionsRow);
+  form.addEventListener('submit', submitInlineEdit);
+  return form;
 }
 
 function renderCard(note, tags = [], interactive = true, dateFormatter) {
@@ -823,41 +942,7 @@ function renderCard(note, tags = [], interactive = true, dateFormatter) {
   card.append(meta);
 
   if (isEditing) {
-    const form = el('form', 'inline-edit-form');
-    const textarea = el('textarea', 'field inline-edit-textarea');
-    textarea.rows = 5;
-    textarea.maxLength = 40000;
-    textarea.value = state.inlineEdit.draft;
-    textarea.readOnly = Boolean(state.inlineEdit.saving);
-    textarea.setAttribute('aria-label', '编辑笔记');
-    textarea.addEventListener('input', () => {
-      if (state.inlineEdit?.id === note.id) {
-        if (state.inlineEdit.saving) return;
-        state.inlineEdit.draft = textarea.value;
-      }
-    });
-    textarea.addEventListener('keydown', (event) => {
-      if (event.isComposing) return;
-      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-        event.preventDefault();
-        if (!state.inlineEdit?.saving) form.requestSubmit();
-      }
-    });
-    const err = el('p', 'inline-error', state.inlineEdit.conflictError || '');
-    err.setAttribute('role', 'alert');
-    err.hidden = !state.inlineEdit.conflictError;
-    const actionsRow = el('div', 'inline-edit-actions');
-    const cancelBtn = el('button', 'button button-secondary', '取消');
-    cancelBtn.type = 'button';
-    cancelBtn.dataset.action = 'cancel-inline-edit';
-    cancelBtn.disabled = state.inlineEdit.saving;
-    const saveBtn = el('button', 'button button-primary', state.inlineEdit.saving ? '保存中…' : '保存');
-    saveBtn.type = 'submit';
-    saveBtn.disabled = state.inlineEdit.saving;
-    actionsRow.append(cancelBtn, saveBtn);
-    form.append(textarea, err, actionsRow);
-    form.addEventListener('submit', submitInlineEdit);
-    card.append(form);
+    card.append(renderInlineEditForm(state.inlineEdit));
     return card;
   }
 
@@ -907,6 +992,12 @@ function renderCard(note, tags = [], interactive = true, dateFormatter) {
   return card;
 }
 
+function rerenderInlineEdit(id) {
+  const card = rerenderCard(id);
+  renderInlineDraftBanner();
+  return card;
+}
+
 function startInlineEdit(id) {
   const note = state.notes.get(id);
   if (!note) return;
@@ -940,11 +1031,12 @@ function startInlineEdit(id) {
     draft: note.body,
     conflictError: '',
     saving: false,
+    showInBanner: false,
   };
   if (prevEditId && prevEditId !== id) rerenderCard(prevEditId);
   if (prevMenuId && prevMenuId !== id && prevMenuId !== prevEditId) rerenderCard(prevMenuId);
   if (prevDelId && prevDelId !== id && prevDelId !== prevEditId && prevDelId !== prevMenuId) rerenderCard(prevDelId);
-  const card = rerenderCard(id);
+  const card = rerenderInlineEdit(id);
   const ta = card?.querySelector('textarea');
   if (ta) {
     ta.focus();
@@ -956,7 +1048,7 @@ function cancelInlineEdit() {
   if (!state.inlineEdit || state.inlineEdit.saving) return;
   const id = state.inlineEdit.id;
   state.inlineEdit = null;
-  rerenderCard(id);
+  rerenderInlineEdit(id);
 }
 
 async function submitInlineEdit(event) {
@@ -972,12 +1064,12 @@ async function submitInlineEdit(event) {
   const body = submittedDraft.trim();
   if (!body) {
     edit.conflictError = '笔记内容不能为空。';
-    rerenderCard(edit.id);
+    rerenderInlineEdit(edit.id);
     return;
   }
   edit.saving = true;
   edit.conflictError = '';
-  rerenderCard(edit.id);
+  rerenderInlineEdit(edit.id);
   try {
     const data = await mutate({
       id: note.id,
@@ -992,7 +1084,7 @@ async function submitInlineEdit(event) {
         edit.revision = data?.note?.revision ?? state.notes.get(note.id)?.revision ?? edit.revision;
       }
     }
-    rerenderCard(note.id);
+    rerenderInlineEdit(note.id);
     notify('修改已同步');
   } catch (error) {
     if (error.status === 409 && error.current?.deleted) {
@@ -1004,11 +1096,10 @@ async function submitInlineEdit(event) {
     if (error.status === 409 && error.current?.note) {
       edit.revision = error.current.note.revision;
       edit.conflictError = '另一端已修改这条笔记，草稿已保留。再次点击保存将以当前内容覆盖。';
-      rerenderCard(edit.id);
     } else {
       edit.conflictError = error.message;
-      rerenderCard(edit.id);
     }
+    rerenderInlineEdit(edit.id);
   }
 }
 
@@ -2302,8 +2393,9 @@ const actions = {
   },
   'card-inline-edit': (button) => startInlineEdit(button.dataset.noteId),
   'cancel-inline-edit': cancelInlineEdit,
-  'dismiss-orphan-draft': () => {
-    state.orphanDraft = null;
+  'return-to-inline-draft': returnToInlineDraft,
+  'dismiss-orphan-draft': (button) => {
+    state.orphanDrafts.delete(button.dataset.orphanId);
     renderOrphanDraft();
   },
   'card-copy': (button) => {
@@ -2468,14 +2560,23 @@ $('import-file').addEventListener('change', pickImportFile);
 $('chat-form').addEventListener('submit', sendChat);
 $('edit-form').addEventListener('submit', submitEdit);
 $('composer').addEventListener('submit', createNote);
-const TAG_SUGGEST_NAV_KEYS = new Set(['Escape', 'ArrowUp', 'ArrowDown', 'Enter', 'Tab']);
 $('note-body').addEventListener('input', syncComposerUI);
-$('note-body').addEventListener('click', updateTagSuggest);
-$('note-body').addEventListener('keyup', (event) => {
-  if (event.isComposing || TAG_SUGGEST_NAV_KEYS.has(event.key)) return;
+$('note-body').addEventListener('click', () => {
+  suppressNextTagSuggestKeyup = false;
   updateTagSuggest();
 });
-$('note-body').addEventListener('blur', closeTagSuggest);
+$('note-body').addEventListener('keyup', (event) => {
+  if (event.isComposing) return;
+  if (suppressNextTagSuggestKeyup) {
+    suppressNextTagSuggestKeyup = false;
+    return;
+  }
+  updateTagSuggest();
+});
+$('note-body').addEventListener('blur', () => {
+  suppressNextTagSuggestKeyup = false;
+  closeTagSuggest();
+});
 $('search').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = null;
@@ -2494,8 +2595,10 @@ $('mobile-toggle').addEventListener('click', () => sidebar(!$('sidebar').classLi
 document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
   if (event.key === 'Escape') {
+    if (document.querySelector('dialog[open]')) return;
     if (state.tagSuggest.open) {
       event.preventDefault();
+      suppressNextTagSuggestKeyup = true;
       closeTagSuggest();
       return;
     }
@@ -2504,26 +2607,24 @@ document.addEventListener('keydown', (event) => {
       closeCardMenu();
       return;
     }
-    if (state.inlineEdit) {
+    if (state.inlineEdit && event.target instanceof Element
+      && event.target.closest('.inline-editor')
+      && event.target.closest('article.note-card')?.dataset.noteId === state.inlineEdit.id) {
       event.preventDefault();
       cancelInlineEdit();
-      return;
     }
     return;
   }
   if (event.target.id === 'note-body' && state.tagSuggest.open) {
-    if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
-      moveTagSuggest(1);
-      return;
-    }
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      moveTagSuggest(-1);
+      suppressNextTagSuggestKeyup = true;
+      moveTagSuggest(event.key === 'ArrowDown' ? 1 : -1);
       return;
     }
     if (event.key === 'Enter' || event.key === 'Tab') {
       event.preventDefault();
+      suppressNextTagSuggestKeyup = true;
       applyTagSuggest(state.tagSuggest.activeIndex);
       return;
     }
