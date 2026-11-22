@@ -6,6 +6,7 @@ const dist = new URL("dist/", root);
 const paths = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/app.js": ["app.js", "text/javascript; charset=utf-8"],
+  "/ux-helpers.js": ["ux-helpers.js", "text/javascript; charset=utf-8"],
   "/crypto.js": ["crypto.js", "text/javascript; charset=utf-8"],
   "/flomo.js": ["flomo.js", "text/javascript; charset=utf-8"],
   "/weread.js": ["weread.js", "text/javascript; charset=utf-8"],

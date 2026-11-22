@@ -1,14 +1,29 @@
 import { parseWeRead, readWeReadFile } from './weread.js';
 import { parseFlomoFile } from './flomo.js';
 import { randomUUID } from './crypto.js';
+import { tagsFor, buildTagTree, tokenizeBody, sampleRandomNotes } from './ux-helpers.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const excerptsMarker = '\n\nAI 摘录\n';
+const FEED_PAGE_SIZE = 40;
 const state = {
   notes: new Map(),
   deletedNotes: new Set(),
+  noteIndex: null,
   filter: 'all',
+  tagSort: 'count',
+  collapsedTags: new Set(),
+  dayFilter: null,
+  bookFilter: null,
+  sortOrder: 'newest',
+  randomIds: [],
+  feedItems: [],
+  feedRendered: 0,
+  inlineEdit: null,
+  inlineDeleteId: null,
+  openMenuId: null,
+  tagSuggest: { open: false, items: [], activeIndex: 0, start: 0, end: 0 },
   user: null,
   loaded: false,
   refreshing: false,
@@ -31,10 +46,12 @@ const state = {
   apiKey: '',
 };
 
-const filters = { all: '全部笔记', journal: '日志', reading: '读书摘录' };
+const filters = { all: '全部笔记', journal: '日志', reading: '读书摘录', random: '随机漫步' };
 const dateLong = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
 const dateTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 let toastTimer;
+let searchTimer = null;
+let feedObserver = null;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -162,7 +179,11 @@ async function refresh({ silent = false } = {}) {
     setAuthNotice('');
     $('note-body').disabled = false;
     updateComposer();
-    if (changed || firstLoad) renderFeed();
+    if (changed || firstLoad) {
+      syncInlineEditAfterRefresh();
+      rebuildNoteIndex();
+      renderFeedList({ reset: true });
+    }
     if (openChanged && $('note-dialog').open) showRemoteDetail();
     setSync('ok', '已同步');
   } catch (error) {
@@ -171,12 +192,20 @@ async function refresh({ silent = false } = {}) {
       state.loaded = false;
       state.notes.clear();
       state.deletedNotes.clear();
+      state.noteIndex = null;
+      state.dayFilter = null;
+      state.bookFilter = null;
+      state.randomIds = [];
+      state.inlineEdit = null;
+      state.inlineDeleteId = null;
+      state.openMenuId = null;
+      closeTagSuggest();
       state.apiKey = '';
       state.chatProvider = 'openai';
       state.codexAvailable = false;
       state.composeDraft = null;
       $('note-body').value = '';
-      $('search').value = '';
+      clearSearchInput();
       $('edit-body').value = '';
       $('chat-input').value = '';
       $('import-text').value = '';
@@ -186,14 +215,15 @@ async function refresh({ silent = false } = {}) {
       for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog']) if ($(id).open) $(id).close();
       if ($('note-dialog').open) closeNote(true);
       $('note-body').disabled = true;
-      updateComposer();
-      renderFeed();
+      syncComposerUI();
+      rebuildNoteIndex();
+      renderFeedList({ reset: true });
       updateProfile();
       setAuthNotice('登录状态已失效，请使用 ChatGPT 账号登录。', true);
     } else if (!state.loaded) {
       state.refreshing = false;
       setAuthNotice(error.message);
-      renderFeed();
+      renderFeedList({ reset: true });
     }
     setSync('error', '同步未完成');
   } finally {
@@ -235,12 +265,14 @@ async function mutate(change) {
     const data = await request('/api/notes', change);
     acceptVersion(data);
     setSync('ok', '已同步');
-    renderFeed();
+    rebuildNoteIndex();
+    renderFeedList({ reset: true });
     return data;
   } catch (error) {
     if (error.status === 409) {
       acceptVersion(error.current);
-      renderFeed();
+      rebuildNoteIndex();
+      renderFeedList({ reset: true });
       setSync('ok', '已同步');
     } else {
       setSync('error', '同步未完成');
@@ -263,27 +295,89 @@ function notePayload(note) {
   };
 }
 
-function tagsFor(body) {
-  const matched = (body || '').matchAll(/(?<![\p{L}\p{N}_])#([\p{L}\p{N}_]+(?:\/[\p{L}\p{N}_]+)*)/gu);
-  const seen = new Map();
-  for (const [, tag] of matched) if (!seen.has(tag.toLowerCase())) seen.set(tag.toLowerCase(), tag);
-  return [...seen.values()];
+function clearSearchInput() {
+  clearTimeout(searchTimer);
+  searchTimer = null;
+  $('search').value = '';
 }
 
 function dayKey(date) {
   return [date.getFullYear(), date.getMonth() + 1, date.getDate()].map((part) => String(part).padStart(2, '0')).join('-');
 }
 
-function renderActivity(notes, tagCount) {
-  const days = new Map();
-  for (const note of notes) {
-    const key = dayKey(new Date(note.createdAt));
-    days.set(key, (days.get(key) || 0) + 1);
+function matchesTagPrefix(noteTags, prefix) {
+  return noteTags.some((t) => {
+    const l = t.toLowerCase();
+    return l === prefix || l.startsWith(prefix + '/');
+  });
+}
+
+function collectTagNames(nodes, parentDisplay, map) {
+  for (const node of nodes) {
+    const display = parentDisplay ? parentDisplay + '/' + node.name : node.name;
+    map.set(node.path, display);
+    if (node.children.length) collectTagNames(node.children, display, map);
   }
-  $('activity-memos').textContent = notes.length;
+}
+
+function rebuildNoteIndex() {
+  const all = [...state.notes.values()];
+  const counts = { all: all.length, journal: 0, reading: 0 };
+  const byNote = new Map();
+  const concreteTags = new Map();
+  const dayCounts = new Map();
+  const treeInput = [];
+
+  for (const note of all) {
+    counts[note.reading ? 'reading' : 'journal']++;
+    const noteTags = tagsFor(note.body);
+    byNote.set(note.id, noteTags);
+    treeInput.push({ id: note.id, tags: noteTags });
+    for (const tag of noteTags) {
+      const key = tag.toLowerCase();
+      const entry = concreteTags.get(key) || { tag, key, count: 0 };
+      entry.count++;
+      concreteTags.set(key, entry);
+    }
+    if (note.createdAt) {
+      const key = dayKey(new Date(note.createdAt));
+      dayCounts.set(key, (dayCounts.get(key) || 0) + 1);
+    }
+  }
+
+  const tagTree = buildTagTree(treeInput, state.tagSort);
+  const tagNames = new Map();
+  collectTagNames(tagTree, '', tagNames);
+  const tagFreq = [...concreteTags.values()].sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh-CN'));
+
+  state.noteIndex = {
+    all,
+    counts,
+    byNote,
+    tagTree,
+    tagNames,
+    tagFreq,
+    tagCount: concreteTags.size,
+    dayCounts,
+  };
+
+  if (state.filter.startsWith('tag:') && !tagNames.has(state.filter.slice(4))) {
+    state.filter = 'all';
+  }
+  for (const name of Object.keys(counts)) {
+    $('count-' + name).textContent = state.loaded ? counts[name] : '';
+  }
+  $('tag-section').hidden = tagTree.length === 0;
+  renderActivity(all.length, concreteTags.size, dayCounts);
+  renderTagList();
+}
+
+function renderActivity(totalNotes, tagCount, dayCounts) {
+  $('activity-memos').textContent = totalNotes;
   $('activity-tags').textContent = tagCount;
-  $('activity-days').textContent = days.size;
+  $('activity-days').textContent = dayCounts.size;
   const today = new Date();
+  const todayKey = dayKey(today);
   const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay() - 98);
   const squares = [];
   const months = [];
@@ -296,17 +390,130 @@ function renderActivity(notes, tagCount) {
       months.push(month);
       lastMonth = date.getMonth();
     }
-    const count = days.get(key) || 0;
-    const square = el('span', 'heatmap-square');
+    const count = dayCounts.get(key) || 0;
+    const square = count > 0 ? el('button', 'heatmap-square') : el('span', 'heatmap-square');
+    if (count > 0) {
+      square.type = 'button';
+      square.dataset.day = key;
+      square.setAttribute('aria-label', key + ' · ' + count + ' 条笔记');
+      if (state.dayFilter === key) square.classList.add('active');
+    }
     square.dataset.level = String(Math.min(count, 4));
     square.title = key + ' · ' + count + ' 条笔记';
-    if (key === dayKey(today)) square.classList.add('today');
+    if (key === todayKey) square.classList.add('today');
     if (date > today) square.classList.add('future');
     squares.push(square);
     date.setDate(date.getDate() + 1);
   }
   $('heatmap').replaceChildren(...squares);
   $('heatmap-months').replaceChildren(...months);
+}
+
+function syncHeatmapActive() {
+  for (const btn of $('heatmap').querySelectorAll('[data-day]')) {
+    btn.classList.toggle('active', btn.dataset.day === state.dayFilter);
+  }
+}
+
+function renderTagNode(node) {
+  const wrap = el('div', 'tag-tree-node');
+  const row = el('div', 'tag-row');
+  const hasChildren = node.children.length > 0;
+  const collapsed = state.collapsedTags.has(node.path);
+  if (hasChildren) {
+    const toggle = el('button', 'tag-toggle', collapsed ? '▸' : '▾');
+    toggle.type = 'button';
+    toggle.dataset.toggleTag = node.path;
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.setAttribute('aria-label', (collapsed ? '展开 ' : '折叠 ') + node.name);
+    row.append(toggle);
+  } else {
+    row.append(el('span', 'tag-toggle-spacer'));
+  }
+  const button = el('button', 'nav-item tag-item');
+  button.type = 'button';
+  button.dataset.filter = 'tag:' + node.path;
+  const selected = state.filter === 'tag:' + node.path;
+  button.classList.toggle('active', selected);
+  if (selected) button.setAttribute('aria-current', 'page');
+  button.append(icon('hash'), el('span', '', node.name), el('span', 'nav-count', String(node.count)));
+  row.append(button);
+  wrap.append(row);
+  if (hasChildren && !collapsed) {
+    const childrenBox = el('div', 'tag-children');
+    for (const child of node.children) childrenBox.append(renderTagNode(child));
+    wrap.append(childrenBox);
+  }
+  return wrap;
+}
+
+function renderTagList() {
+  const sortBtn = $('tag-sort-btn');
+  if (sortBtn) sortBtn.textContent = state.tagSort === 'count' ? '按数量' : '按字母';
+  const tree = state.noteIndex?.tagTree || [];
+  const fragment = document.createDocumentFragment();
+  for (const node of tree) fragment.append(renderTagNode(node));
+  $('tag-list').replaceChildren(fragment);
+}
+
+function syncNavActive() {
+  for (const button of document.querySelectorAll('#sidebar [data-filter]')) {
+    const selected = button.dataset.filter === state.filter;
+    button.classList.toggle('active', selected);
+    if (selected) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+}
+
+function syncSortButton() {
+  const btn = $('sort-button');
+  if (!btn) return;
+  const isNewest = state.sortOrder === 'newest';
+  btn.title = isNewest ? '最新优先（点击切换最旧优先）' : '最旧优先（点击切换最新优先）';
+  btn.setAttribute('aria-label', isNewest ? '当前最新优先，切换排序' : '当前最旧优先，切换排序');
+  btn.classList.toggle('oldest', !isNewest);
+}
+
+function renderActiveFilters() {
+  const box = $('active-filters');
+  const chips = [];
+  if (state.dayFilter) {
+    const chip = el('button', 'filter-chip', '日期：' + state.dayFilter + ' ×');
+    chip.type = 'button';
+    chip.dataset.clearFilter = 'day';
+    chips.push(chip);
+  }
+  if (state.bookFilter) {
+    const chip = el('button', 'filter-chip', '书名：' + state.bookFilter + ' ×');
+    chip.type = 'button';
+    chip.dataset.clearFilter = 'book';
+    chips.push(chip);
+  }
+  if (state.filter === 'random') {
+    const chip = el('button', 'filter-chip filter-chip-action', '换一批');
+    chip.type = 'button';
+    chip.dataset.action = 'reshuffle-random';
+    chips.push(chip);
+  }
+  box.replaceChildren(...chips);
+  box.hidden = chips.length === 0;
+}
+
+function renderOrphanDraft() {
+  const box = $('inline-orphan-draft');
+  if (state.inlineEdit?.deletedRemotely) {
+    $('orphan-draft-body').value = state.inlineEdit.draft;
+    box.hidden = false;
+  } else {
+    box.hidden = true;
+  }
+}
+
+function disconnectFeedObserver() {
+  if (feedObserver) {
+    feedObserver.disconnect();
+    feedObserver = null;
+  }
 }
 
 function showEmpty(iconName, title, message, button) {
@@ -319,102 +526,526 @@ function showEmpty(iconName, title, message, button) {
   $('note-list').replaceChildren(section);
 }
 
-function renderFeed() {
-  const all = [...state.notes.values()];
-  const counts = { all: all.length, journal: 0, reading: 0 };
-  const tags = new Map();
-  const byNote = new Map();
-  for (const note of all) {
-    counts[note.reading ? 'reading' : 'journal']++;
-    const noteTags = tagsFor(note.body);
-    byNote.set(note.id, noteTags);
-    for (const tag of noteTags) {
-      const key = tag.toLowerCase();
-      const entry = tags.get(key) || { tag, count: 0 };
-      entry.count++;
-      tags.set(key, entry);
-    }
-  }
-  if (state.filter.startsWith('tag:') && !tags.has(state.filter.slice(4))) state.filter = 'all';
-  for (const name of Object.keys(counts)) $('count-' + name).textContent = state.loaded ? counts[name] : '';
-  $('tag-section').hidden = tags.size === 0;
-  renderActivity(all, tags.size);
-  $('tag-list').replaceChildren(...[...tags].sort(([, a], [, b]) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh-CN')).map(([key, entry]) => {
-    const button = el('button', 'nav-item');
-    button.type = 'button';
-    button.dataset.filter = 'tag:' + key;
-    button.append(icon('hash'), el('span', '', entry.tag), el('span', 'nav-count', entry.count));
-    return button;
-  }));
-  for (const button of document.querySelectorAll('[data-filter]')) {
-    const selected = button.dataset.filter === state.filter;
-    button.classList.toggle('active', selected);
-    if (selected) button.setAttribute('aria-current', 'page');
-    else button.removeAttribute('aria-current');
-  }
+function renderFeedList({ reset = true } = {}) {
+  if (!state.noteIndex) rebuildNoteIndex();
+  const index = state.noteIndex;
+  renderOrphanDraft();
+  syncNavActive();
+  syncHeatmapActive();
+  syncSortButton();
+  renderActiveFilters();
 
-  const title = filters[state.filter] || ('#' + tags.get(state.filter.slice(4))?.tag);
+  const title = filters[state.filter]
+    || (state.filter.startsWith('tag:') ? '#' + (index.tagNames.get(state.filter.slice(4)) || state.filter.slice(4)) : '全部笔记');
   $('page-title').textContent = title;
+
   if (!state.loaded) {
     $('feed-count').hidden = true;
+    disconnectFeedObserver();
+    state.feedItems = [];
+    state.feedRendered = 0;
     showEmpty('note', state.refreshing ? '正在打开笔记' : '暂时无法打开笔记', '');
     return;
   }
 
   const query = $('search').value.trim().toLocaleLowerCase();
-  const shown = all.filter((note) => {
+  let source = index.all;
+  if (state.filter === 'random') {
+    if (!state.randomIds.length && index.all.length) {
+      state.randomIds = sampleRandomNotes(index.all, 10).map((n) => n.id);
+    }
+    source = state.randomIds.map((id) => state.notes.get(id)).filter(Boolean);
+  }
+
+  const shown = source.filter((note) => {
     const matchesFilter = state.filter === 'all'
+      || state.filter === 'random'
       || (state.filter === 'reading' && note.reading)
       || (state.filter === 'journal' && !note.reading)
-      || (state.filter.startsWith('tag:') && byNote.get(note.id).some((tag) => tag.toLowerCase() === state.filter.slice(4)));
+      || (state.filter.startsWith('tag:') && matchesTagPrefix(index.byNote.get(note.id) || [], state.filter.slice(4)));
+    if (!matchesFilter) return false;
+    if (state.dayFilter && dayKey(new Date(note.createdAt)) !== state.dayFilter) return false;
+    if (state.bookFilter && (note.reading?.bookTitle || '微信读书') !== state.bookFilter) return false;
+    if (!query) return true;
     const fields = [note.body, note.reading?.bookTitle, note.reading?.chapter, note.reading?.author];
-    return matchesFilter && (!query || fields.some((value) => value?.toLocaleLowerCase().includes(query)));
-  }).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    return fields.some((value) => value?.toLocaleLowerCase().includes(query));
+  });
+
+  if (state.filter !== 'random') {
+    const dir = state.sortOrder === 'oldest' ? 1 : -1;
+    shown.sort((a, b) => (Date.parse(a.createdAt) - Date.parse(b.createdAt)) * dir);
+  }
+
   $('feed-count').textContent = '共 ' + shown.length + ' 条笔记';
   $('feed-count').hidden = false;
+  state.feedItems = shown;
 
   if (!shown.length) {
+    disconnectFeedObserver();
+    state.feedRendered = 0;
     if (query) showEmpty('search', '没有找到相关笔记', '试试其他关键词，或清空搜索。', actionButton('清空搜索', 'clear-search'));
+    else if (state.dayFilter || state.bookFilter) showEmpty('search', '当前筛选下没有笔记', '可以清除筛选查看全部笔记。', actionButton('清除筛选', 'clear-filters'));
     else if (state.filter === 'reading') showEmpty('book', '还没有读书摘录', '', actionButton('导入微信读书', 'open-import'));
     else showEmpty('note', '从一条笔记开始', '记下一件今天想留住的事。', actionButton('写第一条笔记', 'focus-compose'));
     return;
   }
 
-  const fragment = document.createDocumentFragment();
-  for (const note of shown) fragment.append(renderCard(note, byNote.get(note.id)));
-  $('note-list').replaceChildren(fragment);
+  if (reset) {
+    disconnectFeedObserver();
+    state.feedRendered = 0;
+    $('note-list').replaceChildren();
+  }
+  appendNextPage();
+}
+
+function appendNextPage() {
+  const list = $('note-list');
+  const existingMore = list.querySelector('[data-action="load-more"]');
+  if (existingMore) existingMore.remove();
+  disconnectFeedObserver();
+
+  const start = state.feedRendered;
+  const end = Math.min(start + FEED_PAGE_SIZE, state.feedItems.length);
+  if (start < end) {
+    const fragment = document.createDocumentFragment();
+    const byNote = state.noteIndex?.byNote;
+    for (let i = start; i < end; i++) {
+      const note = state.feedItems[i];
+      fragment.append(renderCard(note, byNote?.get(note.id) || [], true));
+    }
+    list.append(fragment);
+    state.feedRendered = end;
+  }
+
+  if (state.feedRendered < state.feedItems.length) {
+    const more = el('button', 'button button-secondary load-more', '加载更多');
+    more.type = 'button';
+    more.dataset.action = 'load-more';
+    list.append(more);
+    if (typeof IntersectionObserver !== 'undefined') {
+      feedObserver = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) appendNextPage();
+      }, { rootMargin: '200px 0px' });
+      feedObserver.observe(more);
+    }
+  }
+}
+
+function findCardEl(id) {
+  for (const child of $('note-list').children) {
+    if (child.dataset?.noteId === id) return child;
+  }
+  return null;
+}
+
+function rerenderCard(id) {
+  const existing = findCardEl(id);
+  const note = state.notes.get(id);
+  if (!existing || !note) return null;
+  const next = renderCard(note, state.noteIndex?.byNote.get(id) || [], true);
+  if (existing.classList.contains('expanded') && !state.inlineEdit?.id) {
+    next.classList.add('expanded');
+    const btn = next.querySelector('[data-action="toggle-expand"]');
+    if (btn) btn.textContent = '收起';
+  }
+  existing.replaceWith(next);
+  return next;
+}
+
+function closeCardMenu() {
+  if (!state.openMenuId) return;
+  const prev = state.openMenuId;
+  state.openMenuId = null;
+  rerenderCard(prev);
 }
 
 function renderCard(note, tags = [], interactive = true, dateFormatter) {
-  const card = el(interactive ? 'button' : 'article', 'note-card');
-  if (interactive) {
-    card.type = 'button';
-    card.dataset.openNote = note.id;
+  const card = el('article', 'note-card');
+
+  if (!interactive) {
+    const meta = el('div', 'card-meta');
+    if (note.reading) meta.append(labeled(el('span', 'card-source'), 'book', note.reading.bookTitle || '微信读书'));
+    if (note.reading?.chapter) meta.append(el('span', '', note.reading.chapter));
+    if (note.createdAt) {
+      const date = new Date(note.createdAt);
+      meta.append(el('span', '', dateFormatter?.format(date) ?? (dayKey(date) + ' ' + dateTime.format(date))));
+    }
+    if (meta.childElementCount) card.append(meta);
+    card.append(el('div', 'card-body', note.body));
+    const bottom = el('div', 'card-bottom');
+    for (const tag of tags.slice(0, 3)) bottom.append(el('span', 'card-tag', '#' + tag));
+    if (note.turns?.length) bottom.append(labeled(el('span', 'card-chat'), 'chat', Math.floor(note.turns.length / 2) + ' 轮对话'));
+    if (bottom.childElementCount) card.append(bottom);
+    return card;
   }
+
+  card.dataset.noteId = note.id;
   const meta = el('div', 'card-meta');
-  if (note.reading) meta.append(labeled(el('span', 'card-source'), 'book', note.reading.bookTitle || '微信读书'));
+  if (note.reading) {
+    const bookTitle = note.reading.bookTitle || '微信读书';
+    const bookBtn = el('button', 'card-source');
+    bookBtn.type = 'button';
+    bookBtn.dataset.bookFilter = bookTitle;
+    labeled(bookBtn, 'book', bookTitle);
+    meta.append(bookBtn);
+  }
   if (note.reading?.chapter) meta.append(el('span', '', note.reading.chapter));
   if (note.createdAt) {
     const date = new Date(note.createdAt);
-    meta.append(el('span', '', dateFormatter?.format(date) ?? (dayKey(date) + ' ' + dateTime.format(date))));
+    const timeBtn = el('button', 'card-time', dateFormatter?.format(date) ?? (dayKey(date) + ' ' + dateTime.format(date)));
+    timeBtn.type = 'button';
+    timeBtn.dataset.openNote = note.id;
+    meta.append(timeBtn);
   }
-  if (interactive) {
-    const menu = el('span', 'card-ellipsis', '···');
-    menu.setAttribute('aria-hidden', 'true');
-    meta.append(menu);
+
+  const menuWrap = el('div', 'card-menu-wrap');
+  const menuOpen = state.openMenuId === note.id;
+  const menuBtn = el('button', 'icon-button card-menu-btn', '···');
+  menuBtn.type = 'button';
+  menuBtn.dataset.action = 'card-menu';
+  menuBtn.dataset.noteId = note.id;
+  menuBtn.setAttribute('aria-label', '更多操作');
+  menuBtn.setAttribute('aria-expanded', String(menuOpen));
+  menuWrap.append(menuBtn);
+
+  if (menuOpen) {
+    const menu = el('div', 'card-menu');
+    menu.setAttribute('role', 'menu');
+    const editItem = el('button', 'card-menu-item', '编辑');
+    editItem.type = 'button';
+    editItem.dataset.action = 'card-inline-edit';
+    editItem.dataset.noteId = note.id;
+    const copyItem = el('button', 'card-menu-item', '复制');
+    copyItem.type = 'button';
+    copyItem.dataset.action = 'card-copy';
+    copyItem.dataset.noteId = note.id;
+    const aiItem = el('button', 'card-menu-item', 'AI 对话');
+    aiItem.type = 'button';
+    aiItem.dataset.openNote = note.id;
+    const deleteItem = el('button', 'card-menu-item card-menu-danger', '删除');
+    deleteItem.type = 'button';
+    deleteItem.dataset.action = 'card-inline-delete';
+    deleteItem.dataset.noteId = note.id;
+    menu.append(editItem, copyItem, aiItem, deleteItem);
+    menuWrap.append(menu);
   }
-  if (meta.childElementCount) card.append(meta);
-  card.append(el('div', 'card-body', note.body));
+  meta.append(menuWrap);
+  card.append(meta);
+
+  const isEditing = state.inlineEdit?.id === note.id && !state.inlineEdit.deletedRemotely;
+  if (isEditing) {
+    const form = el('form', 'inline-edit-form');
+    const textarea = el('textarea', 'field inline-edit-textarea');
+    textarea.rows = 5;
+    textarea.maxLength = 40000;
+    textarea.value = state.inlineEdit.draft;
+    textarea.setAttribute('aria-label', '编辑笔记');
+    textarea.addEventListener('input', () => {
+      if (state.inlineEdit?.id === note.id) state.inlineEdit.draft = textarea.value;
+    });
+    textarea.addEventListener('keydown', (event) => {
+      if (event.isComposing) return;
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        form.requestSubmit();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelInlineEdit();
+      }
+    });
+    const err = el('p', 'inline-error', state.inlineEdit.conflictError || '');
+    err.setAttribute('role', 'alert');
+    err.hidden = !state.inlineEdit.conflictError;
+    const actionsRow = el('div', 'inline-edit-actions');
+    const cancelBtn = el('button', 'button button-secondary', '取消');
+    cancelBtn.type = 'button';
+    cancelBtn.dataset.action = 'cancel-inline-edit';
+    cancelBtn.disabled = state.inlineEdit.saving;
+    const saveBtn = el('button', 'button button-primary', state.inlineEdit.saving ? '保存中…' : '保存');
+    saveBtn.type = 'submit';
+    saveBtn.disabled = state.inlineEdit.saving;
+    actionsRow.append(cancelBtn, saveBtn);
+    form.append(textarea, err, actionsRow);
+    form.addEventListener('submit', submitInlineEdit);
+    card.append(form);
+    return card;
+  }
+
+  const bodyEl = el('div', 'card-body');
+  for (const token of tokenizeBody(note.body)) {
+    if (token.type === 'tag') {
+      const tagBtn = el('button', 'inline-tag', token.text);
+      tagBtn.type = 'button';
+      tagBtn.dataset.filter = 'tag:' + token.tag.toLowerCase();
+      bodyEl.append(tagBtn);
+    } else {
+      bodyEl.append(document.createTextNode(token.text));
+    }
+  }
+  card.append(bodyEl);
+
+  const rawBody = note.body || '';
+  if (rawBody.split('\n').length >= 6 || rawBody.length > 260) {
+    card.classList.add('is-collapsible');
+    const expandBtn = el('button', 'card-expand', '展开');
+    expandBtn.type = 'button';
+    expandBtn.dataset.action = 'toggle-expand';
+    card.append(expandBtn);
+  }
+
+  if (state.inlineDeleteId === note.id) {
+    const confirmBar = el('div', 'inline-delete-confirm');
+    confirmBar.append(el('span', '', '确定删除这条笔记？'));
+    const cancelDel = el('button', 'button button-secondary', '取消');
+    cancelDel.type = 'button';
+    cancelDel.dataset.action = 'cancel-inline-delete';
+    const confirmDel = el('button', 'button button-danger', '确认删除');
+    confirmDel.type = 'button';
+    confirmDel.dataset.action = 'confirm-inline-delete';
+    confirmDel.dataset.noteId = note.id;
+    confirmBar.append(cancelDel, confirmDel);
+    card.append(confirmBar);
+  }
 
   const bottom = el('div', 'card-bottom');
-  for (const tag of tags.slice(0, 3)) bottom.append(el('span', 'card-tag', '#' + tag));
-  if (note.turns?.length) bottom.append(labeled(el('span', 'card-chat'), 'chat', Math.floor(note.turns.length / 2) + ' 轮对话'));
-  if (bottom.childElementCount) card.append(bottom);
+  const chatBtn = el('button', 'card-chat');
+  chatBtn.type = 'button';
+  chatBtn.dataset.openNote = note.id;
+  labeled(chatBtn, 'chat', note.turns?.length ? Math.floor(note.turns.length / 2) + ' 轮对话' : 'AI 对话');
+  bottom.append(chatBtn);
+  card.append(bottom);
   return card;
+}
+
+function syncInlineEditAfterRefresh() {
+  if (!state.inlineEdit || state.inlineEdit.deletedRemotely) return;
+  if (!state.notes.has(state.inlineEdit.id)) {
+    state.inlineEdit.deletedRemotely = true;
+  }
+}
+
+function startInlineEdit(id) {
+  const note = state.notes.get(id);
+  if (!note) return;
+  const prevEditId = state.inlineEdit && !state.inlineEdit.deletedRemotely ? state.inlineEdit.id : null;
+  const prevMenuId = state.openMenuId;
+  const prevDelId = state.inlineDeleteId;
+  state.openMenuId = null;
+  state.inlineDeleteId = null;
+  state.inlineEdit = {
+    id,
+    revision: note.revision,
+    draft: note.body,
+    conflictError: '',
+    saving: false,
+    deletedRemotely: false,
+  };
+  if (prevEditId && prevEditId !== id) rerenderCard(prevEditId);
+  if (prevMenuId && prevMenuId !== id && prevMenuId !== prevEditId) rerenderCard(prevMenuId);
+  if (prevDelId && prevDelId !== id && prevDelId !== prevEditId && prevDelId !== prevMenuId) rerenderCard(prevDelId);
+  renderOrphanDraft();
+  const card = rerenderCard(id);
+  const ta = card?.querySelector('textarea');
+  if (ta) {
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+}
+
+function cancelInlineEdit() {
+  if (!state.inlineEdit || state.inlineEdit.saving) return;
+  const id = state.inlineEdit.id;
+  state.inlineEdit = null;
+  renderOrphanDraft();
+  rerenderCard(id);
+}
+
+async function submitInlineEdit(event) {
+  event.preventDefault();
+  const edit = state.inlineEdit;
+  if (!edit || edit.saving || edit.deletedRemotely) return;
+  const note = state.notes.get(edit.id);
+  if (!note) {
+    edit.deletedRemotely = true;
+    renderOrphanDraft();
+    return;
+  }
+  const body = edit.draft.trim();
+  if (!body) {
+    edit.conflictError = '笔记内容不能为空。';
+    rerenderCard(edit.id);
+    return;
+  }
+  edit.saving = true;
+  edit.conflictError = '';
+  rerenderCard(edit.id);
+  try {
+    await mutate({
+      id: note.id,
+      expectedRevision: edit.revision,
+      note: notePayload({ ...note, body }),
+    });
+    if (state.inlineEdit === edit) state.inlineEdit = null;
+    rerenderCard(note.id);
+    renderOrphanDraft();
+    notify('修改已同步');
+  } catch (error) {
+    if (state.inlineEdit !== edit) return;
+    edit.saving = false;
+    if (error.status === 409 && error.current?.deleted) {
+      edit.deletedRemotely = true;
+      renderOrphanDraft();
+    } else if (error.status === 409 && error.current?.note) {
+      edit.revision = error.current.note.revision;
+      edit.conflictError = '另一端已修改这条笔记，草稿已保留。再次点击保存将以当前内容覆盖。';
+      rerenderCard(edit.id);
+    } else {
+      edit.conflictError = error.message;
+      rerenderCard(edit.id);
+    }
+  }
+}
+
+async function confirmInlineDelete(id) {
+  const note = state.notes.get(id);
+  if (!note) return;
+  state.inlineDeleteId = null;
+  try {
+    await mutate({ id: note.id, expectedRevision: note.revision, delete: true });
+    notify('笔记已删除');
+  } catch (error) {
+    if (error.status === 409 && error.current?.deleted) notify('笔记已删除');
+    else notify(error.status === 409 ? '这条笔记有新修改，请查看后再删除。' : error.message);
+  }
+}
+
+async function copyText(text, cardEl) {
+  let copied = false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch {}
+  }
+  if (!copied) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.append(ta);
+    ta.select();
+    try {
+      copied = document.execCommand('copy') === true;
+    } catch {
+      copied = false;
+    } finally {
+      ta.remove();
+    }
+  }
+  if (copied) {
+    notify('已复制');
+  } else {
+    if (cardEl) {
+      cardEl.classList.add('expanded');
+      const expandBtn = cardEl.querySelector('[data-action="toggle-expand"]');
+      if (expandBtn) expandBtn.textContent = '收起';
+    }
+    notify('当前浏览器限制自动复制，已展开正文请手动划选复制');
+  }
 }
 
 function updateComposer() {
   $('save-note').disabled = !state.loaded || !($('note-body').value.trim()) || $('composer').dataset.saving === 'true';
+}
+
+function closeTagSuggest() {
+  state.tagSuggest = { open: false, items: [], activeIndex: 0, start: 0, end: 0 };
+  const box = $('tag-suggest');
+  if (box) {
+    box.hidden = true;
+    box.replaceChildren();
+  }
+}
+
+function renderTagSuggest() {
+  const box = $('tag-suggest');
+  if (!state.tagSuggest.open || !state.tagSuggest.items.length) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  state.tagSuggest.items.forEach((item, index) => {
+    const btn = el('button', 'tag-suggest-item' + (index === state.tagSuggest.activeIndex ? ' active' : ''));
+    btn.type = 'button';
+    btn.setAttribute('role', 'option');
+    btn.setAttribute('aria-selected', String(index === state.tagSuggest.activeIndex));
+    btn.dataset.suggestIndex = String(index);
+    btn.append(el('span', '', '#' + item.tag), el('span', 'nav-count', String(item.count)));
+    fragment.append(btn);
+  });
+  box.replaceChildren(fragment);
+  box.hidden = false;
+}
+
+function updateTagSuggest() {
+  const input = $('note-body');
+  if (!state.loaded || input.disabled || document.activeElement !== input) {
+    closeTagSuggest();
+    return;
+  }
+  const pos = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, pos);
+  const match = before.match(/(?:^|[\s])#([\p{L}\p{N}_\/]*)$/u);
+  if (!match) {
+    closeTagSuggest();
+    return;
+  }
+  const prefix = match[1].toLowerCase();
+  const allTags = state.noteIndex?.tagFreq || [];
+  const starts = [];
+  const contains = [];
+  for (const item of allTags) {
+    if (!prefix || item.key.startsWith(prefix)) starts.push(item);
+    else if (item.key.includes(prefix)) contains.push(item);
+  }
+  const items = [...starts, ...contains].slice(0, 8);
+  if (!items.length) {
+    closeTagSuggest();
+    return;
+  }
+  const hashStart = pos - match[1].length - 1;
+  state.tagSuggest = { open: true, items, activeIndex: 0, start: hashStart, end: pos };
+  renderTagSuggest();
+}
+
+function moveTagSuggest(delta) {
+  if (!state.tagSuggest.open || !state.tagSuggest.items.length) return;
+  const len = state.tagSuggest.items.length;
+  state.tagSuggest.activeIndex = (state.tagSuggest.activeIndex + delta + len) % len;
+  renderTagSuggest();
+}
+
+function applyTagSuggest(index) {
+  const item = state.tagSuggest.items[index];
+  if (!item) return;
+  const input = $('note-body');
+  input.setRangeText('#' + item.tag + ' ', state.tagSuggest.start, state.tagSuggest.end, 'end');
+  closeTagSuggest();
+  input.focus();
+  syncComposerUI();
+}
+
+function syncComposerUI() {
+  updateComposer();
+  const input = $('note-body');
+  input.style.height = 'auto';
+  const nextHeight = Math.min(320, Math.max(75, input.scrollHeight));
+  input.style.height = nextHeight + 'px';
+  updateTagSuggest();
 }
 
 async function createNote(event) {
@@ -435,7 +1066,7 @@ async function createNote(event) {
     else setError('compose-error', error.message);
   } finally {
     $('composer').dataset.saving = 'false';
-    updateComposer();
+    syncComposerUI();
   }
 }
 
@@ -443,8 +1074,12 @@ function finishCompose(note) {
   if ($('note-body').value.trim() === note.body) $('note-body').value = '';
   state.composeDraft = null;
   state.filter = 'all';
-  $('search').value = '';
-  renderFeed();
+  state.dayFilter = null;
+  state.bookFilter = null;
+  clearSearchInput();
+  closeTagSuggest();
+  syncComposerUI();
+  renderFeedList({ reset: true });
   notify('笔记已保存');
 }
 
@@ -1103,8 +1738,9 @@ async function saveSelectedWereadBooks() {
       renderWereadBooks();
       if (totalSaved > 0) {
         state.filter = 'reading';
-        $('search').value = '';
-        renderFeed();
+        clearSearchInput();
+        rebuildNoteIndex();
+        renderFeedList({ reset: true });
       }
       const parts = [
         (stopped ? '已停止：完成 ' : '已完成 ') + doneBooks + ' / ' + targets.length + ' 本',
@@ -1163,8 +1799,9 @@ async function saveWereadNotes() {
     $('weread-samples').replaceChildren();
     renderWereadBooks();
     state.filter = 'reading';
-    $('search').value = '';
-    renderFeed();
+    clearSearchInput();
+    rebuildNoteIndex();
+    renderFeedList({ reset: true });
     const skipped = preview.skippedDuringSave ? '，跳过 ' + preview.skippedDuringSave + ' 条已存在或此前删除的笔记' : '';
     setError('weread-progress', '已导入《' + preview.book.title + '》的 ' + preview.saved + ' 条笔记' + skipped + '。');
   } catch (error) {
@@ -1245,8 +1882,9 @@ async function importNotes(event) {
     $('import-text').value = '';
     $('import-dialog').close();
     state.filter = 'reading';
-    $('search').value = '';
-    renderFeed();
+    clearSearchInput();
+    rebuildNoteIndex();
+    renderFeedList({ reset: true });
     notify(imported ? '已导入 ' + imported + ' 条读书摘录' : '这批笔记已导入');
   } catch (error) {
     setError('import-error', error.message);
@@ -1414,7 +2052,8 @@ async function saveBulkNotes(preview, path, statusId) {
     if (state.user?.id === preview.account) updateBulkProgress(preview, statusId);
     setSync('error', '同步未完成');
     if (error.status === 401 || error.status === 403) setAuthNotice('登录状态已失效，请重新登录。', true);
-    renderFeed();
+    rebuildNoteIndex();
+    renderFeedList({ reset: true });
     throw error;
   } finally {
     --state.writeCount;
@@ -1433,8 +2072,9 @@ async function saveFlomoImport(preview) {
     throw error;
   }
   state.filter = 'journal';
-  $('search').value = '';
-  renderFeed();
+  clearSearchInput();
+  rebuildNoteIndex();
+  renderFeedList({ reset: true });
   const skipped = preview.skippedDuringSave ? '，跳过 ' + preview.skippedDuringSave + ' 条已存在或此前删除的笔记' : '';
   $('flomo-dialog').close();
   notify('已导入 ' + preview.saved + ' 条 flomo 笔记' + skipped);
@@ -1495,9 +2135,98 @@ const actions = {
     const before = input.value.slice(0, input.selectionStart);
     input.setRangeText((before.length && !/\s$/.test(before) ? ' ' : '') + '#', input.selectionStart, input.selectionEnd, 'end');
     input.focus();
-    updateComposer();
+    syncComposerUI();
   },
-  'clear-search': () => { $('search').value = ''; renderFeed(); },
+  'format-bullet': () => {
+    if (!state.loaded) return;
+    const input = $('note-body');
+    const start = input.selectionStart;
+    const before = input.value.slice(0, start);
+    const prefix = before.length && !before.endsWith('\n') ? '\n- ' : '- ';
+    input.setRangeText(prefix, start, input.selectionEnd, 'end');
+    input.focus();
+    syncComposerUI();
+  },
+  'format-ordered': () => {
+    if (!state.loaded) return;
+    const input = $('note-body');
+    const start = input.selectionStart;
+    const before = input.value.slice(0, start);
+    const prefix = before.length && !before.endsWith('\n') ? '\n1. ' : '1. ';
+    input.setRangeText(prefix, start, input.selectionEnd, 'end');
+    input.focus();
+    syncComposerUI();
+  },
+  'format-bold': () => {
+    if (!state.loaded) return;
+    const input = $('note-body');
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    const selected = input.value.slice(start, end);
+    if (selected) {
+      input.setRangeText('**' + selected + '**', start, end, 'end');
+    } else {
+      input.setRangeText('**文本**', start, end, 'end');
+      input.setSelectionRange(start + 2, start + 4);
+    }
+    input.focus();
+    syncComposerUI();
+  },
+  'clear-search': () => { clearSearchInput(); renderFeedList({ reset: true }); },
+  'clear-filters': () => { state.dayFilter = null; state.bookFilter = null; renderFeedList({ reset: true }); },
+  'toggle-tag-sort': () => {
+    state.tagSort = state.tagSort === 'count' ? 'alpha' : 'count';
+    rebuildNoteIndex();
+  },
+  'toggle-sort': () => {
+    state.sortOrder = state.sortOrder === 'newest' ? 'oldest' : 'newest';
+    renderFeedList({ reset: true });
+  },
+  'reshuffle-random': () => {
+    state.randomIds = sampleRandomNotes(state.noteIndex?.all || [], 10).map((n) => n.id);
+    renderFeedList({ reset: true });
+  },
+  'load-more': () => appendNextPage(),
+  'card-menu': (button) => {
+    const id = button.dataset.noteId;
+    const prev = state.openMenuId;
+    state.openMenuId = prev === id ? null : id;
+    if (prev && prev !== id) rerenderCard(prev);
+    rerenderCard(id);
+  },
+  'card-inline-edit': (button) => startInlineEdit(button.dataset.noteId),
+  'cancel-inline-edit': cancelInlineEdit,
+  'dismiss-orphan-draft': () => {
+    state.inlineEdit = null;
+    renderOrphanDraft();
+  },
+  'card-copy': (button) => {
+    const id = button.dataset.noteId;
+    const note = state.notes.get(id);
+    closeCardMenu();
+    if (!note) return;
+    copyText(note.body || '', findCardEl(id));
+  },
+  'card-inline-delete': (button) => {
+    const id = button.dataset.noteId;
+    const prevDel = state.inlineDeleteId;
+    state.openMenuId = null;
+    state.inlineDeleteId = id;
+    if (prevDel && prevDel !== id) rerenderCard(prevDel);
+    rerenderCard(id);
+  },
+  'cancel-inline-delete': () => {
+    const prev = state.inlineDeleteId;
+    state.inlineDeleteId = null;
+    if (prev) rerenderCard(prev);
+  },
+  'confirm-inline-delete': (button) => confirmInlineDelete(button.dataset.noteId),
+  'toggle-expand': (button) => {
+    const card = button.closest('.note-card');
+    if (!card) return;
+    const expanded = card.classList.toggle('expanded');
+    button.textContent = expanded ? '收起' : '展开';
+  },
   'edit-note': () => toggleEdit(true),
   'cancel-edit': () => toggleEdit(false),
   'delete-note': () => { $('delete-confirm').hidden = false; },
@@ -1520,9 +2249,40 @@ const actions = {
 
 document.addEventListener('click', (event) => {
   if (!event.target.closest) return;
-  const button = event.target.closest('button');
   if (!$('sidebar').contains(event.target) && !event.target.closest('#mobile-toggle')) sidebar(false);
+  if (state.openMenuId && !event.target.closest('.card-menu-wrap')) closeCardMenu();
+  if (state.tagSuggest.open && !event.target.closest('.composer-input-wrap')) closeTagSuggest();
+  const button = event.target.closest('button');
   if (!button || button.disabled) return;
+  if (button.dataset.suggestIndex !== undefined) {
+    applyTagSuggest(Number(button.dataset.suggestIndex));
+    return;
+  }
+  if (button.dataset.toggleTag) {
+    const path = button.dataset.toggleTag;
+    if (state.collapsedTags.has(path)) state.collapsedTags.delete(path);
+    else state.collapsedTags.add(path);
+    renderTagList();
+    return;
+  }
+  if (button.dataset.day) {
+    const day = button.dataset.day;
+    state.dayFilter = state.dayFilter === day ? null : day;
+    sidebar(false);
+    renderFeedList({ reset: true });
+    return;
+  }
+  if (button.dataset.bookFilter) {
+    state.bookFilter = button.dataset.bookFilter;
+    renderFeedList({ reset: true });
+    return;
+  }
+  if (button.dataset.clearFilter) {
+    if (button.dataset.clearFilter === 'day') state.dayFilter = null;
+    if (button.dataset.clearFilter === 'book') state.bookFilter = null;
+    renderFeedList({ reset: true });
+    return;
+  }
   if (button.dataset.close) {
     if (button.dataset.close === 'note-dialog') closeNote();
     if (button.dataset.close === 'settings-dialog') $('settings-dialog').close();
@@ -1530,16 +2290,31 @@ document.addEventListener('click', (event) => {
     if (button.dataset.close === 'flomo-dialog' && !state.flomoWorking) $('flomo-dialog').close();
   }
   if (button.dataset.action && actions[button.dataset.action]) actions[button.dataset.action](button);
-  if (button.dataset.openNote) openNote(button.dataset.openNote);
+  if (button.dataset.openNote) {
+    closeCardMenu();
+    openNote(button.dataset.openNote);
+  }
   if (button.dataset.filter) {
     state.filter = button.dataset.filter;
     sidebar(false);
-    renderFeed();
+    renderFeedList({ reset: true });
   }
   if (button.dataset.prompt) {
     $('chat-input').value = button.dataset.prompt;
     $('chat-input').focus();
   }
+});
+
+$('note-list').addEventListener('dblclick', (event) => {
+  if (event.target.closest('.inline-tag, button, a, textarea, input, .inline-edit-form')) return;
+  const bodyEl = event.target.closest('.card-body');
+  if (!bodyEl) return;
+  const card = bodyEl.closest('.note-card[data-note-id]');
+  if (card) startInlineEdit(card.dataset.noteId);
+});
+
+$('tag-suggest').addEventListener('mousedown', (event) => {
+  event.preventDefault();
 });
 
 $('note-dialog').addEventListener('cancel', (event) => { event.preventDefault(); closeNote(); });
@@ -1584,13 +2359,59 @@ $('import-file').addEventListener('change', pickImportFile);
 $('chat-form').addEventListener('submit', sendChat);
 $('edit-form').addEventListener('submit', submitEdit);
 $('composer').addEventListener('submit', createNote);
-$('note-body').addEventListener('input', updateComposer);
-$('search').addEventListener('input', renderFeed);
+$('note-body').addEventListener('input', syncComposerUI);
+$('note-body').addEventListener('blur', closeTagSuggest);
+$('search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    renderFeedList({ reset: true });
+  }, 150);
+});
 $('refresh-button').addEventListener('click', () => refresh());
 $('mobile-toggle').addEventListener('click', () => sidebar(!$('sidebar').classList.contains('open')));
 
 document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
+  if (event.target.id === 'note-body' && state.tagSuggest.open) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveTagSuggest(1);
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveTagSuggest(-1);
+      return;
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault();
+      applyTagSuggest(state.tagSuggest.activeIndex);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeTagSuggest();
+      return;
+    }
+  }
+  if (event.key === 'Escape') {
+    if (state.tagSuggest.open) {
+      event.preventDefault();
+      closeTagSuggest();
+      return;
+    }
+    if (state.openMenuId) {
+      event.preventDefault();
+      closeCardMenu();
+      return;
+    }
+    if (state.inlineEdit && !state.inlineEdit.deletedRemotely) {
+      event.preventDefault();
+      cancelInlineEdit();
+      return;
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !document.querySelector('dialog[open]')) {
     event.preventDefault();
     $('search').focus();
@@ -1614,4 +2435,5 @@ window.addEventListener('pagehide', () => { $('weread-key').value = ''; state.we
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh({ silent: true }); });
 setInterval(() => { if (!document.hidden) refresh({ silent: true }); }, 15000);
 refresh();
-renderFeed();
+rebuildNoteIndex();
+renderFeedList({ reset: true });

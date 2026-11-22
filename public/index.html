@@ -33,6 +33,8 @@
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M11 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h5m2-11 4 4-4 4m-4-4h11"/></symbol>
     <symbol id="i-retry" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2 6.5M20 4v7h-7"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
+    <symbol id="i-sort" viewBox="0 0 24 24"><path d="M7 4v16m0 0-3-3m3 3 3-3M17 20V4m0 0-3 3m3-3 3 3"/></symbol>
   </svg>
 
   <div class="shell">
@@ -56,9 +58,13 @@
         <button class="nav-item active" type="button" data-filter="all" aria-current="page"><svg><use href="#i-grid"></use></svg><span>全部笔记</span><span class="nav-count" id="count-all"></span></button>
         <button class="nav-item" type="button" data-filter="journal"><svg><use href="#i-note"></use></svg><span>日志</span><span class="nav-count" id="count-journal"></span></button>
         <button class="nav-item" type="button" data-filter="reading"><svg><use href="#i-book"></use></svg><span>读书摘录</span><span class="nav-count" id="count-reading"></span></button>
+        <button class="nav-item" type="button" data-filter="random"><svg><use href="#i-shuffle"></use></svg><span>随机漫步</span></button>
       </nav>
       <div class="side-section tag-section" id="tag-section" hidden>
-        <span class="nav-label">标签</span>
+        <div class="nav-label-row">
+          <span class="nav-label">标签</span>
+          <button type="button" class="tag-sort-btn" id="tag-sort-btn" data-action="toggle-tag-sort" title="切换标签排序">按数量</button>
+        </div>
         <div id="tag-list"></div>
       </div>
       <div class="side-footer">
@@ -74,6 +80,7 @@
         <div class="topbar-left">
           <button class="icon-button mobile-toggle" id="mobile-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
           <h1 id="page-title">全部笔记</h1>
+          <button class="icon-button sort-button" id="sort-button" type="button" data-action="toggle-sort" aria-label="切换排序" title="最新优先"><svg><use href="#i-sort"></use></svg></button>
           <button class="icon-button" type="button" data-action="focus-compose" aria-label="写笔记" title="写笔记"><svg><use href="#i-edit"></use></svg></button>
           <button class="icon-button refresh-button" id="refresh-button" type="button" aria-label="立即同步" title="立即同步"><svg><use href="#i-retry"></use></svg></button>
         </div>
@@ -88,18 +95,32 @@
 
         <form id="composer" class="composer" aria-label="写笔记">
           <label class="sr-only" for="note-body">随手记</label>
-          <textarea id="note-body" rows="3" maxlength="40000" placeholder="现在的想法是…" disabled></textarea>
+          <div class="composer-input-wrap">
+            <textarea id="note-body" rows="3" maxlength="40000" placeholder="现在的想法是…" disabled></textarea>
+            <div id="tag-suggest" class="tag-suggest" role="listbox" aria-label="标签补全" hidden></div>
+          </div>
           <p class="inline-error" id="compose-error" role="alert" hidden></p>
           <div class="composer-footer">
             <button class="icon-button tag-insert" type="button" data-action="insert-tag" title="插入标签" aria-label="插入标签"><svg><use href="#i-hash"></use></svg></button>
+            <button class="icon-button format-btn" type="button" data-action="format-bullet" title="无序列表" aria-label="无序列表">•</button>
+            <button class="icon-button format-btn" type="button" data-action="format-ordered" title="有序列表" aria-label="有序列表">1.</button>
+            <button class="icon-button format-btn" type="button" data-action="format-bold" title="加粗" aria-label="加粗"><strong>B</strong></button>
             <kbd class="compose-shortcut" id="save-shortcut">Ctrl ↵</kbd>
             <button class="button button-primary save-note" id="save-note" type="submit" aria-label="保存笔记" title="保存笔记" disabled><svg><use href="#i-arrow"></use></svg></button>
           </div>
         </form>
 
-        <section class="feed" aria-label="笔记时间线">
+        <section id="feed" class="feed" aria-label="笔记时间线">
+          <div id="inline-orphan-draft" class="orphan-draft notice" hidden>
+            <div class="orphan-draft-head">
+              <span>这条笔记已在另一端删除，未保存的草稿已保留，可复制后关闭：</span>
+              <button type="button" class="button button-secondary" data-action="dismiss-orphan-draft">关闭</button>
+            </div>
+            <textarea id="orphan-draft-body" class="field" rows="4" readonly aria-label="保留的草稿"></textarea>
+          </div>
           <div class="feed-header">
             <p class="feed-count" id="feed-count" hidden></p>
+            <div class="active-filters" id="active-filters" hidden></div>
             <div class="sync-state" id="sync-state" role="status"><span></span>正在连接</div>
           </div>
           <div id="note-list" class="note-list" aria-live="polite"></div>
