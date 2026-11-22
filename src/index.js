@@ -272,6 +272,22 @@ function codexRelay(env) {
   }
 }
 
+function serverAI(env) {
+  const address = env?.OPENAI_BASE_URL;
+  const apiKey = env?.OPENAI_API_KEY;
+  const model = env?.OPENAI_MODEL ?? "gpt-5.4";
+  if (typeof address !== "string" || typeof apiKey !== "string" || !/^[!-~]{1,512}$/.test(apiKey) ||
+      typeof model !== "string" || !/^[A-Za-z0-9_.:-]{1,100}$/.test(model)) return null;
+  try {
+    const url = new URL(address);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") ||
+        url.username || url.password || url.search || url.hash) return null;
+    return { baseUrl: url.href.replace(/\/+$/, ""), apiKey, model };
+  } catch {
+    return null;
+  }
+}
+
 async function askCodex(input, relay, clientSignal) {
   if (!relay) throw new ApiError(503, "Codex 中转还未配置。");
   if (typeof input.note !== "string" || !input.note.trim()) throw new ApiError(400, "笔记正文为空。");
@@ -310,11 +326,12 @@ async function askCodex(input, relay, clientSignal) {
   return json({ reply });
 }
 
-async function askAI(input) {
+async function askAI(input, baseUrl = "https://api.openai.com/v1", signal) {
   const { note, apiKey } = input;
   const model = typeof input.model === "string" ? input.model.trim() : "";
+  const keyPattern = input.provider === "codex" ? /^[!-~]{1,512}$/ : /^[!-~]{10,512}$/;
   if (typeof note !== "string" || !note.trim()) throw new ApiError(400, "笔记正文为空。");
-  if (typeof apiKey !== "string" || !/^[!-~]{10,512}$/.test(apiKey)) {
+  if (typeof apiKey !== "string" || !keyPattern.test(apiKey)) {
     throw new ApiError(400, "请在 AI 设置中填写有效的 OpenAI API Key。");
   }
   if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(model)) throw new ApiError(400, "请填写有效的模型名称。");
@@ -334,14 +351,16 @@ async function askAI(input) {
 
   let response;
   try {
-    response = await fetch("https://api.openai.com/v1/chat/completions", {
+    response = await fetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         "Accept": "application/json",
       },
-      signal: AbortSignal.timeout(55_000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(55_000)])
+        : AbortSignal.timeout(55_000),
       redirect: "error",
       body: JSON.stringify({ model, messages, store: false }),
     });
@@ -398,7 +417,7 @@ async function api(request, url, env) {
     return json({ error: "登录账号已变化，请重新连接后同步。" }, 403);
   }
   if (request.method === "GET") {
-    if (url.pathname === "/api/session") return json({ user, codexAvailable: codexRelay(env) !== null });
+    if (url.pathname === "/api/session") return json({ user, codexAvailable: Boolean(codexRelay(env) || serverAI(env)) });
     if (url.pathname === "/api/notes") return listNotes(env.DB, user.id);
   }
   if (request.method === "POST") {
@@ -411,7 +430,12 @@ async function api(request, url, env) {
     if (url.pathname === "/api/weread/notes") return json(await listWeReadNotes(await readJSON(request)));
     if (url.pathname === "/api/ai") {
       const input = await readJSON(request);
-      if (input.provider === "codex") return askCodex(input, codexRelay(env), request.signal);
+      if (input.provider === "codex") {
+        const srv = serverAI(env);
+        return srv
+          ? askAI({ ...input, apiKey: srv.apiKey, model: srv.model }, srv.baseUrl, request.signal)
+          : askCodex(input, codexRelay(env), request.signal);
+      }
       if (input.provider !== undefined && input.provider !== "openai") {
         throw new ApiError(400, "请选择已支持的 AI 服务。");
       }

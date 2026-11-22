@@ -1,10 +1,10 @@
 # 微记网页版
 
-打开已发布的微记，用创建此站点的 ChatGPT 账号登录。首页可以写日志、搜索和按标签筛选。每条笔记都可以打开独立的 AI 对话，也可以从读书页面导入微信读书。
+在 Sites 上打开已发布的微记，用创建此站点的 ChatGPT 账号登录；自托管启动见下文。首页可以写日志、搜索和按标签筛选。每条笔记都可以打开独立的 AI 对话，也可以从读书页面导入微信读书。
 
 笔记、读书元数据与 AI 对话保存在站点对应账户的数据库。每次编辑校验笔记的云端版本，以免覆盖其他设备较新的修改。删除会同步到同一账户的设备。
 
-网页版 AI 使用你输入的 OpenAI API Key。密钥在当前页面内存中保留，刷新页面后需重新填写。仅在发送问题时用该密钥请求 AI，笔记与近期对话会随请求提交。iOS 的 API Key 单独保存在系统钥匙串。
+网页版 AI 可使用服务端配置的网关、Codex 中转或你输入的 OpenAI API Key。手动输入的密钥在当前页面内存中保留，刷新页面后需重新填写。仅在发送问题时用该密钥请求 AI，笔记与近期对话会随请求提交。iOS 的 API Key 单独保存在系统钥匙串。
 
 ## 通过自己的 Codex 主机对话
 
@@ -22,8 +22,55 @@
 
 导出时间未附带时区时，默认按北京时间解释，可以手动调整。图片和录音等附件不会导入，包含正文的笔记仍可正常迁移。
 
+## 自托管（单账户）
+
+需要 Node.js 22.16+ 或 24+，使用内置 SQLite，无第三方运行时依赖：
+
+```sh
+npm run dev
+```
+
+默认打开 `http://127.0.0.1:5173`，所有访问共用一个本地账户，不经过 ChatGPT 登录。默认数据库为 `:memory:`，重启即清空；需要保留笔记时指定 `SQLITE_PATH`：
+
+```sh
+SQLITE_PATH=./data/notes.db npm run dev
+```
+
+父目录会自动创建，文件数据库启用 WAL，迁移只执行一次，使用相同路径重启会保留数据。备份或迁移数据库前先停止服务，或使用 SQLite 备份工具；不要在运行时仅复制 `.db` 而遗漏 WAL。数据库、备份和导出文件不应提交到仓库，建议生产数据存放在仓库外。
+
+### 监听与鉴权
+
+`PORT` 默认为 `5173`，`HOST` 默认为 `127.0.0.1`。`127.0.0.1`、`::1`、`localhost` 以外的监听地址必须同时设置非空 `PREVIEW_AUTH_TOKEN`，否则立即拒绝启动：
+
+```sh
+HOST=0.0.0.0 PREVIEW_AUTH_TOKEN='<随机生成的长口令>' SQLITE_PATH=./data/notes.db npm run dev
+```
+
+设置口令后，页面和 API 均需鉴权。浏览器弹出的 HTTP Basic Auth 用户名可任填，密码为该口令；API 也可使用 `Authorization: Bearer <访问口令>`，或 `weiji_auth` Cookie（值为 URL 编码后的口令）。未通过返回 `401`。即使只监听回环，也可设置口令限制本机访问。
+
+鉴权不提供传输加密。跨网络访问必须配合 HTTPS 反向代理或安全隧道，不要把明文 HTTP 直接暴露到公网。此模式没有独立多用户隔离，获准访问者都能读写同一份笔记。
+
+### 服务端 OpenAI 兼容网关
+
+通过环境变量配置网关，无需在浏览器填写密钥：
+
+```sh
+SQLITE_PATH=./data/notes.db \
+PREVIEW_AUTH_TOKEN='<访问口令>' \
+OPENAI_BASE_URL='https://gateway.example/v1' \
+OPENAI_API_KEY='<网关凭证>' \
+OPENAI_MODEL='gpt-5.4' \
+npm run dev
+```
+
+- `OPENAI_BASE_URL`：合法的 HTTP/HTTPS API 基址，不含用户名、密码、查询或片段；末尾斜杠自动去除，请求追加 `/chat/completions`。
+- `OPENAI_API_KEY`：1–512 个可打印 ASCII 字符，不能含空格；仅由服务端使用，不返回浏览器或写入笔记。
+- `OPENAI_MODEL`：默认 `gpt-5.4`，允许 1–100 个字母、数字或 `_.:-`。
+
+配置有效时，网页沿用「Codex · ChatGPT 订阅」入口并默认选中；服务端网关优先于 `CODEX_RELAY_*`，未配置有效网关时回退到原 Codex 中转。手动 OpenAI Key 模式仍直接请求 OpenAI。网关需自行完成订阅登录或上游凭证配置，本项目不处理 ChatGPT OAuth。
+
+示例均为占位符。实际密钥和访问口令应从部署环境安全注入，不要写入源码或提交到 Git；本地环境文件不会自动加载。
+
 ## 开发
 
-`npm run build` 将网页文件嵌入 Worker 入口，输出位于 `dist/server/index.js`。`drizzle/` 存放 D1 迁移。部署需要 Sites 登录网关注入账户身份。
-
-`npm run dev` 在 Node.js 24 上启动本地预览。它使用测试账户和内存数据库，重启后会清空预览记录。正式站点使用登录网关和持久数据库。
+`npm run build` 将网页文件嵌入 Worker 入口，输出位于 `dist/server/index.js`，构建产物不入库。`drizzle/` 存放兼容 D1/SQLite 的迁移；自托管通过 `_migrations` 记录已执行文件，兼容已有的笔记表。Sites 部署仍需要登录网关注入账户身份，独立 Node 自托管使用上述单账户访问门禁。

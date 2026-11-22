@@ -3,3 +3,12 @@ node_modules/
 .wrangler/
 .openai/state/
 .env
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite*
+data/
+.env.*
+*.zip
+*.bak
