@@ -1,4 +1,6 @@
 // Common layouts from WeRead's clipboard export and Markdown exporters.
+import { sha256 } from "./crypto.js";
+
 const patterns = {
     bookTitle: /^(?:#\s+)?《(.+?)》(?:\s*(?:读书笔记|阅读笔记|笔记|划线))?$/u,
     noteCount: /^\d+\s*(?:个|条|则)?\s*(?:笔记|条划线)$/u,
@@ -225,8 +227,8 @@ function parseEntries(text) {
 }
 
 async function fingerprint(body) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(body.trim().normalize("NFC")));
-    return btoa(String.fromCharCode(...new Uint8Array(digest)));
+    const digest = await sha256(new TextEncoder().encode(body.trim().normalize("NFC")));
+    return btoa(String.fromCharCode(...digest));
 }
 
 export async function parseWeRead(source) {

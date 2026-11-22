@@ -1,5 +1,6 @@
 import { parseWeRead, readWeReadFile } from './weread.js';
 import { parseFlomoFile } from './flomo.js';
+import { randomUUID } from './crypto.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -421,7 +422,7 @@ async function createNote(event) {
   if ($('save-note').disabled) return;
   const body = $('note-body').value.trim();
   const draft = state.composeDraft;
-  const note = draft?.body === body ? draft : { id: crypto.randomUUID(), body, createdAt: new Date().toISOString(), turns: [] };
+  const note = draft?.body === body ? draft : { id: randomUUID(), body, createdAt: new Date().toISOString(), turns: [] };
   state.composeDraft = note;
   $('composer').dataset.saving = 'true';
   updateComposer();
@@ -1211,7 +1212,7 @@ async function importNotes(event) {
         const key = importKey(entry);
         if (existing.has(key)) continue;
         existing.add(key);
-        items.push({ ...entry, id: crypto.randomUUID(), turns: [] });
+        items.push({ ...entry, id: randomUUID(), turns: [] });
       }
       importMode(items);
       if (items.length === 0) setError('import-error', '这批笔记已导入，无需重复保存。');

@@ -4,6 +4,8 @@ const zipEndSignature = 0x06054b50;
 const zipDirectorySignature = 0x02014b50;
 const zipFileSignature = 0x04034b50;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
+import { sha256 } from "./crypto.js";
+
 const encoder = new TextEncoder();
 
 function unsupportedArchive() {
@@ -279,7 +281,7 @@ function parseTimestamp(value, formatter) {
 }
 
 async function memoUUID(identity) {
-  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(identity)));
+  const bytes = await sha256(encoder.encode(identity));
   bytes[6] = (bytes[6] & 0x0f) | 0x80;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes.slice(0, 16), value => value.toString(16).padStart(2, "0")).join("");
