@@ -2858,9 +2858,10 @@ function renderInsLenses() {
 }
 
 function insCount(report) {
-  return report.analyzedCount === report.noteCount
+  const count = report.analyzedCount === report.noteCount
     ? `已分析 ${report.analyzedCount} 条笔记`
     : `已从 ${report.noteCount} 条中精选分析 ${report.analyzedCount} 条`;
+  return count + (report.contentTruncated ? '（部分正文已裁剪）' : '');
 }
 
 function renderInsHistory() {
@@ -2912,27 +2913,31 @@ async function previewInsScope() {
 }
 
 async function loadInsLenses(view) {
+  const revision = ++view.lensRevision;
   try {
-    const result = await request('/api/insights/lenses');
-    if (ins !== view) return;
+    const result = await request('/api/insights/lenses', undefined, view.lifecycle.signal);
+    if (ins !== view || revision !== view.lensRevision || view.lifecycle.signal.aborted) return;
+    view.lensesLoaded = true;
     view.lenses = result.lenses;
     view.categories = result.categories;
-    view.lensId = view.lenses.find(lens => lens.id === 'builtin:default')?.id ?? view.lenses[0]?.id;
+    if (!view.lenses.some(lens => lens.id === view.lensId)) {
+      view.lensId = view.lenses.find(lens => lens.id === 'builtin:default')?.id ?? view.lenses[0]?.id;
+    }
     renderInsLenses();
   } catch (error) {
-    if (ins === view) setError('ins-error', error.message);
+    if (ins === view && revision === view.lensRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
   }
 }
 
 async function loadInsReports(view) {
   const revision = ++view.historyRevision;
   try {
-    const { reports } = await request('/api/insights/reports');
-    if (ins !== view || revision !== view.historyRevision) return;
+    const { reports } = await request('/api/insights/reports', undefined, view.lifecycle.signal);
+    if (ins !== view || revision !== view.historyRevision || view.lifecycle.signal.aborted) return;
     view.reports = reports;
     renderInsHistory();
   } catch (error) {
-    if (ins === view && revision === view.historyRevision) setError('ins-error', error.message);
+    if (ins === view && revision === view.historyRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
   }
 }
 
@@ -2943,7 +2948,8 @@ function openInsights(opener) {
   closeAIDrawer();
   const view = ins = {
     opener, scrollY: window.scrollY, tab: 'new', cat: '全部', range: '7d', tags: new Set(),
-    lenses: [], categories: [], lensId: null, stats: null, reports: [], historyRevision: 0,
+    lifecycle: new AbortController(), lenses: [], categories: [], lensId: null, lensRevision: 0, lensesLoaded: false,
+    stats: null, reports: [], historyRevision: 0,
     report: null, reportRevision: 0, preview: null, run: null, lensDraft: null, requestKey: null,
   };
   $('ins-start-date').value = dayKey(new Date());
@@ -2968,6 +2974,7 @@ function closeInsights({ restore = true } = {}) {
   const view = ins;
   if (!view) return;
   ins = null;
+  view.lifecycle.abort();
   view.preview?.abort();
   view.run?.abort();
   insOverlay.hidden = true;
@@ -3033,8 +3040,10 @@ async function saveInsLens(event) {
   try {
     const { lens } = await request('/api/insights/lenses', body);
     if (ins !== view) return;
+    view.lensRevision++;
     view.lenses = [lens, ...view.lenses.filter(item => item.id !== lens.id)];
     renderInsLenses();
+    if (!view.lensesLoaded) loadInsLenses(view);
     if (view.lensDraft === draft) $('insight-lens-dialog').close();
   } catch (error) {
     if (ins === view && view.lensDraft === draft) setError('ins-lens-error', error.message);
@@ -3048,9 +3057,11 @@ async function deleteInsLens(id) {
   try {
     await request('/api/insights/lenses/' + id, undefined, undefined, 'DELETE');
     if (ins !== view) return;
+    view.lensRevision++;
     view.lenses = view.lenses.filter(lens => lens.id !== id);
     if (view.lensId === id) view.lensId = view.lenses[0]?.id ?? null;
     renderInsLenses();
+    if (!view.lensesLoaded) loadInsLenses(view);
   } catch (error) {
     if (ins === view) setError('ins-error', error.message);
   }
@@ -3101,10 +3112,10 @@ async function openInsReport(id) {
   const view = ins;
   const revision = ++view.reportRevision;
   try {
-    const { report } = await request('/api/insights/reports/' + id);
-    if (ins === view && revision === view.reportRevision) showInsReport(report);
+    const { report } = await request('/api/insights/reports/' + id, undefined, view.lifecycle.signal);
+    if (ins === view && revision === view.reportRevision && !view.lifecycle.signal.aborted) showInsReport(report);
   } catch (error) {
-    if (ins === view && revision === view.reportRevision) setError('ins-error', error.message);
+    if (ins === view && revision === view.reportRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
   }
 }
 

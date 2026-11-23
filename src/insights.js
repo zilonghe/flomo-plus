@@ -149,9 +149,11 @@ export function packInsightContext({ notes, profileText = "", maxNotesChars = in
     available -= limit;
   });
   const lines = [], citations = [];
+  let contentTruncated = false;
   for (const entry of entries) {
     const { ref, prefix, body } = entry;
     const limit = budgets.get(entry);
+    if (body.length > limit) contentTruncated = true;
     const excerpt = body.length <= limit ? body : body.trimStart().slice(0, limit);
     const note = notes[lines.length];
     const bookTitle = note.reading?.bookTitle;
@@ -160,7 +162,7 @@ export function packInsightContext({ notes, profileText = "", maxNotesChars = in
   }
   return {
     text: insightProfile(profileText) + insightNotesStart + lines.join("\n\n") + insightNotesEnd,
-    citations, analyzedCount: citations.length,
+    citations, analyzedCount: citations.length, contentTruncated,
   };
 }
 

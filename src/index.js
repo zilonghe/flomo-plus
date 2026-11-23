@@ -385,8 +385,6 @@ async function askAI(input, baseUrl = "https://api.openai.com/v1", signal) {
   ];
 
   const payload = JSON.stringify({ model, messages, store: false });
-  // Keep large insight requests intact on gateways that decode each HTTP chunk separately.
-  const body = input.insight ? payload.replace(/[^\x00-\x7f]/g, char => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0")) : payload;
   const timeout = AbortSignal.timeout(input.insight ? 90_000 : 55_000);
   let response;
   try {
@@ -399,7 +397,7 @@ async function askAI(input, baseUrl = "https://api.openai.com/v1", signal) {
       },
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       redirect: "error",
-      body,
+      body: payload,
     });
   } catch {
     throw new ApiError(502, "AI 服务连接失败，请稍后重试。");
@@ -706,10 +704,11 @@ async function saveInsightLens(db, account, input) {
 }
 
 function insightReportResult(row) {
+  const { contentTruncated = false, ...scope } = JSON.parse(row.scope_json);
   return {
-    id: row.id, lensId: row.lens_id, lensName: row.lens_name, title: row.title, scope: JSON.parse(row.scope_json),
+    id: row.id, lensId: row.lens_id, lensName: row.lens_name, title: row.title, scope,
     noteCount: row.note_count, tagCount: row.tag_count, dayCount: row.day_count, analyzedCount: row.analyzed_count,
-    provider: row.provider, createdAt: row.created_at,
+    contentTruncated: Boolean(contentTruncated), provider: row.provider, createdAt: row.created_at,
     ...(row.content === undefined ? { excerpt: row.excerpt } : { content: row.content, citations: JSON.parse(row.citations_json) }),
   };
 }
@@ -773,7 +772,7 @@ async function runInsight(env, account, input, signal) {
     (account, id, lens_id, lens_name, title, scope_json, note_count, tag_count, day_count, analyzed_count, content, citations_json, provider, client_request_id, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(account, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING RETURNING *`).bind(
-    account, crypto.randomUUID(), lens.id, lens.name, title, JSON.stringify(scope),
+    account, crypto.randomUUID(), lens.id, lens.name, title, JSON.stringify({ ...scope, contentTruncated: Boolean(packed.contentTruncated) }),
     stats.noteCount, stats.tagCount, stats.dayCount, packed.analyzedCount, content, JSON.stringify(citations), mode, clientRequestId ?? null, new Date().toISOString(),
   ).first();
   if (row) return json({ report: insightReportResult(row) });
