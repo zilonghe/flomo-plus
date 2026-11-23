@@ -289,16 +289,17 @@
         <input class="field" type="search" id="ai-note-picker-search" aria-label="搜索要引用的笔记" placeholder="搜索笔记">
         <div id="ai-note-picker-results"></div>
       </div>
-      <div id="ai-pinned-notes" aria-label="已引用的笔记"></div>
       <p id="ai-drawer-error" class="inline-error ai-drawer-error" role="alert" hidden></p>
-      <textarea class="field" id="ai-drawer-input" rows="3" maxlength="8000" aria-label="问题" placeholder="问问你的笔记…"></textarea>
-      <div class="ai-composer-actions">
-        <button class="button button-secondary" type="button" data-action="ai-pick-note" aria-label="引用笔记" title="引用笔记">@</button>
-        <label><input type="checkbox" id="ai-use-all-notes" checked>全库召回</label>
-        <select id="ai-drawer-model" class="field ins-model" aria-label="对话模型" hidden></select>
-        <button class="button button-primary" id="ai-drawer-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
+      <div class="ai-composer-card">
+        <div id="ai-pinned-notes" aria-label="已引用的笔记"></div>
+        <textarea class="ai-drawer-textarea" id="ai-drawer-input" rows="2" maxlength="8000" aria-label="问题" placeholder="问问你的笔记…"></textarea>
+        <div class="ai-composer-actions">
+          <button class="icon-button ai-pick-btn" type="button" data-action="ai-pick-note" aria-label="引用笔记" title="引用笔记">@</button>
+          <label class="ai-recall-toggle"><input type="checkbox" id="ai-use-all-notes" checked>全库召回</label>
+          <select id="ai-drawer-model" class="field ai-drawer-model" aria-label="对话模型" hidden></select>
+          <button class="button button-primary ai-send-btn" id="ai-drawer-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
+        </div>
       </div>
-      <p class="privacy-note">开启全库召回或个人画像时，相关笔记或画像会发送给所选 AI 服务。</p>
     </form>
   </aside>
 

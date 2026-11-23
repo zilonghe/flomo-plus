@@ -2546,7 +2546,7 @@ function walkNoteAction(action) {
 }
 
 function emptyAIState() {
-  return { session: null, sessions: [], profile: undefined, source: null, pins: new Set(), sending: null,
+  return { session: null, sessions: [], profile: undefined, source: null, insightContext: null, pins: new Set(), sending: null,
     profileTask: null, profileRequest: null, loadingSession: false, requestKey: null, selectedPanel: null, atIndex: null, loadSeq: 0 };
 }
 let ai = emptyAIState();
@@ -2599,6 +2599,7 @@ function resetAIDrawer() {
   closeAIDrawer();
   ai = emptyAIState();
   $('ai-drawer-input').value = '';
+  $('ai-drawer-input').placeholder = '问问你的笔记…';
   $('ai-note-picker-search').value = '';
   $('ai-note-picker-results').replaceChildren();
   $('ai-use-all-notes').checked = true;
@@ -2651,11 +2652,46 @@ function renderAISessions() {
 function renderAIThread() {
   const turns = ai.session?.turns ?? ai.source?.turns?.slice(-11) ?? [];
   const thread = $('ai-drawer-thread');
-  thread.replaceChildren(...turns.map(turn => {
+  const nodes = [];
+  if (!turns.length && ai.insightContext) {
+    const ctx = ai.insightContext;
+    const card = el('section', 'ai-context-card');
+    card.setAttribute('aria-label', '附带的洞察报告');
+    const head = el('div', 'ai-context-head');
+    const meta = el('div', 'ai-context-meta');
+    meta.append(el('span', 'ai-context-badge', ctx.lensName), el('strong', 'ai-context-title', ctx.title));
+    const close = actionButton('×', 'ai-clear-insight-context', 'icon-button ai-context-close');
+    close.setAttribute('aria-label', '移除附带的洞察报告');
+    close.title = '移除附带的洞察报告';
+    head.append(meta, close);
+    const preview = ctx.content.replace(/^#{1,6}\s+/gm, '').replace(/\n+/g, ' ').trim();
+    const summary = el('p', 'ai-context-excerpt', preview.slice(0, 120) + (preview.length > 120 ? '…' : ''));
+    card.append(head, summary);
+    if (ctx.content.length > 120) {
+      const details = el('details', 'ai-ctx-fold');
+      const toggle = el('summary', '', '查看报告摘要');
+      const body = el('div', 'ai-ctx-fold-body');
+      renderSafeMarkdown(body, ctx.content, ctx.citations ?? []);
+      details.append(toggle, body);
+      card.append(details);
+    }
+    nodes.push(card);
+  }
+  for (const turn of turns) {
     const message = el('div', 'ai-msg ai-msg-' + turn.role);
-    appendCitedText(message, turn.text, turn.citations);
-    return message;
-  }));
+    const matched = turn.role === 'user' && turn.text.match(/^\[洞察上下文：([^\n]+)\]\n([\s\S]*?)\n\n\[追问\]\n([\s\S]+)$/);
+    if (matched) {
+      const details = el('details', 'ai-ctx-fold ai-ctx-inline');
+      details.append(el('summary', '', '附带洞察：' + matched[1]), el('div', 'ai-ctx-fold-body', matched[2]));
+      const ask = el('div', 'ai-msg-ask');
+      appendCitedText(ask, matched[3], turn.citations);
+      message.append(details, ask);
+    } else {
+      appendCitedText(message, turn.text, turn.citations);
+    }
+    nodes.push(message);
+  }
+  thread.replaceChildren(...nodes);
   thread.scrollTop = thread.scrollHeight;
 }
 
@@ -2670,10 +2706,12 @@ function renderAIPins() {
     const note = state.notes.get(id);
     if (!note) return [];
     const name = note.reading?.bookTitle || note.body.trim().split('\n')[0].slice(0, 28);
-    const button = el('button', 'filter-chip', name + ' ×');
+    const button = el('button', 'ai-pin-chip');
     button.type = 'button';
     button.dataset.removePin = id;
+    button.title = name;
     button.setAttribute('aria-label', '移除引用：' + name);
+    button.append(el('span', 'ai-pin-label', name), el('span', 'ai-pin-x', '×'));
     return [button];
   }));
 }
@@ -2774,9 +2812,11 @@ function newAISession(source = null) {
   if (ai.sending) return false;
   ai.session = null;
   ai.source = source;
+  ai.insightContext = null;
   ai.pins = new Set(source ? [source.id] : []);
   ai.requestKey = null;
   $('ai-drawer-input').value = '';
+  $('ai-drawer-input').placeholder = '问问你的笔记…';
   $('ai-use-all-notes').checked = true;
   setError('ai-drawer-error', '');
   ai.loadSeq++;
@@ -2832,8 +2872,12 @@ async function sendDrawerChat(event) {
     openSettings();
     return;
   }
+  const ctx = !view.session ? view.insightContext : null;
+  const header = ctx ? `[洞察上下文：${ctx.title}（${ctx.lensName}）]\n` : '';
+  const tail = ctx ? `\n\n[追问]\n${message}` : '';
+  const payloadMessage = ctx ? header + ctx.content.slice(0, Math.max(0, 7900 - header.length - tail.length)) + tail : message;
   const body = {
-    ...settings, message, referencedNoteIds: [...view.pins],
+    ...settings, message: payloadMessage, referencedNoteIds: [...view.pins],
     useAllNotes: $('ai-use-all-notes').checked,
     ...(view.session ? { sessionId: view.session.id, expectedVersion: view.session.version } : {}),
     ...(!view.session && view.source ? { sourceNoteId: view.source.id } : {}),
@@ -2850,9 +2894,11 @@ async function sendDrawerChat(event) {
     const result = await request('/api/ai/chat', { ...body, clientRequestId: view.requestKey.id }, controller.signal);
     if (ai !== view) return;
     view.session = result.session;
+    view.insightContext = null;
     view.sessions = [view.session, ...view.sessions.filter(session => session.id !== view.session.id)].slice(0, 50);
     view.requestKey = null;
     input.value = '';
+    input.placeholder = '问问你的笔记…';
     renderAIThread();
     renderAISessions();
   } catch (error) {
@@ -3309,8 +3355,16 @@ function continueInsightChat() {
   if (ai.loadingSession || !newAISession()) { setError('ins-report-error', '请等待当前对话完成。'); return; }
   const noteIds = new Set(report.citations.map(cite => cite.noteId).filter(id => state.notes.has(id)));
   ai.pins = new Set([...noteIds].slice(0, 10));
+  ai.insightContext = {
+    title: report.title,
+    lensName: report.lensName,
+    content: report.content.slice(0, 2000),
+    citations: report.citations ?? [],
+  };
+  $('ai-drawer-input').value = '';
+  $('ai-drawer-input').placeholder = `针对《${report.title}》继续追问…`;
   renderAIPins();
-  $('ai-drawer-input').value = `我想继续探讨《${report.title}》（${report.lensName}）里的发现：\n\n${report.content.slice(0, 1400)}`.slice(0, 2000);
+  renderAIThread();
   closeInsights();
   openAIDrawer();
 }
@@ -3418,6 +3472,11 @@ const actions = {
   'ai-generate-profile': () => editAIProfile(true),
   'ai-save-profile': () => editAIProfile(false),
   'ai-pick-note': () => $('ai-note-picker').hidden ? openNotePicker() : closeNotePicker(true),
+  'ai-clear-insight-context': () => {
+    ai.insightContext = null;
+    $('ai-drawer-input').placeholder = '问问你的笔记…';
+    renderAIThread();
+  },
   'promote-note-chat': promoteNoteChat,
   'open-import': openImport,
   'open-flomo-import': openFlomoImport,
