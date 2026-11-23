@@ -214,11 +214,13 @@ function updateProfile() {
 let accountEpoch = 0;
 let accountLifecycle = new AbortController();
 let pendingProfileSave = null;
+let failedProfileSave = null;
 function resetAccount() {
   accountEpoch++;
   accountLifecycle.abort();
   accountLifecycle = new AbortController();
   pendingProfileSave = null;
+  failedProfileSave = null;
   closeProfile({ restore: false });
   closeInsights({ restore: false });
   closeAIChat({ restore: false });
@@ -2485,7 +2487,7 @@ function openProfile(opener) {
   closeInsights({ restore: false });
   const view = prof = {
     opener, scrollY, lifecycle: new AbortController(), profile: null,
-    loading: true, saving: false, generating: null, editing: false,
+    loading: false, loaded: false, loadError: false, saving: false, generating: null, editing: false,
   };
   $('notes-topbar').hidden = $('main').hidden = true;
   profileView.hidden = false;
@@ -2493,8 +2495,6 @@ function openProfile(opener) {
   window.scrollTo(0, 0);
   profileView.querySelector('.ins-scroll').scrollTop = 0;
   profileButton('close').focus({ preventScroll: true });
-  $('profile-status').textContent = '正在读取画像…';
-  syncProfileControls();
   loadGatewayModels(view.lifecycle.signal);
   loadProfile(view);
 }
@@ -2511,6 +2511,7 @@ function closeProfile({ restore = true } = {}) {
   $('profile-body').replaceChildren();
   $('profile-status').textContent = $('profile-meta').textContent = $('profile-text').value = '';
   setError('profile-error', '');
+  profileButton('reload').hidden = true;
   $('notes-topbar').hidden = $('main').hidden = false;
   syncNavActive();
   if (restore) {
@@ -2521,7 +2522,12 @@ function closeProfile({ restore = true } = {}) {
 }
 
 async function loadProfile(view) {
+  if (!view || view.loading) return;
   const signal = view.lifecycle.signal;
+  view.loading = true;
+  $('profile-status').textContent = '正在读取画像…';
+  setError('profile-error', '');
+  syncProfileControls();
   try {
     // Reopening during a save must read the committed profile.
     if (pendingProfileSave) await pendingProfileSave;
@@ -2529,9 +2535,16 @@ async function loadProfile(view) {
     const { profile } = await request('/api/ai/profile', undefined, signal);
     if (prof !== view) return;
     view.profile = profile;
+    view.loaded = true;
+    view.loadError = false;
+    failedProfileSave = null;
     renderProfile();
   } catch (error) {
-    if (prof === view) setError('profile-error', error.message);
+    if (prof === view) {
+      view.loaded = false;
+      view.loadError = true;
+      setError('profile-error', error.message);
+    }
   } finally {
     if (prof === view) {
       view.loading = false;
@@ -2553,8 +2566,9 @@ function renderProfile() {
 }
 
 function syncProfileControls() {
-  const busy = prof.loading || prof.saving;
+  const busy = !prof.loaded || prof.loading || prof.saving;
   const generating = Boolean(prof.generating);
+  profileButton('reload').hidden = !prof.loadError || prof.loading;
   const generate = profileButton('generate');
   generate.disabled = busy;
   generate.textContent = generating ? '停止生成' : prof.profile?.content ? '重新生成' : '生成画像';
@@ -2568,7 +2582,7 @@ function syncProfileControls() {
 }
 
 function setProfileEditing(editing) {
-  if (!prof || (editing && (prof.loading || prof.saving || prof.generating))) return;
+  if (!prof?.loaded || (editing && (prof.loading || prof.saving || prof.generating))) return;
   prof.editing = editing;
   $('profile-text').value = editing ? prof.profile?.content ?? '' : '';
   setError('profile-error', '');
@@ -2578,14 +2592,17 @@ function setProfileEditing(editing) {
 
 function saveProfile(toggleOnly = false) {
   const view = prof;
-  if (!view || view.loading || view.saving || view.generating) return;
+  if (!view?.loaded || view.loading || view.saving || view.generating) return;
   const enabled = $('profile-enabled').checked;
   const body = toggleOnly ? { enabled } : { enabled, content: $('profile-text').value };
   const status = $('profile-status');
   view.saving = true;
   status.textContent = '正在保存…';
   setError('profile-error', '');
-  const save = pendingProfileSave = request('/api/ai/profile', body, accountLifecycle.signal).then(({ profile }) => {
+  const signal = accountLifecycle.signal;
+  const save = pendingProfileSave = request('/api/ai/profile', body, signal).then(({ profile }) => {
+    if (signal.aborted) return false;
+    failedProfileSave = null;
     if (prof === view) {
       view.profile = profile;
       if (!toggleOnly) {
@@ -2597,10 +2614,12 @@ function saveProfile(toggleOnly = false) {
     }
     return true;
   }).catch(error => {
+    if (signal.aborted || error.name === 'AbortError') return false;
+    failedProfileSave = error.message || '个人画像设置保存失败';
     if (prof === view) {
       status.textContent = '';
       if (toggleOnly) $('profile-enabled').checked = view.profile?.enabled ?? true;
-      setError('profile-error', error.message);
+      setError('profile-error', failedProfileSave);
     }
     return false;
   }).finally(() => {
@@ -2616,7 +2635,7 @@ function saveProfile(toggleOnly = false) {
 
 async function generateProfile() {
   const view = prof;
-  if (!view || view.loading || view.saving) return;
+  if (!view?.loaded || view.loading || view.saving) return;
   if (view.generating) { view.generating.abort(); return; }
   const settings = providerSettings();
   if (settings.provider === 'openai' && !settings.apiKey) {
@@ -2650,6 +2669,7 @@ async function generateProfile() {
     if (prof !== view) return;
     if (!result) throw new Error('画像生成意外中断，请重试。');
     view.profile = result;
+    failedProfileSave = null;
     status.textContent = '已生成并保存';
   } catch (error) {
     if (prof !== view) return;
@@ -2882,7 +2902,7 @@ function renderAIThread(walkPinsOpen = false) {
       card.append(details);
     }
     nodes.push(card);
-  } else if (!turns.length && !ai.pendingTurn && ai.source) {
+  } else if (ai.source && ((!turns.length && !ai.pendingTurn) || (ai.fromWalk && ai.pins.size > 1))) {
     const card = el('section', 'ai-context-card');
     const relatedCount = [...ai.pins].filter(id => id !== ai.source.id).length;
     const label = !ai.fromWalk ? '笔记上下文'
@@ -2966,8 +2986,8 @@ function syncAIComposerPlaceholder() {
 function refreshAIPins() {
   renderAIPins();
   syncAIComposerPlaceholder();
-  if (!ai.session?.turns?.length && !ai.pendingTurn && ai.source) {
-    renderAIThread($('ai-chat-thread').querySelector('.ai-ctx-fold')?.open);
+  if (ai.source && (ai.fromWalk || (!ai.session?.turns?.length && !ai.pendingTurn))) {
+    renderAIThread($('ai-chat-thread').querySelector('.ai-context-card .ai-ctx-fold')?.open);
   }
 }
 
@@ -3108,7 +3128,8 @@ async function sendAIChat(event) {
     return;
   }
   const input = $('ai-chat-input');
-  const message = input.value.trim();
+  const draft = input.value;
+  const message = draft.trim();
   if (!state.loaded || !message || view.loadingSession) return;
   const settings = providerSettings();
   if (settings.provider === 'openai' && !settings.apiKey) {
@@ -3139,12 +3160,11 @@ async function sendAIChat(event) {
   renderAIThread();
   let completed = false;
   try {
-    if (ai !== view || signal.aborted) return;
-    if (pendingProfileSave) {
-      const saved = await pendingProfileSave;
-      if (ai !== view) return;
-      signal.throwIfAborted();
-      if (!saved) throw new Error('个人画像设置保存失败，已取消本次发送。');
+    const saved = pendingProfileSave ? await pendingProfileSave : true;
+    if (ai !== view) return;
+    signal.throwIfAborted();
+    if (!saved || failedProfileSave) {
+      throw new Error('个人画像设置保存失败，已取消本次发送，请前往「个人画像」重试。');
     }
     let streamError = null;
     await requestStream('/api/ai/chat', { ...body, stream: true, clientRequestId: view.requestKey.id }, {
@@ -3184,7 +3204,7 @@ async function sendAIChat(event) {
     if (ai !== view) return;
     view.pendingTurn = null;
     renderAIThread();
-    if (!input.value.trim()) input.value = message;
+    if (!input.value.trim()) input.value = draft;
     if (error.name === 'AbortError' || signal.aborted) {
       view.requestKey = null;
       return;
@@ -3800,6 +3820,7 @@ const actions = {
   'ai-delete-session': (button) => deleteAISession(button.dataset.sessionId),
   'open-ai-profile': openProfile,
   'profile-close': () => closeProfile(),
+  'profile-reload': () => loadProfile(prof),
   'profile-mobile-menu': () => sidebar(!$('sidebar').classList.contains('open')),
   'profile-generate': generateProfile,
   'profile-edit': () => setProfileEditing(true),
@@ -4101,6 +4122,7 @@ document.addEventListener('keydown', (event) => {
     if (document.querySelector('dialog[open]')) return;
     if (prof) {
       event.preventDefault();
+      if (prof.editing && prof.saving) return;
       if (prof.editing) setProfileEditing(false);
       else closeProfile();
       return;
