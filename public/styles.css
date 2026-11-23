@@ -385,7 +385,7 @@ hr{border:0;border-top:1px solid var(--sidebar-border);margin:18px 0}
 .ai-session-row [aria-current="true"]{background:var(--card);border-color:var(--border-strong);color:var(--foreground);font-weight:600}
 #ai-profile-text{margin:8px 0}
 .ai-profile-actions{justify-content:flex-end}
-#ai-drawer-thread{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+#ai-drawer-thread{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;overflow-anchor:none;padding:16px 18px 26px;display:flex;flex-direction:column;gap:14px}
 .ai-context-card{padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-xl);background:var(--sidebar);display:grid;gap:7px}
 .ai-context-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
 .ai-context-meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}
@@ -429,6 +429,8 @@ hr{border:0;border-top:1px solid var(--sidebar-border);margin:18px 0}
 .citation-chip{margin-inline:2px;border:1px solid var(--success-border);background:var(--success-soft);color:var(--success-foreground);border-radius:var(--radius-sm);padding:0 5px;font-size:.82em;font-weight:500;font-family:var(--font-mono);vertical-align:baseline;transition:background .12s,border-color .12s}
 .citation-chip:hover{background:rgba(16,185,129,.16);border-color:var(--success)}
 #ai-drawer-form{position:relative;padding:10px 14px max(12px,env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--sidebar-border);border-radius:0 0 calc(var(--radius-2xl) - 1px) calc(var(--radius-2xl) - 1px)}
+.ai-scroll-bottom{position:absolute;left:50%;bottom:calc(100% + 10px);transform:translateX(-50%);z-index:1;min-height:28px;padding:4px 12px;border-radius:999px;font-size:12px;box-shadow:0 4px 14px -2px rgba(0,0,0,.14);border-color:var(--border-strong)}
+.ai-scroll-bottom.is-streaming::before{content:"";width:6px;height:6px;border-radius:999px;background:var(--success);display:inline-block}
 .ai-composer-card{background:var(--card);border:1px solid var(--input);border-radius:var(--radius-xl);box-shadow:0 1px 2px rgba(0,0,0,.04);transition:border-color .14s,box-shadow .14s;overflow:hidden}
 .ai-composer-card:focus-within{border-color:var(--ring);box-shadow:0 0 0 3px var(--ring-alpha)}
 #ai-pinned-notes{display:flex;flex-wrap:wrap;gap:5px}

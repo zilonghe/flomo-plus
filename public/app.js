@@ -2546,7 +2546,7 @@ function walkNoteAction(action) {
 }
 
 function emptyAIState() {
-  return { session: null, sessions: [], profile: undefined, source: null, insightContext: null, pendingTurn: null, pins: new Set(), sending: null,
+  return { session: null, sessions: [], profile: undefined, source: null, insightContext: null, pendingTurn: null, followBottom: true, pins: new Set(), sending: null,
     profileTask: null, profileRequest: null, loadingSession: false, requestKey: null, selectedPanel: null, atIndex: null, loadSeq: 0 };
 }
 let ai = emptyAIState();
@@ -2613,6 +2613,7 @@ function resetAIDrawer() {
 
 function closeNotePicker(refocus = false) {
   $('ai-note-picker').hidden = true;
+  syncAIScrollButton();
   ai.atIndex = null;
   if (refocus) $('ai-drawer-input').focus({ preventScroll: true });
 }
@@ -2679,9 +2680,36 @@ function renderAIPendingBubble(bubble, pending) {
   }
 }
 
+function isAIThreadAtBottom(thread = $('ai-drawer-thread')) {
+  return thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 40;
+}
+
+function syncAIScrollButton() {
+  const thread = $('ai-drawer-thread');
+  const button = $('ai-scroll-bottom');
+  if (!button) return;
+  const scrollable = thread.scrollHeight > thread.clientHeight + 60;
+  const show = scrollable && !isAIThreadAtBottom(thread) && $('ai-note-picker').hidden;
+  button.hidden = !show;
+  button.classList.toggle('is-streaming', Boolean(ai.sending));
+}
+
+function scrollAIThreadToBottom(smooth = false) {
+  const thread = $('ai-drawer-thread');
+  ai.followBottom = true;
+  if (smooth && typeof thread.scrollTo === 'function') {
+    thread.scrollTo({ top: thread.scrollHeight, behavior: 'smooth' });
+  } else {
+    thread.scrollTop = thread.scrollHeight;
+  }
+  syncAIScrollButton();
+}
+
 function renderAIThread() {
   const turns = ai.session?.turns ?? ai.source?.turns?.slice(-11) ?? [];
   const thread = $('ai-drawer-thread');
+  const prevTop = thread.scrollTop;
+  const shouldFollow = ai.followBottom;
   const nodes = [];
   if (!turns.length && !ai.pendingTurn && ai.insightContext) {
     const ctx = ai.insightContext;
@@ -2724,7 +2752,9 @@ function renderAIThread() {
     nodes.push(reply);
   }
   thread.replaceChildren(...nodes);
-  thread.scrollTop = thread.scrollHeight;
+  if (shouldFollow) thread.scrollTop = thread.scrollHeight;
+  else thread.scrollTop = prevTop;
+  syncAIScrollButton();
 }
 
 function renderAIProfile() {
@@ -2767,6 +2797,7 @@ function openNotePicker(query = '', atIndex = null) {
   if (ai.pins.size >= 10) { setError('ai-drawer-error', '最多引用 10 条笔记。'); return; }
   ai.atIndex = atIndex;
   $('ai-note-picker').hidden = false;
+  syncAIScrollButton();
   $('ai-note-picker-search').value = query;
   renderNotePicker();
   $('ai-note-picker-search').focus({ preventScroll: true });
@@ -2848,6 +2879,7 @@ function newAISession(source = null) {
   ai.source = source;
   ai.insightContext = null;
   ai.pendingTurn = null;
+  ai.followBottom = true;
   ai.pins = new Set(source ? [source.id] : []);
   ai.requestKey = null;
   $('ai-drawer-input').value = '';
@@ -2926,6 +2958,7 @@ async function sendDrawerChat(event) {
   if (view.requestKey?.signature !== signature) view.requestKey = { signature, id: randomUUID() };
   const controller = new AbortController();
   view.sending = controller;
+  view.followBottom = true;
   view.pendingTurn = { userText: payloadMessage, status: useAllNotes ? '正在检索相关笔记…' : '正在思考…', streamText: '' };
   input.value = '';
   syncAIControls();
@@ -2949,7 +2982,8 @@ async function sendDrawerChat(event) {
           const bubble = $('ai-pending-reply');
           if (bubble) {
             renderAIPendingBubble(bubble, view.pendingTurn);
-            $('ai-drawer-thread').scrollTop = $('ai-drawer-thread').scrollHeight;
+            if (view.followBottom) $('ai-drawer-thread').scrollTop = $('ai-drawer-thread').scrollHeight;
+            syncAIScrollButton();
           }
         } else if (name === 'done' && data?.session) {
           completed = true;
@@ -3471,6 +3505,10 @@ const walkResize = new ResizeObserver(drawWalkLinks);
 walkResize.observe($('rw-stage'));
 $('rw-related').addEventListener('scroll', drawWalkLinks, { passive: true });
 $('ai-drawer-form').addEventListener('submit', sendDrawerChat);
+$('ai-drawer-thread').addEventListener('scroll', () => {
+  ai.followBottom = isAIThreadAtBottom();
+  syncAIScrollButton();
+}, { passive: true });
 $('note-chat-related').addEventListener('change', updateNoteChatPrivacy);
 $('ai-note-picker-search').addEventListener('input', renderNotePicker);
 $('ai-drawer-input').addEventListener('input', event => {
@@ -3552,6 +3590,7 @@ const actions = {
   'ai-generate-profile': () => editAIProfile(true),
   'ai-save-profile': () => editAIProfile(false),
   'ai-pick-note': () => $('ai-note-picker').hidden ? openNotePicker() : closeNotePicker(true),
+  'ai-scroll-bottom': () => scrollAIThreadToBottom(true),
   'ai-clear-insight-context': () => {
     ai.insightContext = null;
     $('ai-drawer-input').placeholder = '问问你的笔记…';
