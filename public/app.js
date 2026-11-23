@@ -2855,15 +2855,19 @@ function saveAIProfile(toggleOnly = false) {
   status.textContent = '正在保存…';
   setError('ai-profile-error', '');
   view.profileSaving = request('/api/ai/profile', body, view.lifecycle.signal).then(({ profile }) => {
-    if (ai !== view) return;
-    view.profile = profile;
-    renderAIProfile({ keepDraft: toggleOnly });
-    status.textContent = toggleOnly ? (profile.enabled ? '已启用' : '已停用') : '已保存';
+    if (ai === view) {
+      view.profile = profile;
+      renderAIProfile({ keepDraft: toggleOnly });
+      status.textContent = toggleOnly ? (profile.enabled ? '已启用' : '已停用') : '已保存';
+    }
+    return true;
   }).catch(error => {
-    if (ai !== view) return;
-    status.textContent = '';
-    if (toggleOnly) $('ai-profile-enabled').checked = view.profile?.enabled ?? true;
-    setError('ai-profile-error', error.message);
+    if (ai === view) {
+      status.textContent = '';
+      if (toggleOnly) $('ai-profile-enabled').checked = view.profile?.enabled ?? true;
+      setError('ai-profile-error', error.message);
+    }
+    return false;
   }).finally(() => {
     view.profileSaving = null;
     if (ai === view) syncAIProfileControls();
@@ -3044,8 +3048,12 @@ async function sendAIChat(event) {
   renderAIThread();
   let completed = false;
   try {
-    if (view.profileSaving) await view.profileSaving;
     if (ai !== view || signal.aborted) return;
+    if (view.profileSaving) {
+      const saved = await view.profileSaving;
+      if (ai !== view || signal.aborted) return;
+      if (!saved) throw new Error('个人画像设置保存失败，已取消本次发送。');
+    }
     let streamError = null;
     await requestStream('/api/ai/chat', { ...body, stream: true, clientRequestId: view.requestKey.id }, {
       signal,
