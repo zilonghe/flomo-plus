@@ -415,3 +415,66 @@ hr{border:0;border-top:1px solid var(--sidebar-border);margin:18px 0}
   .rw-controls{gap:2px}
 }
 @media(prefers-reduced-motion:reduce){#ai-drawer{animation:none}.rw-related-card{transition:none}}
+
+/* AI Insights Overlay — coss ui unified tokens */
+#ai-insights-overlay{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;background:var(--sidebar);opacity:1;overscroll-behavior:contain;--ins-line:var(--border)}
+.ins-toolbar,#ins-run-bar{background:var(--card);flex:none}
+.ins-toolbar{border-bottom:1px solid var(--ins-line)}
+.ins-toolbar-inner{max-width:1024px;margin:auto;display:flex;align-items:center;gap:10px;padding:11px clamp(14px,4vw,32px)}
+.ins-toolbar h2{margin:0 auto 0 0;font-size:16.5px;font-weight:600;letter-spacing:-.015em;color:var(--foreground);white-space:nowrap;display:inline-flex;align-items:center;gap:7px}
+.ins-toolbar h2 svg{color:var(--muted-foreground)}
+.ins-tabs{display:inline-flex;align-items:center;flex-wrap:wrap;gap:3px;padding:3px;background:var(--sidebar);border:1px solid var(--border);border-radius:var(--radius)}
+.ins-pills,.ins-report-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.ins-tabs button{border:1px solid transparent;border-radius:7px;background:transparent;padding:5px 11px;color:var(--muted-foreground);font-size:13px;font-weight:500;min-height:29px;transition:background .12s,color .12s,border-color .12s}
+.ins-tabs button:hover{color:var(--foreground)}
+.ins-tabs button[aria-pressed=true]{background:var(--card);border-color:var(--border);color:var(--foreground);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.ins-pills button{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--sidebar);padding:4px 10px;color:var(--muted-foreground);font-size:13px;font-weight:500;min-height:31px;text-align:left;overflow-wrap:anywhere;transition:background .12s,color .12s,border-color .12s}
+.ins-pills button:hover{background:var(--accent);color:var(--foreground);border-color:var(--border-strong)}
+.ins-pills button[aria-pressed=true]{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground);font-weight:500;box-shadow:0 1px 2px rgba(38,38,38,.2),inset 0 1px rgba(255,255,255,.14)}
+.ins-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.ins-content{max-width:1024px;margin:auto;padding:clamp(16px,4vw,32px)}
+.ins-surface{background:var(--card);background-clip:padding-box;border:1px solid var(--border);border-radius:var(--radius-2xl);padding:clamp(16px,3vw,24px);box-shadow:var(--shadow-card)}
+.ins-scope-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.ins-scope-top h3{margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--foreground)}
+.ins-scope-top label,.ins-tags,.ins-stats,#ins-report-meta{color:var(--muted-foreground);font-size:13px}
+#ins-custom-dates,.ins-tags{margin-top:12px}
+#ins-custom-dates label{display:flex;align-items:center;gap:5px}
+#ins-custom-dates input{width:auto;min-width:0}
+#ins-tag-label{display:block;margin-bottom:5px}
+#ins-tag-list{min-width:0;max-height:114px;overflow:auto;padding:3px}
+.ins-stats{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:14px;padding-top:12px;border-top:1px solid var(--sidebar-border)}
+.ins-stats strong{font-size:17px;font-weight:650;color:var(--foreground);font-variant-numeric:tabular-nums}
+#ins-sampling{margin-left:auto;align-self:center;font-size:12.5px}
+#ins-panel-new h3{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--foreground);margin:22px 0 10px}
+#ins-category-list{margin:18px 0 10px}
+.ins-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:10px}
+.ins-lens{display:flex;flex-direction:column;min-width:0;background:var(--card);background-clip:padding-box;border:1px solid var(--border);border-radius:var(--radius-xl);box-shadow:var(--shadow-card);transition:border-color .14s,box-shadow .14s}
+.ins-lens:hover{border-color:var(--border-strong)}
+.ins-lens:has(.ins-lens-card[aria-pressed=true]){border-color:var(--primary);box-shadow:0 0 0 1px var(--primary),0 4px 14px -4px rgba(0,0,0,.08);background:var(--card)}
+.ins-lens-card{flex:1;display:grid;align-content:start;gap:5px;text-align:left;border:0;border-radius:calc(var(--radius-xl) - 1px);background:transparent;color:var(--foreground);padding:14px 15px;overflow-wrap:anywhere}
+.ins-lens-card strong{font-size:14px;font-weight:600;letter-spacing:-.01em}
+.ins-lens-card:hover{background:rgba(0,0,0,.02)}
+.ins-lens-card span{color:var(--muted-foreground);font-size:13px;line-height:1.5}
+.ins-lens-tools{display:flex;gap:6px;padding:0 12px 10px}
+.ins-lens-tools .button{min-height:28px;padding:3px 9px;font-size:12.5px}
+#ins-run-bar{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:11px max(16px,calc((100% - 960px)/2)) max(11px,env(safe-area-inset-bottom));border-top:1px solid var(--ins-line)}
+#ins-selected-lens{flex:1;min-width:0;color:var(--muted-foreground);font-size:13px;overflow-wrap:anywhere}
+.ins-history-row{display:flex;align-items:center;gap:8px;background:var(--card);background-clip:padding-box;border:1px solid var(--border);border-radius:var(--radius-xl);box-shadow:var(--shadow-card);padding:6px 12px 6px 4px;margin-bottom:8px;transition:border-color .14s}
+.ins-history-row:hover{border-color:var(--border-strong)}
+.ins-history-row .ins-lens-card{min-width:0}
+#ins-report-view{max-width:760px;margin:auto}
+#ins-report-body{line-height:1.8;overflow-wrap:anywhere;color:var(--foreground)}
+#ins-report-body h2{margin:14px 0 10px;font-size:21px;font-weight:650;letter-spacing:-.02em;line-height:1.35}
+#ins-report-body h3{margin:18px 0 6px;font-size:16px;font-weight:600;letter-spacing:-.01em}
+#ins-report-body p{white-space:pre-wrap;font-size:14.5px}
+.ins-report-actions{padding-top:14px;margin-top:18px;border-top:1px solid var(--sidebar-border)}
+#ins-lens-form .field{width:100%}
+#ins-lens-form .field-label:not(:first-child){margin-top:12px}
+@media(max-width:540px){
+  .ins-toolbar-inner{flex-wrap:wrap}
+  .ins-tabs{order:1;width:100%}
+  .ins-tabs button{flex:1;padding:6px 3px}
+}
+.ins-tags .ins-scope-top{margin-bottom:4px}
+#ins-tag-label{margin:0}
+#ins-tag-search{width:min(100%,180px);min-height:30px;padding:4px 9px}
