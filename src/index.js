@@ -686,12 +686,56 @@ async function generateProfile(env, account, input, signal) {
   return saveProfile(env.DB, account, { content: reply.slice(0, 6000), enabled: previous?.enabled !== 0 }, sampled.size);
 }
 
+function isInsightQuestion(turn) {
+  return turn?.role === "user" && typeof turn.text === "string" && turn.text.startsWith("[洞察上下文：");
+}
+
+function sessionOrigin(row, turns) {
+  return row.source_note_id ? "note" : isInsightQuestion(turns[0]) ? "insight" : "global";
+}
+
 function sessionResult(row, includeTurns = true) {
+  const turns = JSON.parse(row.turns_json);
   return {
     id: row.id, title: row.title, sourceNoteId: row.source_note_id, version: row.version,
     createdAt: row.created_at, updatedAt: row.updated_at,
-    ...(includeTurns ? { turns: JSON.parse(row.turns_json) } : {}),
+    origin: sessionOrigin(row, turns),
+    ...(includeTurns ? { turns } : {}),
   };
+}
+
+async function listSessions(db, account, params) {
+  if (params.has("sourceNoteId")) {
+    const row = await db.prepare(`SELECT * FROM ai_sessions WHERE account = ? AND source_note_id = ?
+      ORDER BY updated_at DESC, id DESC LIMIT 1`).bind(account, checkedId(params.get("sourceNoteId"))).first();
+    return json({ session: row ? sessionResult(row) : null });
+  }
+  const requestedLimit = Number.parseInt(params.get("limit"), 10);
+  const limit = Number.isNaN(requestedLimit) ? 50 : Math.min(50, Math.max(1, requestedLimit));
+  const cursor = params.get("cursor");
+  let boundary = "";
+  const bindings = [account];
+  if (cursor !== null) {
+    const [updatedAt, id, extra] = cursor.split("|");
+    if (extra !== undefined || !Number.isFinite(Date.parse(updatedAt))) throw new ApiError(400, "分页游标格式有误。");
+    boundary = "AND (updated_at < ? OR (updated_at = ? AND id < ?))";
+    bindings.push(updatedAt, updatedAt, checkedId(id));
+  }
+  const [{ results }, upgraded] = await Promise.all([
+    db.prepare(`SELECT * FROM ai_sessions WHERE account = ? ${boundary}
+      ORDER BY updated_at DESC, id DESC LIMIT ?`).bind(...bindings, limit + 1).all(),
+    cursor === null ? db.prepare(`SELECT DISTINCT source_note_id FROM ai_sessions
+      WHERE account = ? AND source_note_id IS NOT NULL`).bind(account).all() : null,
+  ]);
+  const hasMore = results.length > limit;
+  const rows = results.slice(0, limit);
+  const last = rows.at(-1);
+  return json({
+    sessions: rows.map(row => sessionResult(row, false)),
+    hasMore,
+    nextCursor: hasMore ? last.updated_at + "|" + last.id : null,
+    ...(upgraded ? { upgradedNoteIds: upgraded.results.map(row => row.source_note_id) } : {}),
+  });
 }
 
 function sessionRow(db, account, id) {
@@ -769,7 +813,7 @@ async function chatSession(env, account, input, requestSignal) {
     checkCancelled();
     const context = packNoteContext({ pinnedNotes, retrievedNotes, profileText: profile?.enabled ? profile.content : "" });
     const question = { role: "user", text: message, ...(requestId ? { clientRequestId: requestId } : {}) };
-    const turns = existing ? sessionResult(existing).turns : (source?.turns ?? []).slice(-11);
+    const turns = existing ? sessionResult(existing).turns : source?.turns ?? [];
     const history = [...turns, question].slice(-12);
     send("status", { stage: "generating", model: target.model, message: "正在思考…" });
     const reply = await modelReply({ ...input, global: true, context: context.text, history }, env, signal, {
@@ -780,12 +824,21 @@ async function chatSession(env, account, input, requestSignal) {
     const { citations } = extractCitedRefs(reply, context.citations);
     const assistant = { role: "assistant", text: reply, citations, ...(requestId ? { clientRequestId: requestId } : {}) };
     const nextTurns = [...turns, question, assistant];
-    let retained = nextTurns.slice(-200);
-    if (nextTurns.length > 200 && existing?.create_request_id &&
-        !retained.some(turn => turn.clientRequestId === existing.create_request_id)) {
-      // A retry of the first request can arrive after the regular history window has rolled over.
-      const firstExchange = nextTurns.filter(turn => turn.clientRequestId === existing.create_request_id);
-      retained = [...firstExchange, ...nextTurns.slice(-(200 - firstExchange.length))];
+    let retained = nextTurns;
+    if (nextTurns.length > 200) {
+      // Keep the source marker and the original reply used for idempotent creation retries.
+      const anchors = new Set();
+      if (isInsightQuestion(nextTurns[0])) {
+        anchors.add(0);
+        if (nextTurns[1]?.role === "assistant") anchors.add(1);
+      }
+      if (existing?.create_request_id) {
+        nextTurns.forEach((turn, index) => {
+          if (turn.clientRequestId === existing.create_request_id) anchors.add(index);
+        });
+      }
+      for (let i = nextTurns.length - 1; anchors.size < 200; i--) anchors.add(i);
+      retained = nextTurns.filter((_, index) => anchors.has(index));
     }
     const turnsJson = JSON.stringify(retained);
     const now = new Date().toISOString();
@@ -1096,11 +1149,7 @@ async function api(request, url, env) {
     if (path === "/api/notes") return listNotes(env.DB, account);
     if (path === "/api/semantic/status") return json(await semanticStatus(env, account));
     if (path === "/api/ai/profile") return json({ profile: profileResult(await profileRow(env.DB, account)) });
-    if (path === "/api/ai/sessions") {
-      const { results } = await env.DB.prepare("SELECT id, title, source_note_id, version, created_at, updated_at FROM ai_sessions WHERE account = ? ORDER BY updated_at DESC, id DESC LIMIT 50")
-        .bind(account).all();
-      return json({ sessions: results.map(row => sessionResult(row, false)) });
-    }
+    if (path === "/api/ai/sessions") return listSessions(env.DB, account, url.searchParams);
     if (sessionId) {
       const row = await sessionRow(env.DB, account, checkedId(sessionId));
       if (!row) throw new ApiError(404, "找不到这段对话。");

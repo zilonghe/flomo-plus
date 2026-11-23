@@ -60,6 +60,7 @@
         <button class="nav-item" type="button" data-filter="reading"><svg><use href="#i-book"></use></svg><span>读书摘录</span><span class="nav-count" id="count-reading"></span></button>
         <button class="nav-item" type="button" data-action="open-random-walk"><svg><use href="#i-shuffle"></use></svg><span>随机漫步</span></button>
         <button class="nav-item" type="button" data-action="open-ai-insights"><svg><use href="#i-spark"></use></svg><span>AI 洞察</span></button>
+        <button class="nav-item" type="button" data-action="open-ai-chat"><svg><use href="#i-chat"></use></svg><span>AI 对话</span></button>
       </nav>
       <div class="side-section tag-section" id="tag-section" hidden>
         <div class="nav-label-row">
@@ -212,6 +213,60 @@
           </div>
         </div>
       </section>
+      <section id="ai-chat-view" aria-labelledby="ai-chat-title" hidden>
+        <aside id="ai-session-rail" aria-label="会话历史">
+          <div class="ai-rail-header">
+            <h2>全部会话</h2>
+            <button class="button button-secondary" type="button" data-action="ai-new-session"><svg><use href="#i-plus"></use></svg>新建</button>
+          </div>
+          <div class="ai-origin-filters" role="group" aria-label="筛选会话来源">
+            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="all" aria-pressed="true">全部</button>
+            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="insight" aria-pressed="false">洞察</button>
+            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="note" aria-pressed="false">笔记</button>
+            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="global" aria-pressed="false">通用</button>
+          </div>
+          <div class="ai-session-scroll">
+            <div id="ai-session-list"></div>
+            <button class="button button-secondary" type="button" data-action="ai-load-more-sessions" hidden>加载更多</button>
+          </div>
+        </aside>
+        <div class="ai-chat-main">
+          <header class="ai-chat-toolbar">
+            <button class="icon-button" type="button" data-action="ai-mobile-menu" aria-label="打开侧栏"><svg><use href="#i-menu"></use></svg></button>
+            <button class="button button-secondary" type="button" data-action="ai-toggle-sessions" aria-controls="ai-session-rail" aria-expanded="false">历史</button>
+            <h2 id="ai-chat-title">AI 对话</h2>
+            <button class="button button-secondary" type="button" data-action="ai-open-profile" aria-controls="ai-profile-panel" aria-expanded="false">画像</button>
+            <button class="icon-button" type="button" data-action="ai-close" aria-label="关闭 AI 对话"><svg><use href="#i-close"></use></svg></button>
+          </header>
+          <section id="ai-profile-panel" aria-label="个人画像" hidden>
+            <label><input type="checkbox" id="ai-profile-enabled" checked>启用个人画像</label>
+            <textarea class="field" id="ai-profile-text" aria-label="个人画像" rows="6" maxlength="6000"></textarea>
+            <div class="ai-profile-actions">
+              <button class="button button-secondary" type="button" data-action="ai-generate-profile">生成画像</button>
+              <button class="button button-primary" type="button" data-action="ai-save-profile">保存</button>
+            </div>
+          </section>
+          <div id="ai-chat-thread" role="log" aria-live="polite"></div>
+          <form id="ai-chat-form">
+            <button class="button button-secondary ai-scroll-bottom" id="ai-scroll-bottom" type="button" data-action="ai-scroll-bottom" aria-label="回到底部" title="回到底部" hidden>↓ 回到底部</button>
+            <div id="ai-note-picker" hidden>
+              <input class="field" type="search" id="ai-note-picker-search" aria-label="搜索要引用的笔记" placeholder="搜索笔记">
+              <div id="ai-note-picker-results"></div>
+            </div>
+            <p id="ai-chat-error" class="inline-error ai-chat-error" role="alert" hidden></p>
+            <div class="ai-composer-card">
+              <div id="ai-pinned-notes" aria-label="已引用的笔记"></div>
+              <textarea class="ai-chat-textarea" id="ai-chat-input" rows="2" maxlength="8000" aria-label="问题" placeholder="问问你的笔记…"></textarea>
+              <div class="ai-composer-actions">
+                <button class="icon-button ai-pick-btn" type="button" data-action="ai-pick-note" aria-label="引用笔记" title="引用笔记">@</button>
+                <label class="ai-recall-toggle"><input type="checkbox" id="ai-use-all-notes" checked>全库召回</label>
+                <select id="ai-chat-model" class="field ai-chat-model" aria-label="对话模型" hidden></select>
+                <button class="button button-primary ai-send-btn" id="ai-chat-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -265,45 +320,6 @@
     </form>
   </dialog>
 
-  <button class="button button-primary" id="ai-fab" type="button" data-action="toggle-ai-drawer" aria-controls="ai-drawer" aria-expanded="false"><svg><use href="#i-spark"></use></svg>问 AI</button>
-  <aside id="ai-drawer" aria-labelledby="ai-drawer-title" hidden>
-    <header class="ai-drawer-header">
-      <h2 id="ai-drawer-title">笔记对话</h2>
-      <button class="button button-secondary" type="button" data-action="ai-toggle-sessions">历史</button>
-      <button class="button button-secondary" type="button" data-action="ai-new-session">新建</button>
-      <button class="button button-secondary" type="button" data-action="ai-open-profile">画像</button>
-      <button class="icon-button" type="button" data-action="toggle-ai-drawer" aria-label="关闭 AI 对话"><svg><use href="#i-close"></use></svg></button>
-    </header>
-    <div id="ai-session-list" aria-label="会话历史" hidden></div>
-    <section id="ai-profile-panel" aria-label="个人画像" hidden>
-      <label><input type="checkbox" id="ai-profile-enabled" checked>启用个人画像</label>
-      <textarea class="field" id="ai-profile-text" aria-label="个人画像" rows="6" maxlength="6000"></textarea>
-      <div class="ai-profile-actions">
-        <button class="button button-secondary" type="button" data-action="ai-generate-profile">生成画像</button>
-        <button class="button button-primary" type="button" data-action="ai-save-profile">保存</button>
-      </div>
-    </section>
-    <div id="ai-drawer-thread" role="log" aria-live="polite"></div>
-    <form id="ai-drawer-form">
-      <button class="button button-secondary ai-scroll-bottom" id="ai-scroll-bottom" type="button" data-action="ai-scroll-bottom" aria-label="回到底部" title="回到底部" hidden>↓ 回到底部</button>
-      <div id="ai-note-picker" hidden>
-        <input class="field" type="search" id="ai-note-picker-search" aria-label="搜索要引用的笔记" placeholder="搜索笔记">
-        <div id="ai-note-picker-results"></div>
-      </div>
-      <p id="ai-drawer-error" class="inline-error ai-drawer-error" role="alert" hidden></p>
-      <div class="ai-composer-card">
-        <div id="ai-pinned-notes" aria-label="已引用的笔记"></div>
-        <textarea class="ai-drawer-textarea" id="ai-drawer-input" rows="2" maxlength="8000" aria-label="问题" placeholder="问问你的笔记…"></textarea>
-        <div class="ai-composer-actions">
-          <button class="icon-button ai-pick-btn" type="button" data-action="ai-pick-note" aria-label="引用笔记" title="引用笔记">@</button>
-          <label class="ai-recall-toggle"><input type="checkbox" id="ai-use-all-notes" checked>全库召回</label>
-          <select id="ai-drawer-model" class="field ai-drawer-model" aria-label="对话模型" hidden></select>
-          <button class="button button-primary ai-send-btn" id="ai-drawer-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
-        </div>
-      </div>
-    </form>
-  </aside>
-
   <div id="toast" class="toast" role="status" hidden></div>
 
   <dialog id="note-dialog" class="dialog note-dialog" aria-labelledby="dialog-note-title">
@@ -324,27 +340,16 @@
         <button class="button button-danger" type="button" data-action="delete-note">删除</button>
       </div>
       <div id="delete-confirm" class="notice" hidden>
-        <span>删除这条笔记及其 AI 对话？</span>
+        <span>删除这条笔记？</span>
         <div class="dialog-actions"><button class="button button-secondary" type="button" data-action="cancel-delete">保留笔记</button><button class="button button-danger" type="button" data-action="confirm-delete">确认删除</button></div>
       </div>
-      <section class="chat" aria-labelledby="chat-title">
-        <h3 id="chat-title"><svg><use href="#i-spark"></use></svg>和 AI 聊这条笔记</h3>
-        <div class="note-chat-options">
-          <label><input type="checkbox" id="note-chat-related" checked>参考相关笔记</label>
-          <button class="button button-secondary" type="button" data-action="promote-note-chat">转到全局继续聊</button>
+      <section class="note-ai-entry" aria-label="AI 对话">
+        <button class="button button-primary" type="button" data-action="open-note-ai-chat">和 AI 聊这条笔记</button>
+        <div class="starter-row">
+          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="帮我梳理这条笔记，尽量保留我的原意。">梳理成要点</button>
+          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="结合这条笔记，问我一个能让我想得更深的问题。">追问一个问题</button>
+          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="结合这条笔记，我接下来可以尝试哪件具体的小事？">想下一步</button>
         </div>
-        <div class="chat-thread" id="chat-thread"></div>
-        <div class="starter-row" id="chat-starters">
-          <button class="button button-secondary" type="button" data-prompt="帮我梳理这条笔记，尽量保留我的原意。">梳理成要点</button>
-          <button class="button button-secondary" type="button" data-prompt="结合这条笔记，问我一个能让我想得更深的问题。">追问一个问题</button>
-          <button class="button button-secondary" type="button" data-prompt="结合这条笔记，我接下来可以尝试哪件具体的小事？">想下一步</button>
-        </div>
-        <form class="chat-form" id="chat-form">
-          <textarea class="field" id="chat-input" rows="2" maxlength="4000" placeholder="问问这条笔记…" aria-label="问题"></textarea>
-          <button class="button button-primary" type="submit" id="chat-send"><svg><use href="#i-send"></use></svg><span>发送</span></button>
-        </form>
-        <p class="privacy-note" id="chat-privacy">发送时会把当前笔记和近期对话提交给 OpenAI。</p>
-        <p id="chat-error" class="inline-error" role="alert" hidden></p>
       </section>
     </div>
   </dialog>
