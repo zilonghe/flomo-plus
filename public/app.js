@@ -239,6 +239,7 @@ function resetAccount() {
   state.chatProvider = 'openai';
   state.codexAvailable = false;
   state.codexMode = null;
+  gatewayModelsRevision++;
   state.gatewayModels = [];
   state.gatewayModel = null;
   renderGatewayModels();
@@ -2569,18 +2570,22 @@ function renderGatewayModels() {
   }
 }
 
+let gatewayModelsRevision = 0;
+
 async function loadGatewayModels(signal = accountLifecycle.signal) {
   if (!gatewayMode()) return;
+  const revision = ++gatewayModelsRevision;
   try {
     const { models, defaultModel } = await request('/api/ai/models', undefined, signal);
-    if (!gatewayMode() || signal.aborted) return;
+    if (revision !== gatewayModelsRevision || !gatewayMode() || signal.aborted) return;
     state.gatewayModels = models;
     let remembered;
     try { remembered = localStorage.getItem('weiji.gatewayModel'); } catch {}
-    state.gatewayModel = models.includes(remembered) ? remembered : defaultModel;
+    const preferred = state.gatewayModel || remembered;
+    state.gatewayModel = models.includes(preferred) ? preferred : defaultModel;
     renderGatewayModels();
   } catch (error) {
-    if (error.name !== 'AbortError' && !signal.aborted) notify(error.message);
+    if (revision === gatewayModelsRevision && error.name !== 'AbortError' && !signal.aborted) notify(error.message);
   }
 }
 
@@ -3057,7 +3062,7 @@ async function loadInsReports(view) {
 }
 
 function openInsights(opener) {
-  if (ins) { setInsTab('new'); sidebar(false); return; }
+  if (ins) { sidebar(false); return; }
   if (!state.loaded) { notify('请先登录并完成同步'); return; }
   closeRandomWalk({ restore: false });
   closeAIDrawer();
@@ -3359,6 +3364,7 @@ const actions = {
     if (ins.tags.has(tag)) ins.tags.delete(tag);
     else if (ins.tags.size < 20) ins.tags.add(tag);
     else { setError('ins-error', '最多选择 20 个标签。'); return; }
+    insPressed(button, ins.tags.has(tag));
     previewInsScope();
   },
   'ins-clear-tags': () => { ins.tags.clear(); renderInsTags($('ins-tag-search').value); previewInsScope(); },
