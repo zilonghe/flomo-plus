@@ -706,8 +706,7 @@ function sessionResult(row, includeTurns = true) {
 
 async function listSessions(db, account, params) {
   if (params.has("sourceNoteId")) {
-    const row = await db.prepare(`SELECT * FROM ai_sessions WHERE account = ? AND source_note_id = ?
-      ORDER BY updated_at DESC, id DESC LIMIT 1`).bind(account, checkedId(params.get("sourceNoteId"))).first();
+    const row = await sessionBySourceNote(db, account, checkedId(params.get("sourceNoteId")));
     return json({ session: row ? sessionResult(row) : null });
   }
   const requestedLimit = Number.parseInt(params.get("limit"), 10);
@@ -742,6 +741,11 @@ function sessionRow(db, account, id) {
   return db.prepare("SELECT * FROM ai_sessions WHERE account = ? AND id = ?").bind(account, id).first();
 }
 
+function sessionBySourceNote(db, account, sourceId) {
+  return db.prepare(`SELECT * FROM ai_sessions WHERE account = ? AND source_note_id = ?
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).bind(account, sourceId).first();
+}
+
 function createdSession(db, account, requestId) {
   return db.prepare("SELECT * FROM ai_sessions WHERE account = ? AND create_request_id = ?").bind(account, requestId).first();
 }
@@ -760,6 +764,23 @@ function sessionResponse(row, requestId, deduplicated = false) {
 function sessionHasRequest(row, requestId) {
   return requestId && (row.create_request_id === requestId || row.last_request_id === requestId ||
     JSON.parse(row.turns_json).some(turn => turn.clientRequestId === requestId));
+}
+
+function retainSessionTurns(turns, createRequestId) {
+  if (turns.length <= 200) return turns;
+  // Keep the source marker and the original reply used for idempotent creation retries.
+  const anchors = new Set();
+  if (isInsightQuestion(turns[0])) {
+    anchors.add(0);
+    if (turns[1]?.role === "assistant") anchors.add(1);
+  }
+  if (createRequestId) {
+    turns.forEach((turn, index) => {
+      if (turn.clientRequestId === createRequestId) anchors.add(index);
+    });
+  }
+  for (let i = turns.length - 1; anchors.size < 200; i--) anchors.add(i);
+  return turns.filter((_, index) => anchors.has(index));
 }
 
 function checkedId(id) {
@@ -783,7 +804,7 @@ async function chatSession(env, account, input, requestSignal) {
   const id = input.sessionId === undefined ? null : checkedId(input.sessionId);
   const sourceId = input.sourceNoteId === undefined ? null : checkedId(input.sourceNoteId);
   const requestId = clientRequestId ?? null;
-  const existing = id ? await sessionRow(db, account, id) : null;
+  const existing = id ? await sessionRow(db, account, id) : sourceId ? await sessionBySourceNote(db, account, sourceId) : null;
   if (id && !existing) throw new ApiError(404, "找不到这段对话。");
   const respond = work => stream
     ? insightStream(requestSignal, positiveMs(env.INSIGHT_PING_INTERVAL_MS, 15_000), work)
@@ -823,47 +844,43 @@ async function chatSession(env, account, input, requestSignal) {
     checkCancelled();
     const { citations } = extractCitedRefs(reply, context.citations);
     const assistant = { role: "assistant", text: reply, citations, ...(requestId ? { clientRequestId: requestId } : {}) };
-    const nextTurns = [...turns, question, assistant];
-    let retained = nextTurns;
-    if (nextTurns.length > 200) {
-      // Keep the source marker and the original reply used for idempotent creation retries.
-      const anchors = new Set();
-      if (isInsightQuestion(nextTurns[0])) {
-        anchors.add(0);
-        if (nextTurns[1]?.role === "assistant") anchors.add(1);
-      }
-      if (existing?.create_request_id) {
-        nextTurns.forEach((turn, index) => {
-          if (turn.clientRequestId === existing.create_request_id) anchors.add(index);
-        });
-      }
-      for (let i = nextTurns.length - 1; anchors.size < 200; i--) anchors.add(i);
-      retained = nextTurns.filter((_, index) => anchors.has(index));
-    }
-    const turnsJson = JSON.stringify(retained);
-    const now = new Date().toISOString();
-    const titleSource = message.match(/\[追问\]\n([\s\S]+)/)?.[1] ?? message;
-
-    if (!existing) {
+    let current = existing;
+    if (!current) {
+      const turnsJson = JSON.stringify(retainSessionTurns([...turns, question, assistant]));
+      const now = new Date().toISOString();
+      const titleSource = message.match(/\[追问\]\n([\s\S]+)/)?.[1] ?? message;
+      // Test for a prior upgrade in the same SQLite statement that creates the session.
+      const values = source?.id
+        ? `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+           WHERE NOT EXISTS (SELECT 1 FROM ai_sessions WHERE account = ? AND source_note_id = ?)`
+        : "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
       const row = await db.prepare(`INSERT INTO ai_sessions
         (account, id, title, source_note_id, turns_json, create_request_id, last_request_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ${values}
         ON CONFLICT(account, create_request_id) WHERE create_request_id IS NOT NULL DO NOTHING RETURNING *`).bind(
         account, crypto.randomUUID(), titleSource.replace(/\s+/g, " ").slice(0, 80), source?.id ?? null,
-        turnsJson, requestId, requestId, now, now,
+        turnsJson, requestId, requestId, now, now, ...(source?.id ? [account, source.id] : []),
       ).first();
       if (row) return sessionPayload(row, requestId);
-      const winner = await createdSession(db, account, requestId);
-      if (winner) return sessionPayload(winner, requestId, true);
-      throw new ApiError(409, "该对话已被删除。");
+      const replay = requestId && await createdSession(db, account, requestId);
+      if (replay) return sessionPayload(replay, requestId, true);
+      if (source?.id) current = await sessionBySourceNote(db, account, source.id);
     }
 
-    const row = await db.prepare(`UPDATE ai_sessions SET turns_json = ?, updated_at = ?, version = version + 1, last_request_id = ?
-      WHERE account = ? AND id = ? AND version = ? RETURNING *`)
-      .bind(turnsJson, now, requestId, account, id, existing.version).first();
-    if (row) return sessionPayload(row, requestId);
-    const current = await sessionRow(db, account, id);
-    if (current && sessionHasRequest(current, requestId)) return sessionPayload(current, requestId, true);
+    // A legacy tab can append to the latest session without overwriting a concurrent reply.
+    const maxRetries = !id && (!existing || expectedVersion === undefined) ? 2 : 0;
+    for (let attempt = 0; current; attempt++) {
+      if (current !== existing && sessionHasRequest(current, requestId)) return sessionPayload(current, requestId, true);
+      if (attempt > maxRetries) break;
+      checkCancelled();
+      const currentTurns = current === existing ? turns : JSON.parse(current.turns_json);
+      const turnsJson = JSON.stringify(retainSessionTurns([...currentTurns, question, assistant], current.create_request_id));
+      const row = await db.prepare(`UPDATE ai_sessions SET turns_json = ?, updated_at = ?, version = version + 1, last_request_id = ?
+        WHERE account = ? AND id = ? AND version = ? RETURNING *`)
+        .bind(turnsJson, new Date().toISOString(), requestId, account, current.id, current.version).first();
+      if (row) return sessionPayload(row, requestId);
+      current = await sessionRow(db, account, current.id);
+    }
     throw new ApiError(409, current ? "该对话已在另一处更新，请刷新后重试。" : "该对话已被删除。");
   });
 }
