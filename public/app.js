@@ -44,6 +44,8 @@ const state = {
   chatProvider: 'openai',
   codexAvailable: false,
   codexMode: null,
+  gatewayModels: [],
+  gatewayModel: null,
   apiKey: '',
 };
 
@@ -118,14 +120,26 @@ class ApiError extends Error {
   }
 }
 
-async function request(path, body, signal, method = body === undefined ? 'GET' : 'POST') {
-  const epoch = accountEpoch;
+function apiHeaders(hasBody) {
   const headers = { Accept: 'application/json' };
   if (state.user?.id) headers['X-Journal-Account'] = state.user.id;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
-  let response;
+  if (hasBody) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+
+function handleAuthFailure(response) {
+  if (response.status === 401 || response.status === 403) resetAccount();
+}
+
+function checkRequestContext(epoch, signal) {
+  if (epoch !== accountEpoch || signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+}
+
+async function fetchAPI(path, body, signal, method, accept) {
+  const headers = apiHeaders(body !== undefined);
+  headers.Accept = accept;
   try {
-    response = await fetch(path, {
+    return await fetch(path, {
       method,
       credentials: 'same-origin',
       cache: 'no-store',
@@ -138,13 +152,53 @@ async function request(path, body, signal, method = body === undefined ? 'GET' :
     if (error.name === 'AbortError') throw error;
     throw new Error('网络连接失败，请检查连接后重试。');
   }
+}
+
+async function readAPIJSON(response, epoch, signal) {
   const data = await response.json().catch(() => null);
-  if (epoch !== accountEpoch) throw new DOMException('账号已变化', 'AbortError');
+  checkRequestContext(epoch, signal);
   if (!response.ok || !data) {
-    if (response.status === 401 || response.status === 403) resetAccount();
+    handleAuthFailure(response);
     throw new ApiError(response.status, data, response.status === 401 ? '登录状态已过期，请重新登录。' : '服务暂时无法响应，请稍后重试。');
   }
   return data;
+}
+
+async function request(path, body, signal, method = body === undefined ? 'GET' : 'POST') {
+  const epoch = accountEpoch;
+  const response = await fetchAPI(path, body, signal, method, 'application/json');
+  return readAPIJSON(response, epoch, signal);
+}
+
+async function requestStream(path, body, { signal, onEvent }) {
+  const epoch = accountEpoch;
+  const response = await fetchAPI(path, body, signal, 'POST', 'text/event-stream');
+  checkRequestContext(epoch, signal);
+  if (!response.ok || !response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
+    await readAPIJSON(response, epoch, signal);
+    throw new Error('服务没有返回报告流，请重试。');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let pending = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      checkRequestContext(epoch, signal);
+      pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = /\r?\n\r?\n/.exec(pending))) {
+        const lines = pending.slice(0, boundary.index).split(/\r?\n/);
+        pending = pending.slice(boundary.index + boundary[0].length);
+        const event = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
+        const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+        if (event && data) onEvent(event, JSON.parse(data));
+      }
+      if (done) return;
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
 }
 
 function updateProfile() {
@@ -158,8 +212,11 @@ function updateProfile() {
 }
 
 let accountEpoch = 0;
+let accountLifecycle = new AbortController();
 function resetAccount() {
   accountEpoch++;
+  accountLifecycle.abort();
+  accountLifecycle = new AbortController();
   closeInsights({ restore: false });
   ai.sending?.abort();
   ai.profileRequest?.abort();
@@ -182,6 +239,9 @@ function resetAccount() {
   state.chatProvider = 'openai';
   state.codexAvailable = false;
   state.codexMode = null;
+  state.gatewayModels = [];
+  state.gatewayModel = null;
+  renderGatewayModels();
   state.composeDraft = null;
   $('note-body').value = '';
   clearSearchInput();
@@ -230,6 +290,7 @@ async function refresh({ silent = false } = {}) {
     state.deletedNotes = new Set((result.deleted || []).map(({ id }) => id));
     const firstLoad = !state.loaded;
     state.loaded = true;
+    if (firstLoad) loadGatewayModels();
     setAuthNotice('');
     $('note-body').disabled = false;
     updateComposer();
@@ -496,8 +557,8 @@ function renderTagList() {
 }
 
 function syncNavActive() {
-  for (const button of document.querySelectorAll('#sidebar [data-filter]')) {
-    const selected = button.dataset.filter === state.filter;
+  for (const button of document.querySelectorAll('#sidebar [data-filter], #sidebar [data-action="open-ai-insights"]')) {
+    const selected = ins ? button.dataset.action === 'open-ai-insights' : button.dataset.filter === state.filter;
     button.classList.toggle('active', selected);
     if (selected) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
@@ -1564,6 +1625,8 @@ function saveSettings(event) {
   event.preventDefault();
   if ($('chat-provider').value === 'codex' && state.codexAvailable) {
     state.chatProvider = 'codex';
+    renderGatewayModels();
+    if (ins || !$('ai-drawer').hidden) loadGatewayModels(ins?.lifecycle.signal);
     $('settings-dialog').close();
     setError('chat-error', '');
     if (state.notes.has(state.noteID)) renderChat(state.notes.get(state.noteID));
@@ -1579,6 +1642,7 @@ function saveSettings(event) {
   state.chatProvider = 'openai';
   state.apiKey = apiKey;
   state.model = model;
+  renderGatewayModels();
   $('openai-key').value = '';
   $('settings-dialog').close();
   if (apiKey) setError('chat-error', '');
@@ -2320,8 +2384,10 @@ async function importFlomoNotes(event) {
 
 function sidebar(open) {
   $('sidebar').classList.toggle('open', open);
-  $('mobile-toggle').setAttribute('aria-expanded', String(open));
-  $('mobile-toggle').setAttribute('aria-label', open ? '关闭导航' : '打开导航');
+  for (const button of [$('mobile-toggle'), document.querySelector('[data-action="ins-mobile-menu"]')]) {
+    button.setAttribute('aria-expanded', String(open));
+    button.setAttribute('aria-label', open ? '关闭导航' : '打开导航');
+  }
 }
 
 function focusCompose() {
@@ -2484,9 +2550,44 @@ function emptyAIState() {
 }
 let ai = emptyAIState();
 
+function gatewayMode() {
+  return state.chatProvider === 'codex' && state.codexMode === 'gateway';
+}
+
+function hasGatewayModels() {
+  return gatewayMode() && state.gatewayModels.length > 0;
+}
+
+function renderGatewayModels() {
+  for (const id of ['ins-model-select', 'ai-drawer-model', 'ins-rerun-model']) {
+    const select = $(id);
+    const rerun = id === 'ins-rerun-model';
+    (rerun ? $('ins-rerun-controls') : select).hidden = !hasGatewayModels();
+    const previous = rerun && select.value;
+    select.replaceChildren(...state.gatewayModels.map(model => new Option(model, model)));
+    select.value = (state.gatewayModels.includes(previous) ? previous : state.gatewayModel) ?? '';
+  }
+}
+
+async function loadGatewayModels(signal = accountLifecycle.signal) {
+  if (!gatewayMode()) return;
+  try {
+    const { models, defaultModel } = await request('/api/ai/models', undefined, signal);
+    if (!gatewayMode() || signal.aborted) return;
+    state.gatewayModels = models;
+    let remembered;
+    try { remembered = localStorage.getItem('weiji.gatewayModel'); } catch {}
+    state.gatewayModel = models.includes(remembered) ? remembered : defaultModel;
+    renderGatewayModels();
+  } catch (error) {
+    if (error.name !== 'AbortError' && !signal.aborted) notify(error.message);
+  }
+}
+
 function providerSettings() {
   return state.chatProvider === 'codex' && state.codexAvailable
-    ? { provider: 'codex' } : { provider: 'openai', model: state.model, apiKey: state.apiKey };
+    ? { provider: 'codex', ...(hasGatewayModels() && state.gatewayModel ? { model: state.gatewayModel } : {}) }
+    : { provider: 'openai', model: state.model, apiKey: state.apiKey };
 }
 
 function resetAIDrawer() {
@@ -2522,6 +2623,7 @@ function closeAIDrawer(refocus = false) {
 function openAIDrawer() {
   if (!state.loaded) { notify('请先登录并完成同步'); return; }
   $('ai-drawer').hidden = false;
+  loadGatewayModels();
   $('ai-fab').setAttribute('aria-expanded', 'true');
   $('ai-drawer-input').focus({ preventScroll: true });
 }
@@ -2772,7 +2874,8 @@ function promoteNoteChat() {
   openAIDrawer();
 }
 
-const insOverlay = $('ai-insights-overlay');
+const insView = $('ai-insights-view');
+const insButton = action => insView.querySelector('[data-action="ins-' + action + '"]');
 const insRanges = { '7d': '最近 7 天', week: '本周', month: '本月', all: '不限日期', custom: '自定义日期' };
 let ins = null;
 
@@ -2787,25 +2890,40 @@ function insPressed(button, on) {
   button.setAttribute('aria-pressed', String(on));
 }
 
+function toggleInsTags(open, focus = false) {
+  $('ins-tag-popover').hidden = !open;
+  $('ins-tag-trigger').setAttribute('aria-expanded', String(open));
+  if (focus) $(open ? 'ins-tag-search' : 'ins-tag-trigger').focus();
+}
+
 function renderInsControls() {
-  const { tab, report, run, stats, lenses, lensId } = ins;
-  for (const name of ['new', 'discover', 'history']) $('ins-panel-' + name).hidden = Boolean(report) || name !== tab;
-  $('ins-report-view').hidden = !report;
-  $('ins-scope').hidden = Boolean(report) || tab === 'history';
-  $('ins-run-bar').hidden = !run && (Boolean(report) || tab === 'history');
-  insOverlay.querySelectorAll('[data-tab]').forEach(button => insPressed(button, button.dataset.tab === tab));
+  const { tab, report, run, attempt, stats, lenses, lensId } = ins;
+  const viewingReport = Boolean(report || attempt);
+  for (const name of ['new', 'history']) $('ins-panel-' + name).hidden = viewingReport || name !== tab;
+  $('ins-report-view').hidden = !viewingReport;
+  $('ins-scope').hidden = viewingReport || tab !== 'new';
+  $('ins-report-actions').hidden = !report;
+  insButton('cancel').hidden = !run;
+  insButton('retry').hidden = !attempt || Boolean(run || report);
+  insView.querySelectorAll('[data-tab]').forEach(button => insPressed(button, button.dataset.tab === tab));
+  $('ins-range-select').value = ins.range;
   $('ins-custom-dates').hidden = ins.range !== 'custom';
-  insOverlay.querySelectorAll('[data-ins-range]').forEach(button => insPressed(button, button.dataset.insRange === ins.range));
-  insOverlay.querySelectorAll('[data-ins-tag]').forEach(button => insPressed(button, ins.tags.has(button.dataset.insTag)));
-  insPressed(insOverlay.querySelector('[data-action="ins-clear-tags"]'), !ins.tags.size);
+  $('ins-tag-trigger').textContent = ins.tags.size ? `标签 · ${ins.tags.size}` : '全部标签';
+  insButton('clear-tags').disabled = !ins.tags.size;
   $('ins-stat-notes').textContent = stats?.noteCount ?? '—';
   $('ins-stat-tags').textContent = stats?.tagCount ?? '—';
   $('ins-stat-days').textContent = stats?.dayCount ?? '—';
   $('ins-sampling').hidden = !stats?.willSample;
-  insOverlay.querySelectorAll('[data-action="ins-select-lens"]').forEach(button => insPressed(button, button.dataset.lensId === lensId));
-  $('ins-selected-lens').textContent = lenses.find(lens => lens.id === lensId)?.name ?? '';
-  insOverlay.querySelector('[data-action="ins-run"]').disabled = !lensId || !stats?.noteCount || Boolean(run);
-  insOverlay.querySelector('[data-action="ins-cancel"]').hidden = !run;
+  insView.querySelectorAll('[data-action="ins-select-lens"]').forEach(button => insPressed(button, button.dataset.lensId === lensId));
+  const lens = lenses.find(item => item.id === lensId);
+  $('ins-selected-panel').hidden = !lens;
+  $('ins-selected-lens').textContent = lens?.name ?? '';
+  $('ins-preview-prompt').textContent = lens?.prompt ?? '';
+  const suggested = lens?.suggestedRange;
+  const apply = $('ins-apply-suggested');
+  apply.hidden = !suggested || suggested === ins.range;
+  apply.textContent = suggested ? '使用建议范围：' + insRanges[suggested] : '';
+  insButton('run').disabled = !lens || !stats?.noteCount || Boolean(run);
 }
 
 function renderInsTags(query = '') {
@@ -2842,18 +2960,14 @@ function insLensCard(lens) {
 
 function renderInsLenses() {
   const { lenses, categories, cat } = ins;
-  $('ins-featured-grid').replaceChildren(...lenses.filter(lens => lens.featured).map(insLensCard));
-  const custom = lenses.filter(lens => !lens.builtin);
-  const customButton = actionButton('新建自定义视角', 'ins-create-lens');
-  $('ins-custom-grid').replaceChildren(...(custom.length ? custom.map(insLensCard) : [customButton]));
-  $('ins-category-list').replaceChildren(...['全部', ...categories, '自定义'].map(category => {
+  $('ins-category-list').replaceChildren(...['精选', ...categories, '自定义'].map(category => {
     const button = actionButton(category, 'ins-category');
     button.dataset.insCat = category;
     insPressed(button, category === cat);
     return button;
   }));
-  $('ins-discover-grid').replaceChildren(...lenses.filter(lens => cat === '全部' ||
-    (cat === '自定义' ? !lens.builtin : lens.category === cat)).map(insLensCard));
+  $('ins-lens-grid').replaceChildren(...lenses.filter(lens => cat === '精选' ? lens.featured
+    : cat === '自定义' ? !lens.builtin : lens.builtin && lens.category === cat).map(insLensCard));
   renderInsControls();
 }
 
@@ -2879,13 +2993,17 @@ function renderInsHistory() {
 
 function showInsReport(report) {
   ins.report = report;
+  ins.attempt = null;
+  $('ins-stream-status').textContent = '';
+  setError('ins-report-error', '');
+  $('ins-report-body').classList.remove('is-streaming');
+  $('ins-rerun-model').value = state.gatewayModel ?? '';
   const { range, startDate, endDate, tags } = report.scope;
   const dates = range === 'custom' ? startDate + ' 至 ' + endDate : insRanges[range];
-  $('ins-report-meta').textContent = [report.lensName, dates, ...(tags ?? []).map(tag => '#' + tag), insCount(report)].filter(Boolean).join(' · ');
+  $('ins-report-meta').textContent = [report.lensName, dates, report.model, ...(tags ?? []).map(tag => '#' + tag), insCount(report)].filter(Boolean).join(' · ');
   renderSafeMarkdown($('ins-report-body'), report.content, report.citations);
   renderInsControls();
   $('ins-scroll').scrollTop = 0;
-  $('ins-report-view').tabIndex = -1;
   $('ins-report-view').focus({ preventScroll: true });
 }
 
@@ -2896,10 +3014,10 @@ async function previewInsScope() {
   renderInsControls();
   const scope = insScope();
   if (scope.range === 'custom' && (!scope.startDate || !scope.endDate || scope.startDate > scope.endDate)) {
-    setError('ins-error', scope.startDate && scope.endDate ? '起始日期不能晚于结束日期。' : '');
+    setError('ins-scope-error', scope.startDate && scope.endDate ? '起始日期不能晚于结束日期。' : '请选择起止日期。');
     return;
   }
-  setError('ins-error', '');
+  setError('ins-scope-error', '');
   const controller = new AbortController();
   view.preview = controller;
   try {
@@ -2908,7 +3026,7 @@ async function previewInsScope() {
     view.stats = stats;
     renderInsControls();
   } catch (error) {
-    if (ins === view && !controller.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
+    if (ins === view && !controller.signal.aborted && error.name !== 'AbortError') setError('ins-scope-error', error.message);
   }
 }
 
@@ -2920,12 +3038,9 @@ async function loadInsLenses(view) {
     view.lensesLoaded = true;
     view.lenses = result.lenses;
     view.categories = result.categories;
-    if (!view.lenses.some(lens => lens.id === view.lensId)) {
-      view.lensId = view.lenses.find(lens => lens.id === 'builtin:default')?.id ?? view.lenses[0]?.id;
-    }
     renderInsLenses();
   } catch (error) {
-    if (ins === view && revision === view.lensRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
+    if (ins === view && revision === view.lensRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-view-error', error.message);
   }
 }
 
@@ -2937,35 +3052,36 @@ async function loadInsReports(view) {
     view.reports = reports;
     renderInsHistory();
   } catch (error) {
-    if (ins === view && revision === view.historyRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
+    if (ins === view && revision === view.historyRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-view-error', error.message);
   }
 }
 
 function openInsights(opener) {
-  if (ins) return;
+  if (ins) { setInsTab('new'); sidebar(false); return; }
   if (!state.loaded) { notify('请先登录并完成同步'); return; }
   closeRandomWalk({ restore: false });
   closeAIDrawer();
   const view = ins = {
-    opener, scrollY: window.scrollY, tab: 'new', cat: '全部', range: '7d', tags: new Set(),
+    opener, scrollY: window.scrollY, tab: 'new', cat: '精选', range: '7d', tags: new Set(),
     lifecycle: new AbortController(), lenses: [], categories: [], lensId: null, lensRevision: 0, lensesLoaded: false,
     stats: null, reports: [], historyRevision: 0,
-    report: null, reportRevision: 0, preview: null, run: null, lensDraft: null, requestKey: null,
+    report: null, reportRevision: 0, preview: null, run: null, lensDraft: null, attempt: null,
   };
   $('ins-start-date').value = dayKey(new Date());
   $('ins-end-date').value = $('ins-start-date').value;
   $('ins-use-profile').checked = false;
   $('ins-tag-search').value = '';
   sidebar(false);
-  insOverlay.hidden = false;
-  document.querySelector('.shell').inert = true;
-  $('ai-fab').inert = true;
+  $('notes-topbar').hidden = $('main').hidden = true;
+  insView.hidden = false;
+  syncNavActive();
+  window.scrollTo(0, 0);
   $('ins-scroll').scrollTop = 0;
-  insOverlay.querySelector('[data-action="ins-close"]').focus({ preventScroll: true });
+  insButton('close').focus({ preventScroll: true });
   renderInsTags();
   renderInsLenses();
   renderInsHistory();
-  loadInsReports(view);
+  loadGatewayModels(view.lifecycle.signal);
   loadInsLenses(view);
   previewInsScope();
 }
@@ -2977,11 +3093,14 @@ function closeInsights({ restore = true } = {}) {
   view.lifecycle.abort();
   view.preview?.abort();
   view.run?.abort();
-  insOverlay.hidden = true;
+  insView.hidden = true;
+  $('notes-topbar').hidden = $('main').hidden = false;
+  syncNavActive();
+  toggleInsTags(false);
   if ($('insight-lens-dialog').open) $('insight-lens-dialog').close();
   $('ins-lens-form').reset();
   $('ins-lens-form').querySelector('button[type="submit"]').disabled = false;
-  for (const id of ['ins-report-body', 'ins-report-meta', 'ins-tag-list', 'ins-featured-grid', 'ins-custom-grid', 'ins-category-list', 'ins-discover-grid', 'ins-history-list']) {
+  for (const id of ['ins-report-body', 'ins-report-meta', 'ins-stream-status', 'ins-tag-list', 'ins-lens-grid', 'ins-category-list', 'ins-history-list', 'ins-preview-prompt']) {
     $(id).replaceChildren();
   }
   $('ins-report-view').hidden = true;
@@ -2989,9 +3108,10 @@ function closeInsights({ restore = true } = {}) {
   $('ins-tag-search').value = '';
   $('ins-use-profile').checked = false;
   setError('ins-error', '');
+  setError('ins-scope-error', '');
   setError('ins-lens-error', '');
-  document.querySelector('.shell').inert = false;
-  $('ai-fab').inert = false;
+  setError('ins-view-error', '');
+  setError('ins-report-error', '');
   if (restore) {
     (view.opener.getClientRects().length ? view.opener : $('mobile-toggle')).focus({ preventScroll: true });
     window.scrollTo(0, view.scrollY);
@@ -2999,8 +3119,13 @@ function closeInsights({ restore = true } = {}) {
 }
 
 function setInsTab(tab) {
+  ins.run?.abort();
+  ins.run = null;
+  ins.attempt = null;
   ins.tab = tab;
   ins.report = null;
+  toggleInsTags(false);
+  setError('ins-view-error', '');
   ins.reportRevision++;
   $('ins-report-body').replaceChildren();
   $('ins-scroll').scrollTop = 0;
@@ -3038,10 +3163,11 @@ async function saveInsLens(event) {
   submit.disabled = draft.saving = true;
   setError('ins-lens-error', '');
   try {
-    const { lens } = await request('/api/insights/lenses', body);
+    const { lens } = await request('/api/insights/lenses', body, view.lifecycle.signal);
     if (ins !== view) return;
     view.lensRevision++;
     view.lenses = [lens, ...view.lenses.filter(item => item.id !== lens.id)];
+    view.cat = '自定义';
     renderInsLenses();
     if (!view.lensesLoaded) loadInsLenses(view);
     if (view.lensDraft === draft) $('insight-lens-dialog').close();
@@ -3055,44 +3181,82 @@ async function saveInsLens(event) {
 async function deleteInsLens(id) {
   const view = ins;
   try {
-    await request('/api/insights/lenses/' + id, undefined, undefined, 'DELETE');
+    await request('/api/insights/lenses/' + id, undefined, view.lifecycle.signal, 'DELETE');
     if (ins !== view) return;
     view.lensRevision++;
     view.lenses = view.lenses.filter(lens => lens.id !== id);
-    if (view.lensId === id) view.lensId = view.lenses[0]?.id ?? null;
+    if (view.lensId === id) view.lensId = null;
     renderInsLenses();
     if (!view.lensesLoaded) loadInsLenses(view);
   } catch (error) {
-    if (ins === view) setError('ins-error', error.message);
+    if (ins === view) setError(view.report ? 'ins-report-error' : 'ins-view-error', error.message);
   }
 }
 
-async function runInsightReport() {
-  const view = ins;
-  if (view.run || !view.lensId || !view.stats?.noteCount) return;
+function runInsightReport() {
+  if (ins.run || !ins.lensId || !ins.stats?.noteCount) return;
   const settings = providerSettings();
   if (settings.provider === 'openai' && !settings.apiKey) {
     setError('ins-error', '请先在设置里填写 OpenAI API Key。');
     openSettings();
     return;
   }
-  const body = { ...settings, scope: insScope(), lensId: view.lensId, useProfile: $('ins-use-profile').checked };
-  const signature = JSON.stringify({ ...body, apiKey: undefined });
-  if (view.requestKey?.signature !== signature) view.requestKey = { signature, id: randomUUID() };
+  startInsRun({ ...settings, scope: insScope(), lensId: ins.lensId, useProfile: $('ins-use-profile').checked,
+    clientRequestId: randomUUID(), stream: true });
+}
+
+function rerunInsightReport() {
+  if (!ins.report || !hasGatewayModels()) return;
+  const { lensId, scope, useProfile } = ins.report;
+  startInsRun({ provider: 'codex', model: $('ins-rerun-model').value, lensId, scope, useProfile: useProfile ?? false,
+    clientRequestId: randomUUID(), stream: true });
+}
+
+async function startInsRun(body) {
+  const view = ins;
+  if (view.run) return;
   const controller = view.run = new AbortController();
+  view.report = null;
+  view.attempt = body;
+  view.reportRevision++;
+  toggleInsTags(false);
   setError('ins-error', '');
+  setError('ins-report-error', '');
+  $('ins-report-meta').textContent = '';
+  $('ins-stream-status').textContent = '正在准备…';
+  const text = document.createTextNode('');
+  $('ins-report-body').classList.add('is-streaming');
+  $('ins-report-body').replaceChildren(text);
   renderInsControls();
+  $('ins-scroll').scrollTop = 0;
+  $('ins-report-view').focus({ preventScroll: true });
+  let report;
+  let length = 0;
   try {
-    const { report } = await request('/api/insights/run', { ...body, clientRequestId: view.requestKey.id }, controller.signal);
+    await requestStream('/api/insights/run', body, { signal: controller.signal, onEvent(event, data) {
+      if (event === 'status') {
+        $('ins-stream-status').textContent = data.stage === 'selecting' ? '正在筛选笔记…' : '正在生成…';
+      } else if (event === 'delta') {
+        text.appendData(data.text);
+        length += data.text.length;
+        $('ins-stream-status').textContent = `正在生成 · ${length} 字`;
+      } else if (event === 'done') {
+        report = data.report;
+      } else if (event === 'error') {
+        throw new ApiError(data.status, data);
+      }
+    } });
+    if (!report) throw new Error('报告还未生成完毕，连接已断开。');
     if (ins !== view || controller.signal.aborted) return;
-    view.requestKey = null;
-    view.reportRevision++;
     view.historyRevision++;
     view.reports = [report, ...view.reports.filter(item => item.id !== report.id)].slice(0, 50);
     renderInsHistory();
     showInsReport(report);
   } catch (error) {
-    if (ins === view && !controller.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
+    if (ins === view && !controller.signal.aborted && error.name !== 'AbortError') {
+      $('ins-stream-status').textContent = '生成失败';
+      setError('ins-report-error', error.message);
+    }
   } finally {
     if (ins === view && view.run === controller) {
       view.run = null;
@@ -3104,7 +3268,7 @@ async function runInsightReport() {
 function cancelInsRun() {
   ins.run?.abort();
   ins.run = null;
-  ins.requestKey = null;
+  $('ins-stream-status').textContent = '已停止生成';
   renderInsControls();
 }
 
@@ -3115,14 +3279,14 @@ async function openInsReport(id) {
     const { report } = await request('/api/insights/reports/' + id, undefined, view.lifecycle.signal);
     if (ins === view && revision === view.reportRevision && !view.lifecycle.signal.aborted) showInsReport(report);
   } catch (error) {
-    if (ins === view && revision === view.reportRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
+    if (ins === view && revision === view.reportRevision && !view.lifecycle.signal.aborted && error.name !== 'AbortError') setError('ins-view-error', error.message);
   }
 }
 
 async function deleteInsReport(id) {
   const view = ins;
   try {
-    await request('/api/insights/reports/' + id, undefined, undefined, 'DELETE');
+    await request('/api/insights/reports/' + id, undefined, view.lifecycle.signal, 'DELETE');
     if (ins !== view) return;
     view.reportRevision++;
     view.historyRevision++;
@@ -3130,14 +3294,14 @@ async function deleteInsReport(id) {
     if (view.report?.id === id) setInsTab('history');
     renderInsHistory();
   } catch (error) {
-    if (ins === view) setError('ins-error', error.message);
+    if (ins === view) setError(view.report ? 'ins-report-error' : 'ins-view-error', error.message);
   }
 }
 
 function continueInsightChat() {
   const report = ins.report;
   if (!report) return;
-  if (ai.loadingSession || !newAISession()) { setError('ins-error', '请等待当前对话完成。'); return; }
+  if (ai.loadingSession || !newAISession()) { setError('ins-report-error', '请等待当前对话完成。'); return; }
   const noteIds = new Set(report.citations.map(cite => cite.noteId).filter(id => state.notes.has(id)));
   ai.pins = new Set([...noteIds].slice(0, 10));
   renderAIPins();
@@ -3151,6 +3315,15 @@ $('insight-lens-dialog').addEventListener('close', () => {
   if (ins) ins.lensDraft = null;
   $('ins-lens-form').reset();
   $('ins-lens-form').querySelector('button[type="submit"]').disabled = false;
+});
+for (const id of ['ins-model-select', 'ai-drawer-model']) $(id).addEventListener('change', event => {
+  state.gatewayModel = event.target.value;
+  try { localStorage.setItem('weiji.gatewayModel', state.gatewayModel); } catch {}
+  renderGatewayModels();
+});
+$('ins-range-select').addEventListener('change', event => {
+  ins.range = event.target.value;
+  previewInsScope();
 });
 $('ins-tag-search').addEventListener('input', event => { if (ins) renderInsTags(event.target.value); });
 for (const id of ['ins-start-date', 'ins-end-date']) $(id).addEventListener('change', () => { if (ins) previewInsScope(); });
@@ -3172,7 +3345,15 @@ const actions = {
   'open-ai-insights': openInsights,
   'ins-close': () => closeInsights(),
   'ins-tab': button => setInsTab(button.dataset.tab),
-  'ins-select-range': button => { ins.range = button.dataset.insRange; previewInsScope(); },
+  'ins-mobile-menu': () => sidebar(!$('sidebar').classList.contains('open')),
+  'ins-tag-popover': () => toggleInsTags($('ins-tag-popover').hidden, true),
+  'ins-apply-suggested': () => {
+    ins.range = ins.lenses.find(lens => lens.id === ins.lensId).suggestedRange;
+    previewInsScope();
+  },
+  'ins-back': () => setInsTab(ins.tab),
+  'ins-rerun': rerunInsightReport,
+  'ins-retry': () => startInsRun(ins.attempt),
   'ins-toggle-tag': button => {
     const tag = button.dataset.insTag;
     if (ins.tags.has(tag)) ins.tags.delete(tag);
@@ -3188,14 +3369,10 @@ const actions = {
   },
   'ins-select-lens': button => {
     ins.lensId = button.dataset.lensId;
-    const suggested = ins.lenses.find(lens => lens.id === ins.lensId)?.suggestedRange;
-    if (ins.tab === 'discover' && suggested && suggested !== ins.range) {
-      ins.range = suggested;
-      previewInsScope();
-    } else renderInsControls();
+    setError('ins-error', '');
+    renderInsControls();
   },
   'ins-new-lens': () => openInsLens(),
-  'ins-create-lens': () => openInsLens(),
   'ins-edit-lens': button => openInsLens(button.dataset.id),
   'ins-close-lens': () => $('insight-lens-dialog').close(),
   'ins-delete-lens': button => deleteInsLens(button.dataset.id),
@@ -3359,7 +3536,8 @@ const actions = {
 
 document.addEventListener('click', (event) => {
   if (!event.target.closest) return;
-  if (!$('sidebar').contains(event.target) && !event.target.closest('#mobile-toggle')) sidebar(false);
+  if (!$('sidebar').contains(event.target) && !event.target.closest('#mobile-toggle, [data-action="ins-mobile-menu"]')) sidebar(false);
+  if (ins && !$('ins-tag-popover').hidden && !event.target.closest('.ins-tags')) toggleInsTags(false);
   if (state.openMenuId && !event.target.closest('.card-menu-wrap')) closeCardMenu();
   if (state.tagSuggest.open && !event.target.closest('.composer-input-wrap')) closeTagSuggest();
   const button = event.target.closest('button');
@@ -3391,6 +3569,7 @@ document.addEventListener('click', (event) => {
     return;
   }
   if (button.dataset.day) {
+    closeInsights({ restore: false });
     const day = button.dataset.day;
     state.dayFilter = state.dayFilter === day ? null : day;
     sidebar(false);
@@ -3422,6 +3601,7 @@ document.addEventListener('click', (event) => {
     openNote(button.dataset.openNote);
   }
   if (button.dataset.filter) {
+    closeInsights({ restore: false });
     state.filter = button.dataset.filter;
     sidebar(false);
     renderFeedList({ reset: true });
@@ -3522,6 +3702,11 @@ document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
   if (event.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
+    if (ins && !$('ins-tag-popover').hidden) {
+      event.preventDefault();
+      toggleInsTags(false, true);
+      return;
+    }
     if (!$('ai-note-picker').hidden || !$('ai-drawer').hidden || ins || !$('random-walk-overlay').hidden) {
       event.preventDefault();
       if (!$('ai-note-picker').hidden) closeNotePicker(true);

@@ -19,6 +19,11 @@ export const BUILTIN_LENSES = [
   featured: index < 6, builtin: true,
 }));
 
+export function isChatModelId(id) {
+  return typeof id === "string" && /^[A-Za-z0-9_.:-]{1,100}$/.test(id) &&
+    !/(?:^|[-_.:/])(?:image|tts|whisper|embedding|embed|moderation|realtime|audio|transcribe|auto-review)(?:$|[-_.:/0-9])/i.test(id);
+}
+
 const insightNoteLimit = 80;
 const insightChars = 24_000;
 const insightDayMs = 86_400_000;

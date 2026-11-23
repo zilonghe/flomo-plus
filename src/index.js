@@ -1,7 +1,7 @@
 import { assets } from "./assets.generated.js";
 import { WeReadError, listWeReadBooks, listWeReadNotes } from "./weread.js";
 import { escapeContextTags, extractCitedRefs, extractNoteTags, lexicalFallbackRelated, lexicalFallbackSearch, packNoteContext } from "./retrieval.js";
-import { BUILTIN_LENSES, INSIGHT_CATEGORIES, normalizeInsightScope, filterNotesByScope, computeScopeStats, insightNotesBudget, selectNotesForInsight, packInsightContext, buildInsightTaskPrompt } from "./insights.js";
+import { BUILTIN_LENSES, INSIGHT_CATEGORIES, normalizeInsightScope, filterNotesByScope, computeScopeStats, insightNotesBudget, selectNotesForInsight, packInsightContext, buildInsightTaskPrompt, isChatModelId } from "./insights.js";
 
 const apiHeaders = {
   "Cache-Control": "private, no-store",
@@ -319,6 +319,38 @@ function serverAI(env) {
   }
 }
 
+const gatewayModelsCache = new Map();
+
+async function listGatewayModels(env) {
+  const srv = serverAI(env);
+  const result = (models, source) => ({ available: models.length > 0, models, defaultModel: models[0] ?? null, source });
+  if (!srv) return result([], "none");
+
+  const key = srv.baseUrl + "\0" + srv.apiKey;
+  const defaultModel = isChatModelId(srv.model) ? [srv.model] : [];
+  const cached = gatewayModelsCache.get(key);
+  let ids = cached?.expires > Date.now() ? cached.ids : null;
+  if (!ids) {
+    try {
+      const response = await fetch(srv.baseUrl + "/models", {
+        headers: { Authorization: `Bearer ${srv.apiKey}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(5_000),
+        redirect: "error",
+      });
+      if (response.status !== 200) {
+        void response.body?.cancel().catch(() => {});
+        return result(defaultModel, "fallback");
+      }
+      const { data } = await response.json();
+      ids = [...new Set(data.map(item => item?.id).filter(isChatModelId))].sort();
+      gatewayModelsCache.set(key, { ids, expires: Date.now() + 60_000 });
+    } catch {
+      return result(defaultModel, "fallback");
+    }
+  }
+  return result([...defaultModel, ...ids.filter(id => id !== srv.model)], "gateway");
+}
+
 async function askCodex(input, relay, clientSignal) {
   if (!relay) throw new ApiError(503, "Codex 中转还未配置。");
   if (typeof input.note !== "string" || !input.note.trim()) throw new ApiError(400, "笔记正文为空。");
@@ -357,7 +389,7 @@ async function askCodex(input, relay, clientSignal) {
   return reply;
 }
 
-async function askAI(input, baseUrl = "https://api.openai.com/v1", signal) {
+function buildAIChatRequest(input) {
   const { note, apiKey, context } = input;
   const model = typeof input.model === "string" ? input.model.trim() : "";
   const keyPattern = input.provider === "codex" ? /^[!-~]{1,512}$/ : /^[!-~]{10,512}$/;
@@ -384,25 +416,36 @@ async function askAI(input, baseUrl = "https://api.openai.com/v1", signal) {
     }),
   ];
 
-  const payload = JSON.stringify({ model, messages, store: false });
-  const timeout = AbortSignal.timeout(input.insight ? 90_000 : 55_000);
-  let response;
-  try {
-    response = await fetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-      },
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      redirect: "error",
-      body: payload,
-    });
-  } catch {
-    throw new ApiError(502, "AI 服务连接失败，请稍后重试。");
-  }
+  return { model, messages, store: false };
+}
 
+const openAIBaseUrl = "https://api.openai.com/v1";
+const aiTimeoutMessage = "AI 生成超时，请换更快的模型或缩小笔记范围后重试。";
+const aiConnectionMessage = "AI 服务连接失败，请稍后重试。";
+const insightStopped = "已停止生成洞察。";
+
+function positiveMs(value, fallback) {
+  const ms = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  return Number.isSafeInteger(ms) && ms > 0 && ms <= 2_147_483_647 ? ms : fallback;
+}
+
+function fetchAIChat(input, baseUrl, signal, stream = false) {
+  return fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${input.apiKey}`,
+      "Content-Type": "application/json",
+      Accept: stream ? "text/event-stream" : "application/json",
+    },
+    signal,
+    redirect: "error",
+    body: JSON.stringify({ ...buildAIChatRequest(input), stream }),
+  });
+}
+
+function requireAIResponse(response) {
+  if (response.ok) return;
+  void response.body?.cancel().catch(() => {});
   if (response.status === 401 || response.status === 403) {
     throw new ApiError(400, "OpenAI 拒绝访问，请检查 API Key 和模型权限。");
   }
@@ -410,9 +453,29 @@ async function askAI(input, baseUrl = "https://api.openai.com/v1", signal) {
   if (response.status === 400 || response.status === 404 || response.status === 422) {
     throw new ApiError(400, "OpenAI 无法处理请求，请检查模型名称和访问权限。");
   }
-  if (!response.ok) throw new ApiError(502, "AI 服务暂时无法回复，请稍后重试。");
+  throw new ApiError(502, "AI 服务暂时无法回复，请稍后重试。");
+}
 
-  const result = await response.json().catch(() => null);
+function aiRequestError(error, signal, timeout) {
+  if (signal?.aborted) return new ApiError(499, insightStopped);
+  if (error instanceof ApiError) return error;
+  if (timeout.aborted || error.name === "TimeoutError") return new ApiError(504, aiTimeoutMessage);
+  return new ApiError(502, aiConnectionMessage);
+}
+
+async function askAI(input, baseUrl, signal, timeoutMs) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  let result;
+  try {
+    const response = await fetchAIChat(input, baseUrl, signal ? AbortSignal.any([signal, timeout]) : timeout);
+    requireAIResponse(response);
+    result = await response.json().catch(error => {
+      if (!(error instanceof SyntaxError)) throw error;
+      return null;
+    });
+  } catch (error) {
+    throw aiRequestError(error, signal, timeout);
+  }
   const message = result?.choices?.[0]?.message;
   const reply = [message?.content, message?.refusal]
     .find(value => typeof value === "string" && value.trim());
@@ -420,10 +483,89 @@ async function askAI(input, baseUrl = "https://api.openai.com/v1", signal) {
   return reply.trim();
 }
 
-async function modelReply(input, env, signal) {
+async function askAIStream(input, baseUrl, signal, onDelta, idleTimeoutMs) {
+  const idle = new AbortController();
+  const streamSignal = AbortSignal.any([signal, idle.signal]);
+  let timer;
+  const touch = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => idle.abort(), idleTimeoutMs);
+  };
+  const decoder = new TextDecoder("utf-8");
+  let pending = "", content = "", reader, finished = false, done = false;
+  const invalidStream = () => new ApiError(502, "AI 没有返回完整的报告，请重试。");
+  const processFrame = frame => {
+    const data = frame.split(/\r?\n/).filter(line => line.startsWith("data:"))
+      .map(line => line.slice(5).replace(/^ /, "")).join("\n");
+    if (!data) return;
+    if (data.trim() === "[DONE]") { done = true; return; }
+    let value;
+    try { value = JSON.parse(data); }
+    catch { throw invalidStream(); }
+    if (value && Object.hasOwn(value, "error")) throw invalidStream();
+    const choice = value?.choices?.[0];
+    const delta = choice?.delta?.content;
+    if (typeof delta === "string" && delta) {
+      if (content.length + delta.length > 60_000) throw invalidStream();
+      content += delta;
+      onDelta(delta);
+    }
+    if (typeof choice?.finish_reason === "string" && choice.finish_reason.trim()) finished = true;
+  };
+  try {
+    touch();
+    const response = await fetchAIChat(input, baseUrl, streamSignal, true);
+    touch();
+    requireAIResponse(response);
+    if (!response.body) throw invalidStream();
+    reader = response.body.getReader();
+    while (!done) {
+      const { done: eof, value: chunk } = await reader.read();
+      if (!eof && chunk.byteLength) touch();
+      pending += eof ? decoder.decode() : decoder.decode(chunk, { stream: true });
+      let boundary;
+      while (!done && (boundary = /\r?\n\r?\n/.exec(pending))) {
+        processFrame(pending.slice(0, boundary.index));
+        pending = pending.slice(boundary.index + boundary[0].length);
+      }
+      if (eof) {
+        if (!done && pending.trim()) processFrame(pending);
+        break;
+      }
+      if (!done && pending.length > 1_000_000) throw invalidStream();
+    }
+    if (done) decoder.decode();
+    streamSignal.throwIfAborted();
+    if ((!done && !finished) || !content.trim()) throw invalidStream();
+    return content.trim();
+  } catch (error) {
+    throw aiRequestError(error, signal, idle.signal);
+  } finally {
+    clearTimeout(timer);
+    void reader?.cancel().catch(() => {});
+  }
+}
+
+function modelTarget(input, env) {
   if (input.provider === "codex") {
     const srv = serverAI(env);
-    if (srv) return askAI({ ...input, apiKey: srv.apiKey, model: srv.model }, srv.baseUrl, signal);
+    if (!srv) return { mode: "codex-relay", model: null };
+    let model = srv.model;
+    if (input.model !== undefined && input.model !== "") {
+      model = typeof input.model === "string" ? input.model.trim() : null;
+      if (!isChatModelId(model)) throw new ApiError(400, "请选择有效的对话模型。");
+    }
+    return { mode: "codex-gateway", model, apiKey: srv.apiKey, baseUrl: srv.baseUrl };
+  }
+  if (input.provider !== undefined && input.provider !== "openai") {
+    throw new ApiError(400, "请选择已支持的 AI 服务。");
+  }
+  const model = typeof input.model === "string" ? input.model.trim() : null;
+  return { mode: "openai", model, apiKey: input.apiKey, baseUrl: openAIBaseUrl };
+}
+
+async function modelReply(input, env, signal, { onDelta, target = modelTarget(input, env) } = {}) {
+  if (target.mode === "codex-relay") {
     const history = [...input.history];
     const latest = history.at(-1);
     if (input.global && latest?.role === "user" && latest.text.length > previousTurnLimit) {
@@ -439,12 +581,14 @@ async function modelReply(input, env, signal) {
       }
     }
     const relayNote = input.context === undefined ? input.note : (input.context || "暂无笔记资料。");
-    return askCodex({ ...input, note: relayNote, history }, codexRelay(env), signal);
+    const reply = await askCodex({ ...input, note: relayNote, history }, codexRelay(env), signal);
+    onDelta?.(reply);
+    return reply;
   }
-  if (input.provider !== undefined && input.provider !== "openai") {
-    throw new ApiError(400, "请选择已支持的 AI 服务。");
-  }
-  return askAI(input, undefined, signal);
+  const chat = { ...input, apiKey: target.apiKey, model: target.model };
+  const timeoutMs = input.insight ? positiveMs(env.INSIGHT_IDLE_TIMEOUT_MS, 120_000) : 55_000;
+  return onDelta ? askAIStream(chat, target.baseUrl, signal, onDelta, timeoutMs)
+    : askAI(chat, target.baseUrl, signal, timeoutMs);
 }
 
 function activeNote(db, account, id) {
@@ -704,11 +848,11 @@ async function saveInsightLens(db, account, input) {
 }
 
 function insightReportResult(row) {
-  const { contentTruncated = false, ...scope } = JSON.parse(row.scope_json);
+  const { contentTruncated = false, model = null, useProfile, ...scope } = JSON.parse(row.scope_json);
   return {
     id: row.id, lensId: row.lens_id, lensName: row.lens_name, title: row.title, scope,
     noteCount: row.note_count, tagCount: row.tag_count, dayCount: row.day_count, analyzedCount: row.analyzed_count,
-    contentTruncated: Boolean(contentTruncated), provider: row.provider, createdAt: row.created_at,
+    contentTruncated: Boolean(contentTruncated), model, useProfile: typeof useProfile === "boolean" ? useProfile : null, provider: row.provider, createdAt: row.created_at,
     ...(row.content === undefined ? { excerpt: row.excerpt } : { content: row.content, citations: JSON.parse(row.citations_json) }),
   };
 }
@@ -721,23 +865,71 @@ async function insightScope(db, account, input) {
   return { scope, notes, stats: computeScopeStats(notes, scope.tzOffsetMinutes) };
 }
 
-async function runInsight(env, account, input, signal) {
+function insightStream(requestSignal, pingMs, work) {
+  const cancel = new AbortController();
+  const signal = AbortSignal.any([requestSignal, cancel.signal]);
+  const encoder = new TextEncoder();
+  let cleanup;
+  const body = new ReadableStream({
+    start(controller) {
+      const write = text => {
+        if (!signal.aborted) controller.enqueue(encoder.encode(text));
+      };
+      const send = (event, data) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      const ping = setInterval(() => write(": ping\n\n"), pingMs);
+      const abort = () => {
+        cleanup();
+        if (!cancel.signal.aborted) controller.close();
+      };
+      cleanup = () => {
+        clearInterval(ping);
+        signal.removeEventListener("abort", abort);
+      };
+      if (signal.aborted) { abort(); return; }
+      signal.addEventListener("abort", abort, { once: true });
+      void (async () => {
+        try {
+          send("done", await work(signal, send));
+        } catch (error) {
+          send("error", error instanceof ApiError ? { error: error.message, status: error.status }
+            : { error: "暂时无法生成洞察，请稍后重试。", status: 500 });
+        } finally {
+          cleanup();
+          if (!signal.aborted) controller.close();
+        }
+      })();
+    },
+    cancel() { cancel.abort(); },
+  });
+  return new Response(body, { headers: {
+    ...apiHeaders,
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    "X-Accel-Buffering": "no",
+  } });
+}
+
+async function runInsight(env, account, input, requestSignal) {
   const db = env.DB;
-  const checkCancelled = () => {
-    if (signal.aborted) throw new ApiError(499, "已停止生成洞察。");
+  const checkCancelled = signal => {
+    if (signal.aborted) throw new ApiError(499, insightStopped);
   };
-  checkCancelled();
-  const { lensId, clientRequestId, useProfile = false, provider = "openai" } = input;
-  if (typeof lensId !== "string" || typeof useProfile !== "boolean" || !["codex", "openai"].includes(provider) ||
+  checkCancelled(requestSignal);
+  const { lensId, clientRequestId, useProfile = false, stream = false, provider = "openai" } = input;
+  if (typeof lensId !== "string" || typeof useProfile !== "boolean" || typeof stream !== "boolean" || !["codex", "openai"].includes(provider) ||
       (clientRequestId !== undefined && (typeof clientRequestId !== "string" || !/^[!-~]{1,128}$/.test(clientRequestId)))) {
     throw new ApiError(400, "请检查洞察视角、画像选项或 AI 服务。");
   }
+  const target = modelTarget({ ...input, provider }, env);
+  const respond = work => stream
+    ? insightStream(requestSignal, positiveMs(env.INSIGHT_PING_INTERVAL_MS, 15_000), work)
+    : work(requestSignal).then(result => json(result));
   const existingReport = () => db.prepare("SELECT * FROM ai_insight_reports WHERE account = ? AND client_request_id = ?")
     .bind(account, clientRequestId).first();
   if (clientRequestId) {
     const existing = await existingReport();
-    checkCancelled();
-    if (existing) return json({ report: insightReportResult(existing), deduplicated: true });
+    checkCancelled(requestSignal);
+    if (existing) return respond(async () => ({ report: insightReportResult(existing), deduplicated: true }));
   }
   const lens = lensId.startsWith("builtin:")
     ? BUILTIN_LENSES.find(item => item.id === lensId)
@@ -745,40 +937,45 @@ async function runInsight(env, account, input, signal) {
   if (!lens) throw new ApiError(404, "找不到这个视角。");
   const { scope, notes, stats } = await insightScope(db, account, input);
   if (!notes.length) throw new ApiError(400, "这个范围内没有笔记。");
-  const profile = useProfile ? await profileRow(db, account) : null;
-  const profileText = profile?.enabled ? profile.content : "";
-  const mode = provider === "codex" ? (serverAI(env) ? "codex-gateway" : "codex-relay") : "openai";
-  const maxNotesChars = insightNotesBudget(profileText, mode === "codex-relay" ? noteContextLimit : Infinity);
-  const search = async (query, options) => env.SEMANTIC
-    ? (await env.SEMANTIC.searchNotes(account, query, options)).items
-    : lexicalFallbackSearch(query, notes, options);
-  checkCancelled();
-  const selected = await selectNotesForInsight(notes, { query: [lens.name, lens.description, lens.prompt].join(" "), search, maxNotesChars });
-  const packed = packInsightContext({ notes: selected, profileText, maxNotesChars });
-  if (!packed.analyzedCount) throw new ApiError(400, "这个范围的笔记无法打包。");
   const history = [{ role: "user", text: buildInsightTaskPrompt(lens) }];
-  checkCancelled();
-  let content;
-  try {
-    content = await modelReply({ ...input, provider, global: true, insight: true, context: packed.text, history }, env, signal);
-  } catch (error) {
-    checkCancelled();
-    throw error;
-  }
-  const { citations } = extractCitedRefs(content, packed.citations);
-  const title = content.match(/^#{1,3}\s+([^\r\n]+)/m)?.[1].trim().slice(0, 120) || lens.name;
-  checkCancelled();
-  const row = await db.prepare(`INSERT INTO ai_insight_reports
-    (account, id, lens_id, lens_name, title, scope_json, note_count, tag_count, day_count, analyzed_count, content, citations_json, provider, client_request_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(account, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING RETURNING *`).bind(
-    account, crypto.randomUUID(), lens.id, lens.name, title, JSON.stringify({ ...scope, contentTruncated: Boolean(packed.contentTruncated) }),
-    stats.noteCount, stats.tagCount, stats.dayCount, packed.analyzedCount, content, JSON.stringify(citations), mode, clientRequestId ?? null, new Date().toISOString(),
-  ).first();
-  if (row) return json({ report: insightReportResult(row) });
-  const winner = await existingReport();
-  if (!winner) throw new ApiError(409, "报告已被删除，请重新生成。");
-  return json({ report: insightReportResult(winner), deduplicated: true });
+  const { mode, model } = target;
+  const chat = { provider, apiKey: target.apiKey, model, global: true, insight: true, history };
+  if (mode !== "codex-relay") buildAIChatRequest({ ...chat, context: "" });
+  checkCancelled(requestSignal);
+  return respond(async (signal, send) => {
+    checkCancelled(signal);
+    send?.("status", { stage: "selecting" });
+    const profile = useProfile ? await profileRow(db, account) : null;
+    const profileText = profile?.enabled ? profile.content : "";
+    const maxNotesChars = insightNotesBudget(profileText, mode === "codex-relay" ? noteContextLimit : Infinity);
+    const search = async (query, options) => env.SEMANTIC
+      ? (await env.SEMANTIC.searchNotes(account, query, options)).items
+      : lexicalFallbackSearch(query, notes, options);
+    checkCancelled(signal);
+    const selected = await selectNotesForInsight(notes, { query: [lens.name, lens.description, lens.prompt].join(" "), search, maxNotesChars });
+    const packed = packInsightContext({ notes: selected, profileText, maxNotesChars });
+    if (!packed.analyzedCount) throw new ApiError(400, "这个范围的笔记无法打包。");
+    checkCancelled(signal);
+    send?.("status", { stage: "generating" });
+    const content = await modelReply({ ...chat, context: packed.text }, env, signal, {
+      target, onDelta: send && (text => send("delta", { text })),
+    });
+    const { citations } = extractCitedRefs(content, packed.citations);
+    const title = content.match(/^#{1,3}\s+([^\r\n]+)/m)?.[1].trim().slice(0, 120) || lens.name;
+    checkCancelled(signal);
+    const row = await db.prepare(`INSERT INTO ai_insight_reports
+      (account, id, lens_id, lens_name, title, scope_json, note_count, tag_count, day_count, analyzed_count, content, citations_json, provider, client_request_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING RETURNING *`).bind(
+      account, crypto.randomUUID(), lens.id, lens.name, title, JSON.stringify({ ...scope, contentTruncated: Boolean(packed.contentTruncated), model, useProfile }),
+      stats.noteCount, stats.tagCount, stats.dayCount, packed.analyzedCount, content, JSON.stringify(citations), mode, clientRequestId ?? null, new Date().toISOString(),
+    ).first();
+    checkCancelled(signal);
+    if (row) return { report: insightReportResult(row) };
+    const winner = await existingReport();
+    if (!winner) throw new ApiError(409, "报告已被删除，请重新生成。");
+    return { report: insightReportResult(winner), deduplicated: true };
+  });
 }
 
 async function insightsApi(request, path, env, account) {
@@ -864,6 +1061,7 @@ async function api(request, url, env) {
       const codexMode = serverAI(env) ? "gateway" : codexRelay(env) ? "relay" : null;
       return json({ user, codexAvailable: codexMode !== null, codexMode });
     }
+    if (path === "/api/ai/models") return json(await listGatewayModels(env));
     if (path === "/api/notes") return listNotes(env.DB, account);
     if (path === "/api/semantic/status") return json(await semanticStatus(env, account));
     if (path === "/api/ai/profile") return json({ profile: profileResult(await profileRow(env.DB, account)) });
