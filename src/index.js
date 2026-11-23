@@ -493,7 +493,7 @@ async function askAIStream(input, baseUrl, signal, onDelta, idleTimeoutMs) {
   };
   const decoder = new TextDecoder("utf-8");
   let pending = "", content = "", reader, finished = false, done = false;
-  const invalidStream = () => new ApiError(502, "AI 没有返回完整的报告，请重试。");
+  const invalidStream = () => new ApiError(502, "AI 没有返回完整的回复，请重试。");
   const processFrame = frame => {
     const data = frame.split(/\r?\n/).filter(line => line.startsWith("data:"))
       .map(line => line.slice(5).replace(/^ /, "")).join("\n");
@@ -517,6 +517,15 @@ async function askAIStream(input, baseUrl, signal, onDelta, idleTimeoutMs) {
     const response = await fetchAIChat(input, baseUrl, streamSignal, true);
     touch();
     requireAIResponse(response);
+    if ((response.headers.get("content-type") || "").includes("application/json")) {
+      const result = await response.json().catch(() => null);
+      const message = result?.choices?.[0]?.message;
+      const reply = [message?.content, message?.refusal].find(value => typeof value === "string" && value.trim());
+      if (!reply || (input.global && reply.length > 60_000)) throw new ApiError(502, "AI 没有返回可保存的文字。");
+      const text = reply.trim();
+      onDelta(text);
+      return text;
+    }
     if (!response.body) throw invalidStream();
     reader = response.body.getReader();
     while (!done) {
@@ -586,7 +595,7 @@ async function modelReply(input, env, signal, { onDelta, target = modelTarget(in
     return reply;
   }
   const chat = { ...input, apiKey: target.apiKey, model: target.model };
-  const timeoutMs = input.insight ? positiveMs(env.INSIGHT_IDLE_TIMEOUT_MS, 120_000) : 55_000;
+  const timeoutMs = (input.insight || onDelta) ? positiveMs(env.INSIGHT_IDLE_TIMEOUT_MS, 120_000) : 55_000;
   return onDelta ? askAIStream(chat, target.baseUrl, signal, onDelta, timeoutMs)
     : askAI(chat, target.baseUrl, signal, timeoutMs);
 }
@@ -693,11 +702,15 @@ function createdSession(db, account, requestId) {
   return db.prepare("SELECT * FROM ai_sessions WHERE account = ? AND create_request_id = ?").bind(account, requestId).first();
 }
 
-function sessionResponse(row, requestId, deduplicated = false) {
+function sessionPayload(row, requestId, deduplicated = false) {
   const session = sessionResult(row);
   const replyTurn = (requestId && session.turns.find(t => t.role === "assistant" && t.clientRequestId === requestId))
     || session.turns.at(-1);
-  return json({ session, reply: replyTurn.text, citations: replyTurn.citations ?? [], ...(deduplicated ? { deduplicated: true } : {}) });
+  return { session, reply: replyTurn.text, citations: replyTurn.citations ?? [], ...(deduplicated ? { deduplicated: true } : {}) };
+}
+
+function sessionResponse(row, requestId, deduplicated = false) {
+  return json(sessionPayload(row, requestId, deduplicated));
 }
 
 function sessionHasRequest(row, requestId) {
@@ -710,16 +723,17 @@ function checkedId(id) {
   return id.toLowerCase();
 }
 
-async function chatSession(env, account, input, signal) {
+async function chatSession(env, account, input, requestSignal) {
   const { DB: db, SEMANTIC: semantic } = env;
-  const { expectedVersion, clientRequestId, referencedNoteIds, useAllNotes = true, useProfile = true } = input;
+  const { expectedVersion, clientRequestId, referencedNoteIds, useAllNotes = true, useProfile = true, stream = false } = input;
   const message = typeof input.message === "string" ? input.message.trim() : "";
-  if (!message || input.message.length > 8000 || typeof useAllNotes !== "boolean" || typeof useProfile !== "boolean" ||
+  if (!message || input.message.length > 8000 || typeof useAllNotes !== "boolean" || typeof useProfile !== "boolean" || typeof stream !== "boolean" ||
     (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)) ||
     (clientRequestId !== undefined && (typeof clientRequestId !== "string" || !/^[!-~]{1,128}$/.test(clientRequestId))) ||
     (referencedNoteIds !== undefined && !Array.isArray(referencedNoteIds))) {
     throw new ApiError(400, "请检查问题、引用和会话版本。");
   }
+  const target = modelTarget(input, env);
   const ids = [...new Set((referencedNoteIds ?? []).map(checkedId))];
   if (ids.length > 10) throw new ApiError(400, "最多引用 10 条笔记。");
   const id = input.sessionId === undefined ? null : checkedId(input.sessionId);
@@ -727,61 +741,78 @@ async function chatSession(env, account, input, signal) {
   const requestId = clientRequestId ?? null;
   const existing = id ? await sessionRow(db, account, id) : null;
   if (id && !existing) throw new ApiError(404, "找不到这段对话。");
+  const respond = work => stream
+    ? insightStream(requestSignal, positiveMs(env.INSIGHT_PING_INTERVAL_MS, 15_000), work)
+    : work(requestSignal, () => {}).then(data => json(data));
   if (existing) {
-    if (sessionHasRequest(existing, requestId)) return sessionResponse(existing, requestId, true);
+    if (sessionHasRequest(existing, requestId)) return respond(async () => sessionPayload(existing, requestId, true));
     if (expectedVersion !== undefined && existing.version !== expectedVersion) return sessionConflict(existing);
   } else if (requestId) {
     const created = await createdSession(db, account, requestId);
-    if (created) return sessionResponse(created, requestId, true);
+    if (created) return respond(async () => sessionPayload(created, requestId, true));
   }
 
-  const [pins, source, profile] = await Promise.all([
-    Promise.all(ids.map(noteId => activeNote(db, account, noteId))),
-    !existing && sourceId ? activeNote(db, account, sourceId) : null,
-    useProfile ? profileRow(db, account) : null,
-  ]);
-  const pinnedNotes = pins.filter(Boolean);
-  const opts = { limit: 20 - pinnedNotes.length, excludeIds: pinnedNotes.map(note => note.id), readOnly: true };
-  const retrievedNotes = !useAllNotes ? [] : semantic
-    ? (await semantic.searchNotes(account, message, opts)).items
-    : lexicalFallbackSearch(message, await activeNotes(db, account), opts);
-  const context = packNoteContext({ pinnedNotes, retrievedNotes, profileText: profile?.enabled ? profile.content : "" });
-  const question = { role: "user", text: message, ...(requestId ? { clientRequestId: requestId } : {}) };
-  const turns = existing ? sessionResult(existing).turns : (source?.turns ?? []).slice(-11);
-  const history = [...turns, question].slice(-12);
-  const reply = await modelReply({ ...input, global: true, context: context.text, history }, env, signal);
-  const { citations } = extractCitedRefs(reply, context.citations);
-  const assistant = { role: "assistant", text: reply, citations, ...(requestId ? { clientRequestId: requestId } : {}) };
-  const nextTurns = [...turns, question, assistant];
-  let retained = nextTurns.slice(-200);
-  if (nextTurns.length > 200 && existing?.create_request_id &&
-      !retained.some(turn => turn.clientRequestId === existing.create_request_id)) {
-    // A retry of the first request can arrive after the regular history window has rolled over.
-    const firstExchange = nextTurns.filter(turn => turn.clientRequestId === existing.create_request_id);
-    retained = [...firstExchange, ...nextTurns.slice(-(200 - firstExchange.length))];
-  }
-  const turnsJson = JSON.stringify(retained);
-  const now = new Date().toISOString();
+  return respond(async (signal, send) => {
+    const checkCancelled = () => { if (signal.aborted) throw new ApiError(499, "已停止回复。"); };
+    checkCancelled();
+    send("status", { stage: "retrieving", message: useAllNotes ? "正在检索相关笔记…" : "正在准备上下文…" });
+    const [pins, source, profile] = await Promise.all([
+      Promise.all(ids.map(noteId => activeNote(db, account, noteId))),
+      !existing && sourceId ? activeNote(db, account, sourceId) : null,
+      useProfile ? profileRow(db, account) : null,
+    ]);
+    const pinnedNotes = pins.filter(Boolean);
+    const opts = { limit: 20 - pinnedNotes.length, excludeIds: pinnedNotes.map(note => note.id), readOnly: true };
+    const retrievedNotes = !useAllNotes ? [] : semantic
+      ? (await semantic.searchNotes(account, message, opts)).items
+      : lexicalFallbackSearch(message, await activeNotes(db, account), opts);
+    checkCancelled();
+    const context = packNoteContext({ pinnedNotes, retrievedNotes, profileText: profile?.enabled ? profile.content : "" });
+    const question = { role: "user", text: message, ...(requestId ? { clientRequestId: requestId } : {}) };
+    const turns = existing ? sessionResult(existing).turns : (source?.turns ?? []).slice(-11);
+    const history = [...turns, question].slice(-12);
+    send("status", { stage: "generating", model: target.model, message: "正在思考…" });
+    const reply = await modelReply({ ...input, global: true, context: context.text, history }, env, signal, {
+      ...(stream ? { onDelta: text => send("delta", { text }) } : {}),
+      target,
+    });
+    checkCancelled();
+    const { citations } = extractCitedRefs(reply, context.citations);
+    const assistant = { role: "assistant", text: reply, citations, ...(requestId ? { clientRequestId: requestId } : {}) };
+    const nextTurns = [...turns, question, assistant];
+    let retained = nextTurns.slice(-200);
+    if (nextTurns.length > 200 && existing?.create_request_id &&
+        !retained.some(turn => turn.clientRequestId === existing.create_request_id)) {
+      // A retry of the first request can arrive after the regular history window has rolled over.
+      const firstExchange = nextTurns.filter(turn => turn.clientRequestId === existing.create_request_id);
+      retained = [...firstExchange, ...nextTurns.slice(-(200 - firstExchange.length))];
+    }
+    const turnsJson = JSON.stringify(retained);
+    const now = new Date().toISOString();
+    const titleSource = message.match(/\[追问\]\n([\s\S]+)/)?.[1] ?? message;
 
-  if (!existing) {
-    const row = await db.prepare(`INSERT INTO ai_sessions
-      (account, id, title, source_note_id, turns_json, create_request_id, last_request_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(account, create_request_id) WHERE create_request_id IS NOT NULL DO NOTHING RETURNING *`).bind(
-      account, crypto.randomUUID(), message.replace(/\s+/g, " ").slice(0, 80), source?.id ?? null,
-      turnsJson, requestId, requestId, now, now,
-    ).first();
-    if (row) return sessionResponse(row, requestId);
-    const winner = await createdSession(db, account, requestId);
-    return winner ? sessionResponse(winner, requestId, true) : sessionConflict(null);
-  }
+    if (!existing) {
+      const row = await db.prepare(`INSERT INTO ai_sessions
+        (account, id, title, source_note_id, turns_json, create_request_id, last_request_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account, create_request_id) WHERE create_request_id IS NOT NULL DO NOTHING RETURNING *`).bind(
+        account, crypto.randomUUID(), titleSource.replace(/\s+/g, " ").slice(0, 80), source?.id ?? null,
+        turnsJson, requestId, requestId, now, now,
+      ).first();
+      if (row) return sessionPayload(row, requestId);
+      const winner = await createdSession(db, account, requestId);
+      if (winner) return sessionPayload(winner, requestId, true);
+      throw new ApiError(409, "该对话已被删除。");
+    }
 
-  const row = await db.prepare(`UPDATE ai_sessions SET turns_json = ?, updated_at = ?, version = version + 1, last_request_id = ?
-    WHERE account = ? AND id = ? AND version = ? RETURNING *`)
-    .bind(turnsJson, now, requestId, account, id, existing.version).first();
-  if (row) return sessionResponse(row, requestId);
-  const current = await sessionRow(db, account, id);
-  return current && sessionHasRequest(current, requestId) ? sessionResponse(current, requestId, true) : sessionConflict(current);
+    const row = await db.prepare(`UPDATE ai_sessions SET turns_json = ?, updated_at = ?, version = version + 1, last_request_id = ?
+      WHERE account = ? AND id = ? AND version = ? RETURNING *`)
+      .bind(turnsJson, now, requestId, account, id, existing.version).first();
+    if (row) return sessionPayload(row, requestId);
+    const current = await sessionRow(db, account, id);
+    if (current && sessionHasRequest(current, requestId)) return sessionPayload(current, requestId, true);
+    throw new ApiError(409, current ? "该对话已在另一处更新，请刷新后重试。" : "该对话已被删除。");
+  });
 }
 
 function sessionConflict(row) {

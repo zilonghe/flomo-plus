@@ -108,11 +108,17 @@ export function renderSafeMarkdown(container, markdown, citations = []) {
   const blocks = [];
   const inline = (node, text) => {
     let start = 0;
-    for (const match of text.matchAll(/\*\*([^*\n]+)\*\*/g)) {
+    for (const match of text.matchAll(/\*\*([^*\n]+)\*\*|`([^`\n]+)`/g)) {
       appendCitedText(node, text.slice(start, match.index), citations);
-      const strong = doc.createElement('strong');
-      appendCitedText(strong, match[1], citations);
-      node.append(strong);
+      if (match[1] !== undefined) {
+        const strong = doc.createElement('strong');
+        appendCitedText(strong, match[1], citations);
+        node.append(strong);
+      } else {
+        const code = doc.createElement('code');
+        code.textContent = match[2];
+        node.append(code);
+      }
       start = match.index + match[0].length;
     }
     appendCitedText(node, text.slice(start), citations);
@@ -128,8 +134,9 @@ export function renderSafeMarkdown(container, markdown, citations = []) {
   };
   for (const raw of markdown.split(/\r?\n/)) {
     const line = raw.trim();
-    const heading = line.match(/^(#{2,3})\s+(.+)$/);
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
     const item = line.match(/^([-+*]|\d+\.)\s+(.+)$/);
+    const quote = line.match(/^>\s?(.*)$/);
     if (item) {
       flush();
       const type = /^\d/.test(item[1]) ? 'ol' : 'ul';
@@ -146,8 +153,16 @@ export function renderSafeMarkdown(container, markdown, citations = []) {
     list = null;
     if (heading) {
       flush();
-      const node = doc.createElement('h' + heading[1].length);
+      const node = doc.createElement('h' + Math.min(4, Math.max(2, heading[1].length)));
       inline(node, heading[2]);
+      blocks.push(node);
+    } else if (/^(-{3,}|\*{3,})$/.test(line)) {
+      flush();
+      blocks.push(doc.createElement('hr'));
+    } else if (quote) {
+      flush();
+      const node = doc.createElement('blockquote');
+      inline(node, quote[1]);
       blocks.push(node);
     } else if (line) paragraph.push(line);
     else flush();

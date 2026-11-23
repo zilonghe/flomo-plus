@@ -2546,7 +2546,7 @@ function walkNoteAction(action) {
 }
 
 function emptyAIState() {
-  return { session: null, sessions: [], profile: undefined, source: null, insightContext: null, pins: new Set(), sending: null,
+  return { session: null, sessions: [], profile: undefined, source: null, insightContext: null, pendingTurn: null, pins: new Set(), sending: null,
     profileTask: null, profileRequest: null, loadingSession: false, requestKey: null, selectedPanel: null, atIndex: null, loadSeq: 0 };
 }
 let ai = emptyAIState();
@@ -2649,11 +2649,41 @@ function renderAISessions() {
   if (!ai.sessions.length) $('ai-session-list').append(el('p', 'help-text', '还没有对话。'));
 }
 
+function buildAIUserMessage(text, citations) {
+  const message = el('div', 'ai-msg ai-msg-user');
+  const matched = text.match(/^\[洞察上下文：([^\n]+)\]\n([\s\S]*?)\n\n\[追问\]\n([\s\S]+)$/);
+  if (matched) {
+    const details = el('details', 'ai-ctx-fold ai-ctx-inline');
+    details.append(el('summary', '', '附带洞察：' + matched[1]), el('div', 'ai-ctx-fold-body', matched[2]));
+    const ask = el('div', 'ai-msg-ask');
+    appendCitedText(ask, matched[3], citations);
+    message.append(details, ask);
+  } else {
+    appendCitedText(message, text, citations);
+  }
+  return message;
+}
+
+function renderAIPendingBubble(bubble, pending) {
+  bubble.classList.toggle('is-streaming', Boolean(pending.streamText));
+  if (pending.streamText) {
+    renderSafeMarkdown(bubble, pending.streamText, []);
+    const last = bubble.lastElementChild;
+    const caret = el('span', 'ai-stream-caret', '');
+    if (last && /^(P|LI|H[2-4]|BLOCKQUOTE)$/.test(last.tagName)) last.append(caret);
+    else bubble.append(caret);
+  } else {
+    const thinking = el('span', 'ai-thinking');
+    thinking.append(el('i'), el('i'), el('i'), el('span', '', pending.status || '正在思考…'));
+    bubble.replaceChildren(thinking);
+  }
+}
+
 function renderAIThread() {
   const turns = ai.session?.turns ?? ai.source?.turns?.slice(-11) ?? [];
   const thread = $('ai-drawer-thread');
   const nodes = [];
-  if (!turns.length && ai.insightContext) {
+  if (!turns.length && !ai.pendingTurn && ai.insightContext) {
     const ctx = ai.insightContext;
     const card = el('section', 'ai-context-card');
     card.setAttribute('aria-label', '附带的洞察报告');
@@ -2664,7 +2694,7 @@ function renderAIThread() {
     close.setAttribute('aria-label', '移除附带的洞察报告');
     close.title = '移除附带的洞察报告';
     head.append(meta, close);
-    const preview = ctx.content.replace(/^#{1,6}\s+/gm, '').replace(/\n+/g, ' ').trim();
+    const preview = ctx.content.replace(/^#{1,6}\s+/gm, '').replace(/[*_`~]/g, '').replace(/\n+/g, ' ').trim();
     const summary = el('p', 'ai-context-excerpt', preview.slice(0, 120) + (preview.length > 120 ? '…' : ''));
     card.append(head, summary);
     if (ctx.content.length > 120) {
@@ -2678,18 +2708,20 @@ function renderAIThread() {
     nodes.push(card);
   }
   for (const turn of turns) {
-    const message = el('div', 'ai-msg ai-msg-' + turn.role);
-    const matched = turn.role === 'user' && turn.text.match(/^\[洞察上下文：([^\n]+)\]\n([\s\S]*?)\n\n\[追问\]\n([\s\S]+)$/);
-    if (matched) {
-      const details = el('details', 'ai-ctx-fold ai-ctx-inline');
-      details.append(el('summary', '', '附带洞察：' + matched[1]), el('div', 'ai-ctx-fold-body', matched[2]));
-      const ask = el('div', 'ai-msg-ask');
-      appendCitedText(ask, matched[3], turn.citations);
-      message.append(details, ask);
+    if (turn.role === 'user') {
+      nodes.push(buildAIUserMessage(turn.text, turn.citations));
     } else {
-      appendCitedText(message, turn.text, turn.citations);
+      const message = el('div', 'ai-msg ai-msg-' + turn.role);
+      renderSafeMarkdown(message, turn.text, turn.citations ?? []);
+      nodes.push(message);
     }
-    nodes.push(message);
+  }
+  if (ai.pendingTurn) {
+    nodes.push(buildAIUserMessage(ai.pendingTurn.userText));
+    const reply = el('div', 'ai-msg ai-msg-assistant ai-msg-pending');
+    reply.id = 'ai-pending-reply';
+    renderAIPendingBubble(reply, ai.pendingTurn);
+    nodes.push(reply);
   }
   thread.replaceChildren(...nodes);
   thread.scrollTop = thread.scrollHeight;
@@ -2778,9 +2810,11 @@ async function toggleAIPanel(panel) {
 
 function syncAIControls() {
   const send = $('ai-drawer-send');
-  send.disabled = Boolean(ai.sending || ai.loadingSession);
-  $('ai-drawer-input').readOnly = Boolean(ai.sending);
-  send.querySelector('span').textContent = ai.sending ? '发送中…' : '发送';
+  const stopping = Boolean(ai.sending);
+  send.disabled = Boolean(ai.loadingSession);
+  send.classList.toggle('ai-send-stopping', stopping);
+  send.querySelector('span').textContent = stopping ? '停止' : '发送';
+  send.setAttribute('aria-label', stopping ? '停止回复' : '发送');
   for (const control of $('ai-profile-panel').querySelectorAll('button, textarea, input')) {
     control.disabled = Boolean(ai.profileTask);
   }
@@ -2813,6 +2847,7 @@ function newAISession(source = null) {
   ai.session = null;
   ai.source = source;
   ai.insightContext = null;
+  ai.pendingTurn = null;
   ai.pins = new Set(source ? [source.id] : []);
   ai.requestKey = null;
   $('ai-drawer-input').value = '';
@@ -2863,9 +2898,13 @@ async function deleteAISession(id) {
 async function sendDrawerChat(event) {
   event.preventDefault();
   const view = ai;
+  if (view.sending) {
+    view.sending.abort();
+    return;
+  }
   const input = $('ai-drawer-input');
   const message = input.value.trim();
-  if (!state.loaded || !message || view.sending || view.loadingSession) return;
+  if (!state.loaded || !message || view.loadingSession) return;
   const settings = providerSettings();
   if (settings.provider === 'openai' && !settings.apiKey) {
     setError('ai-drawer-error', '请先在设置里填写 OpenAI API Key。');
@@ -2876,9 +2915,10 @@ async function sendDrawerChat(event) {
   const header = ctx ? `[洞察上下文：${ctx.title}（${ctx.lensName}）]\n` : '';
   const tail = ctx ? `\n\n[追问]\n${message}` : '';
   const payloadMessage = ctx ? header + ctx.content.slice(0, Math.max(0, 7900 - header.length - tail.length)) + tail : message;
+  const useAllNotes = $('ai-use-all-notes').checked;
   const body = {
     ...settings, message: payloadMessage, referencedNoteIds: [...view.pins],
-    useAllNotes: $('ai-use-all-notes').checked,
+    useAllNotes,
     ...(view.session ? { sessionId: view.session.id, expectedVersion: view.session.version } : {}),
     ...(!view.session && view.source ? { sourceNoteId: view.source.id } : {}),
   };
@@ -2886,32 +2926,73 @@ async function sendDrawerChat(event) {
   if (view.requestKey?.signature !== signature) view.requestKey = { signature, id: randomUUID() };
   const controller = new AbortController();
   view.sending = controller;
+  view.pendingTurn = { userText: payloadMessage, status: useAllNotes ? '正在检索相关笔记…' : '正在思考…', streamText: '' };
+  input.value = '';
   syncAIControls();
   setError('ai-drawer-error', '');
+  renderAIThread();
+  let completed = false;
   try {
     if (view.profileTask) await view.profileTask;
-    if (ai !== view) return;
-    const result = await request('/api/ai/chat', { ...body, clientRequestId: view.requestKey.id }, controller.signal);
-    if (ai !== view) return;
-    view.session = result.session;
-    view.insightContext = null;
-    view.sessions = [view.session, ...view.sessions.filter(session => session.id !== view.session.id)].slice(0, 50);
-    view.requestKey = null;
-    input.value = '';
-    input.placeholder = '问问你的笔记…';
-    renderAIThread();
-    renderAISessions();
+    if (ai !== view || controller.signal.aborted) return;
+    let streamError = null;
+    await requestStream('/api/ai/chat', { ...body, stream: true, clientRequestId: view.requestKey.id }, {
+      signal: controller.signal,
+      onEvent(name, data) {
+        if (ai !== view || controller.signal.aborted) return;
+        if (name === 'status' && view.pendingTurn) {
+          view.pendingTurn.status = data.message || '正在思考…';
+          const bubble = $('ai-pending-reply');
+          if (bubble && !view.pendingTurn.streamText) renderAIPendingBubble(bubble, view.pendingTurn);
+        } else if (name === 'delta' && view.pendingTurn && typeof data.text === 'string') {
+          view.pendingTurn.streamText += data.text;
+          const bubble = $('ai-pending-reply');
+          if (bubble) {
+            renderAIPendingBubble(bubble, view.pendingTurn);
+            $('ai-drawer-thread').scrollTop = $('ai-drawer-thread').scrollHeight;
+          }
+        } else if (name === 'done' && data?.session) {
+          completed = true;
+          view.session = data.session;
+          view.insightContext = null;
+          view.pendingTurn = null;
+          view.sessions = [view.session, ...view.sessions.filter(session => session.id !== view.session.id)].slice(0, 50);
+          view.requestKey = null;
+          input.placeholder = '问问你的笔记…';
+          renderAIThread();
+          renderAISessions();
+        } else if (name === 'error') {
+          streamError = new Error(data?.error || '暂时无法回复，请稍后重试。');
+        }
+      },
+    });
+    if (streamError) throw streamError;
+    if (!completed && ai === view && !controller.signal.aborted) throw new Error('回复意外中断，请重试。');
   } catch (error) {
     if (ai !== view) return;
+    view.pendingTurn = null;
+    renderAIThread();
+    if (!input.value.trim()) input.value = message;
+    if (error.name === 'AbortError' || controller.signal.aborted) {
+      view.requestKey = null;
+      return;
+    }
     if (error.status === 409) {
       if (error.current) view.session = error.current;
       else if (error.deleted) view.session = null;
+      view.requestKey = null;
       renderAIThread();
     }
     setError('ai-drawer-error', error.message);
   } finally {
-    view.sending = null;
-    if (ai === view) syncAIControls();
+    if (ai === view && view.sending === controller) {
+      view.sending = null;
+      if (!completed && view.pendingTurn) {
+        view.pendingTurn = null;
+        renderAIThread();
+      }
+      syncAIControls();
+    }
   }
 }
 
@@ -3353,14 +3434,13 @@ function continueInsightChat() {
   const report = ins.report;
   if (!report) return;
   if (ai.loadingSession || !newAISession()) { setError('ins-report-error', '请等待当前对话完成。'); return; }
-  const noteIds = new Set(report.citations.map(cite => cite.noteId).filter(id => state.notes.has(id)));
-  ai.pins = new Set([...noteIds].slice(0, 10));
   ai.insightContext = {
     title: report.title,
     lensName: report.lensName,
     content: report.content.slice(0, 2000),
     citations: report.citations ?? [],
   };
+  $('ai-use-all-notes').checked = false;
   $('ai-drawer-input').value = '';
   $('ai-drawer-input').placeholder = `针对《${report.title}》继续追问…`;
   renderAIPins();

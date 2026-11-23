@@ -400,8 +400,32 @@ hr{border:0;border-top:1px solid var(--sidebar-border);margin:18px 0}
 .ai-ctx-fold[open] summary::before{content:"▾ "}
 .ai-ctx-fold-body{margin-top:6px;padding-top:6px;border-top:1px solid var(--sidebar-border);font-size:12px;line-height:1.6;color:var(--muted-foreground);max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 .ai-ctx-inline{margin-bottom:6px;padding-bottom:5px;border-bottom:1px solid var(--sidebar-border)}
-.ai-msg{width:fit-content;max-width:100%;flex:none;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.68;font-size:14px;padding:6px 0;color:var(--foreground)}
-.ai-msg-user{align-self:flex-end;padding:9px 13px;max-width:86%;border-radius:var(--radius-lg) var(--radius-lg) 4px var(--radius-lg);background:#f4f4f5;border:1px solid var(--sidebar-border);color:var(--foreground)}
+.ai-msg{width:fit-content;max-width:100%;flex:none;overflow-wrap:anywhere;line-height:1.68;font-size:14px;padding:6px 0;color:var(--foreground)}
+.ai-msg-user{align-self:flex-end;white-space:pre-wrap;padding:9px 13px;max-width:86%;border-radius:var(--radius-lg) var(--radius-lg) 4px var(--radius-lg);background:#f4f4f5;border:1px solid var(--sidebar-border);color:var(--foreground)}
+.ai-msg-assistant{width:100%}
+.ai-msg-assistant p{margin:0 0 10px;white-space:pre-wrap}
+.ai-msg-assistant p:last-child,.ai-msg-assistant ul:last-child,.ai-msg-assistant ol:last-child,.ai-msg-assistant blockquote:last-child{margin-bottom:0}
+.ai-msg-assistant h2,.ai-msg-assistant h3,.ai-msg-assistant h4{margin:14px 0 6px;font-weight:600;letter-spacing:-.01em;line-height:1.4;color:var(--foreground)}
+.ai-msg-assistant h2{font-size:16px}
+.ai-msg-assistant h3{font-size:14.5px}
+.ai-msg-assistant h4{font-size:14px}
+.ai-msg-assistant h2:first-child,.ai-msg-assistant h3:first-child,.ai-msg-assistant h4:first-child{margin-top:0}
+.ai-msg-assistant ul,.ai-msg-assistant ol{margin:0 0 10px;padding-left:20px;display:grid;gap:4px}
+.ai-msg-assistant blockquote{margin:0 0 10px;padding:4px 0 4px 11px;border-left:2px solid var(--border-strong);color:var(--muted-foreground)}
+.ai-msg-assistant code{font-family:var(--font-mono);font-size:.88em;background:var(--sidebar);border:1px solid var(--sidebar-border);border-radius:4px;padding:1px 5px}
+.ai-msg-assistant hr{border:0;border-top:1px solid var(--sidebar-border);margin:12px 0}
+.ai-thinking{display:inline-flex;align-items:center;gap:5px;color:var(--muted-foreground);font-size:13px}
+.ai-thinking i{display:inline-block;width:5px;height:5px;border-radius:999px;background:var(--muted-foreground);opacity:.35;animation:ai-dot 1.2s ease-in-out infinite}
+.ai-thinking i:nth-child(2){animation-delay:.18s}
+.ai-thinking i:nth-child(3){animation-delay:.36s}
+.ai-thinking span{margin-left:3px}
+.ai-stream-caret{display:inline-block;width:2px;height:1em;margin-left:2px;vertical-align:-2px;background:var(--foreground);animation:ai-caret .9s steps(2) infinite}
+@keyframes ai-dot{0%,80%,100%{opacity:.28;transform:translateY(0)}40%{opacity:.95;transform:translateY(-2px)}}
+@keyframes ai-caret{0%{opacity:1}100%{opacity:0}}
+.ai-send-stopping{background:var(--card);color:var(--foreground);border-color:var(--border-strong);box-shadow:var(--shadow-xs)}
+.ai-send-stopping:hover:not(:disabled){background:var(--destructive-soft);border-color:var(--destructive-border);color:var(--destructive-foreground)}
+.ai-send-stopping svg{display:none}
+.ai-send-stopping::before{content:"";width:8px;height:8px;border-radius:2px;background:currentColor;display:inline-block}
 .citation-chip{margin-inline:2px;border:1px solid var(--success-border);background:var(--success-soft);color:var(--success-foreground);border-radius:var(--radius-sm);padding:0 5px;font-size:.82em;font-weight:500;font-family:var(--font-mono);vertical-align:baseline;transition:background .12s,border-color .12s}
 .citation-chip:hover{background:rgba(16,185,129,.16);border-color:var(--success)}
 #ai-drawer-form{position:relative;padding:10px 14px max(12px,env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--sidebar-border);border-radius:0 0 calc(var(--radius-2xl) - 1px) calc(var(--radius-2xl) - 1px)}
