@@ -141,26 +141,42 @@ export function escapeContextTags(text) {
   return text.replace(/<(\/?(?:当前笔记|长期个人画像|相关历史笔记|画像生成任务|洞察笔记资料|洞察视角任务))>/g, '‹$1›');
 }
 
-export function buildNoteContextBlock(entries, { maxTotalChars = 12000, pinnedMaxChars = 2000, retrievedMaxChars = 1000 } = {}) {
+export function buildNoteContextBlock(entries, { maxTotalChars = 12000, pinBudget = maxTotalChars, pinnedMaxChars = 2000, retrievedMaxChars = 1000 } = {}) {
   const lines = [];
   const citations = [];
   const seen = new Set();
   let remaining = maxTotalChars;
+  let remainingPinned = entries.filter(entry => entry.pinned).length;
   for (const entry of entries) {
+    let cap = remaining;
+    if (entry.pinned) {
+      cap = Math.min(remaining, Math.floor((pinBudget - 2 * (remainingPinned - 1)) / remainingPinned));
+      remainingPinned--;
+    }
     const note = entry.note ?? entry;
     const { id, body, createdAt, reading } = note;
     if (!body?.trim() || (id && seen.has(id))) continue;
-    if (id) seen.add(id);
     const ref = 'N' + (lines.length + 1);
     const date = createdAt?.slice(0, 10) ?? '';
     const bookTitle = reading?.bookTitle;
-    const prefix = '[' + ref + '] (' + (date ? date + ' | ' : '') + escapeContextTags(bookTitle || '日志').replace(/\s+/g, ' ') + ') ';
+    const label = '[' + ref + '] (' + (date ? date + ' | ' : '');
+    const title = escapeContextTags(bookTitle || '日志').replace(/\s+/g, ' ');
+    const titleCap = entry.pinned ? Math.min(Math.max(40, cap - 80), Math.max(0, cap - label.length - 3)) : title.length;
+    const prefix = label + title.slice(0, titleCap) + ') ';
     const excerpt = body.trim().replace(/\r?\n(?=\[N\d+\])/g, '\n ')
-      .slice(0, Math.min(entry.pinned ? pinnedMaxChars : retrievedMaxChars, Math.max(0, remaining - prefix.length)));
-    if (!excerpt.trim()) break;
+      .slice(0, Math.min(entry.pinned ? pinnedMaxChars : retrievedMaxChars, Math.max(0, cap - prefix.length)));
+    if (!excerpt.trim()) {
+      if (entry.pinned) continue;
+      break;
+    }
     lines.push(prefix + escapeContextTags(excerpt));
-    remaining -= prefix.length + excerpt.length + 2;
-    if (id) citations.push({ ref, noteId: id, createdAt, excerpt, ...(bookTitle ? { bookTitle } : {}) });
+    const used = prefix.length + excerpt.length + 2;
+    remaining -= used;
+    if (entry.pinned) pinBudget -= used;
+    if (id) {
+      seen.add(id);
+      citations.push({ ref, noteId: id, createdAt, excerpt, ...(bookTitle ? { bookTitle } : {}) });
+    }
     if (lines.length >= 20) break;
   }
   return { text: lines.join('\n\n'), citations };
@@ -172,8 +188,9 @@ export function extractCitedRefs(replyText, citations) {
 }
 
 export function packNoteContext({ currentNote = '', profileText = '', pinnedNotes = [], retrievedNotes = [], maxChars = 12000 }) {
+  profileText = profileText.trim();
   const current = currentNote.trim() ? ['<当前笔记>\n', '\n</当前笔记>'] : null;
-  const profile = profileText.trim() ? ['<长期个人画像>\n', '\n</长期个人画像>'] : null;
+  const profile = profileText ? ['<长期个人画像>\n', '\n</长期个人画像>'] : null;
   const entries = [...pinnedNotes.map(note => ({ note, pinned: true })), ...retrievedNotes];
   const wrapper = (tags, body) => tags && body ? tags[0] + body + tags[1] : '';
   const wrapperSize = tags => tags ? tags[0].length + tags[1].length + 2 : 0;
@@ -182,9 +199,11 @@ export function packNoteContext({ currentNote = '', profileText = '', pinnedNote
   // Keep room for each explicit source before allocating the rest to retrieved notes.
   const currentBody = currentNote.trim().slice(0, entries.length || profile ? Math.min(6000, Math.floor(budget * 0.5)) : budget);
   const available = budget - currentBody.length;
-  const pins = buildNoteContextBlock(entries.slice(0, pinnedNotes.length), { maxTotalChars: available });
-  const profileBody = profileText.trim().slice(0, Math.max(0, available - pins.text.length - (pins.text ? 2 : 0)));
-  const notes = buildNoteContextBlock(entries, { maxTotalChars: available - profileBody.length });
+  const recallReserve = retrievedNotes.length ? Math.min(2400, Math.floor(available * 0.25)) : 0;
+  const pinBudget = available - recallReserve - Math.min(profileText.length, 2400);
+  const pins = buildNoteContextBlock(entries.slice(0, pinnedNotes.length), { maxTotalChars: available, pinBudget });
+  const profileBody = profileText.slice(0, Math.max(0, available - pins.text.length - (pins.text ? 2 : 0) - recallReserve));
+  const notes = buildNoteContextBlock(entries, { maxTotalChars: available - profileBody.length, pinBudget });
   return {
     text: [wrapper(current, escapeContextTags(currentBody)), wrapper(profile, escapeContextTags(profileBody)), wrapper(noteTags, notes.text)].filter(Boolean).join('\n\n'),
     citations: notes.citations,

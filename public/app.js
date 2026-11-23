@@ -2230,7 +2230,10 @@ function focusCompose() {
   }
 }
 
-const rw = { id: null, history: [], zoom: 1, scrollY: 0, seq: 0, opener: null };
+const rw = {
+  id: null, history: [], zoom: 1, scrollY: 0, seq: 0, opener: null,
+  related: [], loading: false, relatedPromise: null, controller: null,
+};
 const refreshAnchor = document.createComment('位置：同步按钮');
 $('refresh-button').before(refreshAnchor);
 
@@ -2282,10 +2285,21 @@ function walkFocusCard(note) {
   return card;
 }
 
-async function pivotWalk(id, remember = true) {
+function resetWalkRelated() {
+  rw.controller?.abort();
+  rw.seq++;
+  rw.controller = rw.relatedPromise = null;
+  rw.related = [];
+  rw.loading = false;
+}
+
+function pivotWalk(id, remember = true) {
   const local = state.notes.get(id);
   if (!local) return;
-  const seq = ++rw.seq;
+  resetWalkRelated();
+  const seq = rw.seq;
+  const controller = rw.controller = new AbortController();
+  rw.loading = true;
   if (remember && rw.id && rw.id !== id) rw.history.push(rw.id);
   rw.id = id;
   $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = !rw.history.length;
@@ -2293,10 +2307,12 @@ async function pivotWalk(id, remember = true) {
   $('rw-related').replaceChildren();
   drawWalkLinks();
   setError('rw-status', '正在寻找相关笔记…');
-  try {
-    const result = await request('/api/notes/' + id + '/related?limit=10');
+  rw.relatedPromise = request('/api/notes/' + id + '/related?limit=10', undefined, controller.signal).then(result => {
     if (seq !== rw.seq) return;
-    $('rw-focus').replaceChildren(walkFocusCard(result.focus));
+    const wasWaiting = $('rw-focus').querySelector('[data-action="rw-chat-focus"]').disabled;
+    const focus = walkFocusCard(result.focus);
+    focus.querySelector('[data-action="rw-chat-focus"]').disabled = wasWaiting;
+    $('rw-focus').replaceChildren(focus);
     const cards = result.related.map(({ note, id: relatedId, relevancePercent }) => {
       const button = el('button', 'rw-related-card');
       button.type = 'button';
@@ -2305,13 +2321,18 @@ async function pivotWalk(id, remember = true) {
       button.append(el('span', 'rw-related-text', note.body.slice(0, 140)), el('span', 'rw-score', relevancePercent + '%'));
       return button;
     });
+    rw.related = result.related;
     $('rw-related').replaceChildren(...(cards.length ? cards : [el('p', 'help-text', '暂无相关笔记')]));
     $('rw-related').scrollTop = 0;
     setError('rw-status', '');
     drawWalkLinks();
-  } catch (error) {
+  }).catch(error => {
     if (seq === rw.seq) setError('rw-status', error.message);
-  }
+  }).finally(() => {
+    if (seq !== rw.seq) return;
+    rw.loading = false;
+    rw.relatedPromise = rw.controller = null;
+  });
 }
 
 function reconcileWalkFocus(data) {
@@ -2319,7 +2340,7 @@ function reconcileWalkFocus(data) {
   if (!data.deleted) return;
   rw.history = rw.history.filter(id => id !== data.deleted.id);
   rw.id = null;
-  rw.seq++;
+  resetWalkRelated();
   $('rw-focus').replaceChildren();
   $('rw-related').replaceChildren();
   drawWalkLinks();
@@ -2352,7 +2373,7 @@ function closeRandomWalk({ restore = true } = {}) {
   if ($('random-walk-overlay').hidden) return;
   $('random-walk-overlay').hidden = true;
   refreshAnchor.after($('refresh-button'));
-  rw.seq++;
+  resetWalkRelated();
   rw.id = null;
   rw.history = [];
   $('rw-focus').replaceChildren();
@@ -2366,11 +2387,23 @@ function closeRandomWalk({ restore = true } = {}) {
   rw.opener = null;
 }
 
-function walkNoteAction(action) {
+async function walkNoteAction(action) {
   const note = state.notes.get(rw.id);
   if (!note) return;
   if (action === 'copy') { copyText(note.body, $('rw-focus')); return; }
-  if (action === 'chat') { openNoteAIChat(note); return; }
+  if (action === 'chat') {
+    const clickSeq = rw.seq;
+    if (rw.loading && rw.relatedPromise) {
+      $('rw-focus').querySelector('[data-action="rw-chat-focus"]').disabled = true;
+      setError('rw-status', '正在载入相关笔记并打开对话…');
+      await rw.relatedPromise;
+      if ($('random-walk-overlay').hidden || rw.seq !== clickSeq) return;
+      $('rw-focus').querySelector('[data-action="rw-chat-focus"]').disabled = false;
+    }
+    const walkRelatedIds = rw.related.map(item => item.id).filter(id => id !== note.id && state.notes.has(id)).slice(0, 9);
+    openNoteAIChat(note, null, { extraPinIds: walkRelatedIds, fromWalk: true });
+    return;
+  }
   if (!openNote(note.id)) return;
   if (action === 'edit') toggleEdit(true);
   if (action === 'delete') $('delete-confirm').hidden = false;
@@ -2380,8 +2413,9 @@ function emptyAIState() {
   return {
     lifecycle: null, scrollY: 0, session: null, sessions: new Map(), upgradedNoteIds: new Set(),
     origin: 'all', nextCursor: null, loadingSessions: false, sessionsLoaded: false,
-    source: null, insightContext: null, pendingTurn: null, followBottom: true, pins: new Set(),
-    sending: null, profile: null, profileTask: null, loadingSession: false, requestKey: null, atIndex: null,
+    source: null, fromWalk: false, insightContext: null, pendingTurn: null, followBottom: true, pins: new Set(),
+    sending: null, loadingSession: false, sessionLoadSeq: 0, requestKey: null, atIndex: null,
+    profile: null, profileLoading: false, profileSaving: null, profileGenerating: null,
   };
 }
 let ai = emptyAIState();
@@ -2465,7 +2499,10 @@ function closeAIChat({ restore = true, focus = false } = {}) {
   $('ai-note-picker-results').replaceChildren();
   newAISession();
   renderAIProfile();
+  setError('ai-profile-error', '');
+  $('ai-profile-status').textContent = '';
   syncAIControls();
+  syncAIProfileControls();
   syncNavActive();
   if (restore) window.scrollTo(0, view.scrollY);
   if (focus) {
@@ -2651,6 +2688,17 @@ function renderAIThread() {
       card.append(details);
     }
     nodes.push(card);
+  } else if (!turns.length && !ai.pendingTurn && ai.source) {
+    const card = el('section', 'ai-context-card');
+    const relatedCount = [...ai.pins].filter(id => id !== ai.source.id).length;
+    const label = !ai.fromWalk ? '笔记上下文'
+      : relatedCount ? `随机漫步 · 含 ${relatedCount} 条相关笔记` : '随机漫步 · 焦点笔记';
+    const preview = ai.source.body.trim().replace(/\s+/g, ' ');
+    const meta = el('div', 'ai-context-meta');
+    meta.append(el('span', 'ai-context-badge', label));
+    card.append(meta,
+      el('p', 'ai-context-excerpt', preview.slice(0, 120) + (preview.length > 120 ? '…' : '')));
+    nodes.push(card);
   }
   for (const turn of turns) {
     if (turn.role === 'user') {
@@ -2675,9 +2723,12 @@ function renderAIThread() {
   syncAIScrollButton();
 }
 
-function renderAIProfile() {
+function renderAIProfile({ keepDraft = false } = {}) {
   $('ai-profile-enabled').checked = ai.profile?.enabled ?? true;
-  $('ai-profile-text').value = ai.profile?.content ?? '';
+  if (!keepDraft) $('ai-profile-text').value = ai.profile?.content ?? '';
+  $('ai-profile-meta').textContent = ai.profile?.content
+    ? `基于 ${ai.profile.noteCount} 条笔记 · ${ai.profile.updatedAt.slice(0, 10)} 更新`
+    : '尚未生成';
 }
 
 function renderAIPins() {
@@ -2693,6 +2744,18 @@ function renderAIPins() {
     button.append(el('span', 'ai-pin-label', name), el('span', 'ai-pin-x', '×'));
     return [button];
   }));
+}
+
+function syncAIComposerPlaceholder() {
+  $('ai-chat-input').placeholder = ai.insightContext
+    ? `针对《${ai.insightContext.title}》继续追问…`
+    : ai.pins.size ? '问问引用的笔记…' : '问问你的笔记…';
+}
+
+function refreshAIPins() {
+  renderAIPins();
+  syncAIComposerPlaceholder();
+  if (!ai.session?.turns?.length && !ai.pendingTurn && ai.source) renderAIThread();
 }
 
 function renderNotePicker() {
@@ -2727,17 +2790,39 @@ function pinFromPicker(id) {
     const input = $('ai-chat-input');
     if (input.value[ai.atIndex] === '@') input.setRangeText('', ai.atIndex, ai.atIndex + 1, 'end');
   }
-  renderAIPins();
+  refreshAIPins();
   closeNotePicker(true);
 }
 
-function toggleAIProfile() {
+async function toggleAIProfile() {
   const open = $('ai-profile-panel').hidden;
   setAIProfileOpen(open);
   if (!open) return;
   setAISessionRail(false);
   closeNotePicker();
-  requestAIProfile('/api/ai/profile');
+  const view = ai;
+  if (view.profileLoading || view.profileSaving || view.profileGenerating) return;
+  const text = $('ai-profile-text');
+  const previous = view.profile?.content ?? '';
+  const signal = view.lifecycle.signal;
+  view.profileLoading = true;
+  $('ai-profile-status').textContent = '正在读取画像…';
+  setError('ai-profile-error', '');
+  syncAIProfileControls();
+  try {
+    const { profile } = await request('/api/ai/profile', undefined, signal);
+    if (ai !== view || signal.aborted || view.profileGenerating) return;
+    view.profile = profile;
+    renderAIProfile({ keepDraft: text.value !== previous });
+  } catch (error) {
+    if (ai === view && !signal.aborted) setError('ai-profile-error', error.message);
+  } finally {
+    view.profileLoading = false;
+    if (ai === view) {
+      $('ai-profile-status').textContent = '';
+      syncAIProfileControls();
+    }
+  }
 }
 
 function syncAIControls() {
@@ -2747,46 +2832,108 @@ function syncAIControls() {
   send.classList.toggle('ai-send-stopping', stopping);
   send.querySelector('span').textContent = stopping ? '停止' : '发送';
   send.setAttribute('aria-label', stopping ? '停止回复' : '发送');
-  for (const control of $('ai-profile-panel').querySelectorAll('button, textarea, input')) {
-    control.disabled = Boolean(ai.profileTask);
+}
+
+function syncAIProfileControls() {
+  const busy = Boolean(ai.profileLoading || ai.profileSaving);
+  const generating = Boolean(ai.profileGenerating);
+  const text = $('ai-profile-text');
+  const generate = aiButton('generate-profile');
+  text.disabled = busy;
+  text.readOnly = generating;
+  generate.disabled = busy;
+  generate.textContent = generating ? '停止生成' : text.value.trim() ? '重新生成' : '生成画像';
+  aiButton('save-profile').disabled = $('ai-profile-enabled').disabled = busy || generating;
+}
+
+function saveAIProfile(toggleOnly = false) {
+  const view = ai;
+  if (view.profileLoading || view.profileSaving || view.profileGenerating) return;
+  const enabled = $('ai-profile-enabled').checked;
+  const body = toggleOnly ? { enabled } : { enabled, content: $('ai-profile-text').value };
+  const status = $('ai-profile-status');
+  status.textContent = '正在保存…';
+  setError('ai-profile-error', '');
+  view.profileSaving = request('/api/ai/profile', body, view.lifecycle.signal).then(({ profile }) => {
+    if (ai !== view) return;
+    view.profile = profile;
+    renderAIProfile({ keepDraft: toggleOnly });
+    status.textContent = toggleOnly ? (profile.enabled ? '已启用' : '已停用') : '已保存';
+  }).catch(error => {
+    if (ai !== view) return;
+    status.textContent = '';
+    if (toggleOnly) $('ai-profile-enabled').checked = view.profile?.enabled ?? true;
+    setError('ai-profile-error', error.message);
+  }).finally(() => {
+    view.profileSaving = null;
+    if (ai === view) syncAIProfileControls();
+  });
+  syncAIProfileControls();
+}
+
+async function generateAIProfile() {
+  const view = ai;
+  if (view.profileGenerating) { view.profileGenerating.abort(); return; }
+  if (view.profileLoading || view.profileSaving) return;
+  const settings = providerSettings();
+  if (settings.provider === 'openai' && !settings.apiKey) {
+    setError('ai-profile-error', '请先在设置里填写 OpenAI API Key。');
+    openSettings();
+    return;
+  }
+  const text = $('ai-profile-text');
+  const previous = text.value;
+  const status = $('ai-profile-status');
+  const controller = view.profileGenerating = new AbortController();
+  const signal = AbortSignal.any([view.lifecycle.signal, controller.signal]);
+  setError('ai-profile-error', '');
+  status.textContent = '正在整理代表性笔记…';
+  syncAIProfileControls();
+  let preview = '', profile = null;
+  try {
+    await requestStream('/api/ai/profile/generate', { ...settings, stream: true }, {
+      signal,
+      onEvent(name, data) {
+        if (ai !== view || signal.aborted) return;
+        if (name === 'status') status.textContent = data.message;
+        else if (name === 'delta') {
+          preview = (preview + data.text).slice(0, text.maxLength);
+          text.value = preview;
+          text.scrollTop = text.scrollHeight;
+        } else if (name === 'done') profile = data.profile;
+        else if (name === 'error') throw new Error(data.error || '暂时无法生成画像，请稍后重试。');
+      },
+    });
+    if (ai !== view) return;
+    if (!profile) throw new Error('画像生成意外中断，请重试。');
+    view.profile = profile;
+    renderAIProfile();
+    status.textContent = '已生成并保存';
+  } catch (error) {
+    if (ai !== view) return;
+    text.value = previous;
+    status.textContent = signal.aborted ? '已停止生成' : '';
+    if (!signal.aborted) setError('ai-profile-error', error.message);
+  } finally {
+    view.profileGenerating = null;
+    if (ai === view) syncAIProfileControls();
   }
 }
 
-function requestAIProfile(path, body) {
-  const view = ai;
-  if (view.profileTask) return;
-  setError('ai-chat-error', '');
-  view.profileTask = request(path, body, view.lifecycle.signal).then(result => {
-    if (ai !== view) return;
-    view.profile = result.profile;
-    renderAIProfile();
-  }).catch(error => {
-    if (ai === view && error.name !== 'AbortError') setError('ai-chat-error', error.message);
-  }).finally(() => {
-    view.profileTask = null;
-    if (ai === view) syncAIControls();
-  });
-  syncAIControls();
-}
-
-function editAIProfile(generate) {
-  requestAIProfile('/api/ai/profile' + (generate ? '/generate' : ''), generate ? providerSettings() : {
-    content: $('ai-profile-text').value, enabled: $('ai-profile-enabled').checked,
-  });
-}
-
-function newAISession(source = null, session = null) {
+function newAISession(source = null, session = null, { extraPinIds = [], fromWalk = false } = {}) {
   if (ai.sending) return false;
+  ai.sessionLoadSeq++;
+  ai.loadingSession = false;
   ai.session = session;
   ai.source = source;
+  ai.fromWalk = fromWalk;
   ai.insightContext = null;
   ai.pendingTurn = null;
   ai.followBottom = true;
-  ai.pins = new Set(source ? [source.id] : []);
+  ai.pins = new Set([...new Set(source ? [source.id, ...extraPinIds] : [])].filter(id => state.notes.has(id)).slice(0, 10));
   ai.requestKey = null;
   $('ai-chat-input').value = '';
-  $('ai-chat-input').placeholder = '问问你的笔记…';
-  $('ai-use-all-notes').checked = !source && !session?.sourceNoteId && session?.origin !== 'insight';
+  syncAIComposerPlaceholder();
   setError('ai-chat-error', '');
   setAIProfileOpen(false);
   setAISessionRail(false);
@@ -2794,28 +2941,39 @@ function newAISession(source = null, session = null) {
   renderAIThread();
   renderAIPins();
   renderAISessions();
+  syncAIControls();
   return true;
 }
 
-async function selectAISession(path, source = null) {
+async function selectAISession(path, source = null, { preserveDraft = false } = {}) {
   const view = ai;
-  if (view.sending || view.loadingSession) return false;
+  if (view.sending) return false;
+  const seq = ++view.sessionLoadSeq;
+  const isCurrent = () => ai === view && seq === view.sessionLoadSeq;
   view.loadingSession = true;
   syncAIControls();
   try {
     const { session } = await request(path, undefined, view.lifecycle.signal);
-    if (ai !== view) return false;
+    if (!isCurrent()) return false;
     if (session) storeAISession(view, session);
-    const note = source ?? state.notes.get(session?.sourceNoteId);
-    newAISession(note, session);
-    $('ai-chat-input').focus({ preventScroll: true });
+    if (preserveDraft) {
+      view.session = session;
+      renderAIThread();
+      renderAISessions();
+    } else {
+      const note = source ?? state.notes.get(session?.sourceNoteId);
+      newAISession(note, session);
+      $('ai-chat-input').focus({ preventScroll: true });
+    }
     return true;
   } catch (error) {
-    if (ai === view && error.name !== 'AbortError') setError('ai-chat-error', error.message);
+    if (isCurrent() && error.name !== 'AbortError') setError('ai-chat-error', error.message);
     return false;
   } finally {
-    view.loadingSession = false;
-    if (ai === view) syncAIControls();
+    if (isCurrent()) {
+      view.loadingSession = false;
+      syncAIControls();
+    }
   }
 }
 
@@ -2867,10 +3025,9 @@ async function sendAIChat(event) {
   const header = ctx ? `[洞察上下文：${ctx.title}（${ctx.lensName}）]\n` : '';
   const tail = ctx ? `\n\n[追问]\n${message}` : '';
   const payloadMessage = ctx ? header + ctx.content.slice(0, Math.max(0, 7900 - header.length - tail.length)) + tail : message;
-  const useAllNotes = $('ai-use-all-notes').checked;
   const body = {
     ...settings, message: payloadMessage, referencedNoteIds: [...view.pins],
-    useAllNotes,
+    useAllNotes: true,
     ...(view.session ? { sessionId: view.session.id, expectedVersion: view.session.version } : {}),
     ...(!view.session && view.source ? { sourceNoteId: view.source.id } : {}),
   };
@@ -2880,14 +3037,14 @@ async function sendAIChat(event) {
   view.sending = controller;
   const signal = AbortSignal.any([view.lifecycle.signal, controller.signal]);
   view.followBottom = true;
-  view.pendingTurn = { userText: payloadMessage, status: useAllNotes ? '正在检索相关笔记…' : '正在思考…', streamText: '' };
+  view.pendingTurn = { userText: payloadMessage, status: '正在检索相关笔记…', streamText: '' };
   input.value = '';
   syncAIControls();
   setError('ai-chat-error', '');
   renderAIThread();
   let completed = false;
   try {
-    if (view.profileTask) await view.profileTask;
+    if (view.profileSaving) await view.profileSaving;
     if (ai !== view || signal.aborted) return;
     let streamError = null;
     await requestStream('/api/ai/chat', { ...body, stream: true, clientRequestId: view.requestKey.id }, {
@@ -2913,7 +3070,7 @@ async function sendAIChat(event) {
           view.pendingTurn = null;
           storeAISession(view, view.session);
           view.requestKey = null;
-          input.placeholder = '问问你的笔记…';
+          syncAIComposerPlaceholder();
           renderAIThread();
           renderAISessions();
         } else if (name === 'error') {
@@ -2975,15 +3132,18 @@ async function lookupNoteAIEntry(note) {
   }
 }
 
-async function openNoteAIChat(note, starter = null) {
-  if (!note || ai.sending || ai.loadingSession || state.detailWorking || !mayCloseNote()) return;
+async function openNoteAIChat(note, starter = null, { extraPinIds = [], fromWalk = false } = {}) {
+  if (!note || ai.sending || state.detailWorking || !mayCloseNote()) return;
   if ($('note-dialog').open) closeNote(true);
-  closeRandomWalk();
+  closeRandomWalk({ restore: false });
   if (!openAIChat()) return;
   const view = ai;
-  const selected = await selectAISession(aiSessionsForNote(note.id), note);
-  if (selected && ai === view && starter) {
-    $('ai-chat-input').value = starter;
+  newAISession(note, null, { extraPinIds, fromWalk });
+  const input = $('ai-chat-input');
+  input.focus({ preventScroll: true });
+  const selected = await selectAISession(aiSessionsForNote(note.id), note, { preserveDraft: true });
+  if (selected && ai === view && starter && !input.value) {
+    input.value = starter;
     sendAIChat();
   }
 }
@@ -3422,9 +3582,7 @@ function continueInsightChat() {
     content: report.content.slice(0, 2000),
     citations: report.citations ?? [],
   };
-  $('ai-use-all-notes').checked = false;
-  $('ai-chat-input').value = '';
-  $('ai-chat-input').placeholder = `针对《${report.title}》继续追问…`;
+  syncAIComposerPlaceholder();
   renderAIThread();
 }
 
@@ -3450,6 +3608,8 @@ const walkResize = new ResizeObserver(drawWalkLinks);
 walkResize.observe($('rw-stage'));
 $('rw-related').addEventListener('scroll', drawWalkLinks, { passive: true });
 $('ai-chat-form').addEventListener('submit', sendAIChat);
+$('ai-profile-enabled').addEventListener('change', () => saveAIProfile(true));
+$('ai-profile-text').addEventListener('input', syncAIProfileControls);
 $('ai-chat-thread').addEventListener('scroll', () => {
   ai.followBottom = isAIThreadAtBottom();
   syncAIScrollButton();
@@ -3535,11 +3695,11 @@ const actions = {
   'open-note-ai-chat': () => openNoteAIChat(state.notes.get(state.noteID)),
   'note-ai-starter': button => openNoteAIChat(state.notes.get(state.noteID), button.dataset.prompt),
   'ai-select-legacy-note': button => openNoteAIChat(state.notes.get(button.dataset.noteId)),
-  'ai-new-session': () => { if (!ai.loadingSession && newAISession()) $('ai-chat-input').focus({ preventScroll: true }); },
+  'ai-new-session': () => { if (newAISession()) $('ai-chat-input').focus({ preventScroll: true }); },
   'ai-select-session': (button) => selectAISession('/api/ai/sessions/' + button.dataset.sessionId),
   'ai-delete-session': (button) => deleteAISession(button.dataset.sessionId),
-  'ai-generate-profile': () => editAIProfile(true),
-  'ai-save-profile': () => editAIProfile(false),
+  'ai-generate-profile': generateAIProfile,
+  'ai-save-profile': () => saveAIProfile(),
   'ai-pick-note': () => $('ai-note-picker').hidden ? openNotePicker() : closeNotePicker(true),
   'ai-scroll-bottom': () => scrollAIThreadToBottom(true),
   'ai-clear-insight-context': () => {
@@ -3681,7 +3841,7 @@ document.addEventListener('click', (event) => {
   }
   if (button.dataset.removePin) {
     ai.pins.delete(button.dataset.removePin);
-    renderAIPins();
+    refreshAIPins();
     return;
   }
   if (button.dataset.pickNoteId) {

@@ -239,9 +239,14 @@
             <button class="icon-button" type="button" data-action="ai-close" aria-label="关闭 AI 对话"><svg><use href="#i-close"></use></svg></button>
           </header>
           <section id="ai-profile-panel" aria-label="个人画像" hidden>
-            <label><input type="checkbox" id="ai-profile-enabled" checked>启用个人画像</label>
-            <textarea class="field" id="ai-profile-text" aria-label="个人画像" rows="6" maxlength="6000"></textarea>
+            <div class="ai-profile-header">
+              <label><input type="checkbox" id="ai-profile-enabled" checked>对话自动带入个人画像</label>
+              <span id="ai-profile-meta" class="ai-profile-meta"></span>
+            </div>
+            <textarea class="field" id="ai-profile-text" aria-label="个人画像" rows="6" maxlength="6000" placeholder="记录你的长期关注、思维习惯和偏好。可以手动填写，也可以让 AI 从笔记中归纳。"></textarea>
+            <p id="ai-profile-error" class="inline-error" role="alert" hidden></p>
             <div class="ai-profile-actions">
+              <span id="ai-profile-status" class="ai-profile-status" role="status"></span>
               <button class="button button-secondary" type="button" data-action="ai-generate-profile">生成画像</button>
               <button class="button button-primary" type="button" data-action="ai-save-profile">保存</button>
             </div>
@@ -259,7 +264,6 @@
               <textarea class="ai-chat-textarea" id="ai-chat-input" rows="2" maxlength="8000" aria-label="问题" placeholder="问问你的笔记…"></textarea>
               <div class="ai-composer-actions">
                 <button class="icon-button ai-pick-btn" type="button" data-action="ai-pick-note" aria-label="引用笔记" title="引用笔记">@</button>
-                <label class="ai-recall-toggle"><input type="checkbox" id="ai-use-all-notes" checked>全库召回</label>
                 <select id="ai-chat-model" class="field ai-chat-model" aria-label="对话模型" hidden></select>
                 <button class="button button-primary ai-send-btn" id="ai-chat-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
               </div>
@@ -453,7 +457,7 @@
       <p class="help-text">在 iOS 微记里使用同一 ChatGPT 账号登录，即可同步笔记及对话。</p>
       <hr>
       <h3>AI 服务</h3>
-      <p class="help-text">开启全库召回或个人画像时，相关笔记或画像会发送给所选 AI 服务。</p>
+      <p class="help-text">AI 对话会从全库检索相关笔记并发送给所选 AI 服务。启用个人画像后，对话也会发送画像；生成画像时会发送代表性笔记的摘录。</p>
       <label class="field-label" for="chat-provider">对话服务</label>
       <select class="field" id="chat-provider">
         <option value="openai">OpenAI API Key</option>

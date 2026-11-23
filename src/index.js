@@ -351,7 +351,7 @@ async function listGatewayModels(env) {
   return result([...defaultModel, ...ids.filter(id => id !== srv.model)], "gateway");
 }
 
-async function askCodex(input, relay, clientSignal) {
+async function askCodex(input, relay, clientSignal, timeoutMs = 110_000) {
   if (!relay) throw new ApiError(503, "Codex 中转还未配置。");
   if (typeof input.note !== "string" || !input.note.trim()) throw new ApiError(400, "笔记正文为空。");
   const history = validateTurns(input.history);
@@ -373,7 +373,7 @@ async function askCodex(input, relay, clientSignal) {
           text: clipped(turn.text, previousTurnLimit),
         })),
       }),
-      signal: AbortSignal.any([clientSignal, AbortSignal.timeout(110_000)]),
+      signal: AbortSignal.any([clientSignal, AbortSignal.timeout(timeoutMs)]),
       redirect: "error",
     });
   } catch {
@@ -573,7 +573,8 @@ function modelTarget(input, env) {
   return { mode: "openai", model, apiKey: input.apiKey, baseUrl: openAIBaseUrl };
 }
 
-async function modelReply(input, env, signal, { onDelta, target = modelTarget(input, env) } = {}) {
+async function modelReply(input, env, signal, { onDelta, longTimeout, target = modelTarget(input, env) } = {}) {
+  const timeoutMs = (input.insight || onDelta || longTimeout) ? positiveMs(env.INSIGHT_IDLE_TIMEOUT_MS, 120_000) : 55_000;
   if (target.mode === "codex-relay") {
     const history = [...input.history];
     const latest = history.at(-1);
@@ -590,12 +591,11 @@ async function modelReply(input, env, signal, { onDelta, target = modelTarget(in
       }
     }
     const relayNote = input.context === undefined ? input.note : (input.context || "暂无笔记资料。");
-    const reply = await askCodex({ ...input, note: relayNote, history }, codexRelay(env), signal);
+    const reply = await askCodex({ ...input, note: relayNote, history }, codexRelay(env), signal, longTimeout ? timeoutMs : undefined);
     onDelta?.(reply);
     return reply;
   }
   const chat = { ...input, apiKey: target.apiKey, model: target.model };
-  const timeoutMs = (input.insight || onDelta) ? positiveMs(env.INSIGHT_IDLE_TIMEOUT_MS, 120_000) : 55_000;
   return onDelta ? askAIStream(chat, target.baseUrl, signal, onDelta, timeoutMs)
     : askAI(chat, target.baseUrl, signal, timeoutMs);
 }
@@ -634,21 +634,26 @@ function profileRow(db, account) {
 }
 
 async function saveProfile(db, account, { content, enabled }, generatedCount = null) {
-  if (typeof content !== "string" || content.length > 6000 || typeof enabled !== "boolean") {
+  if (typeof enabled !== "boolean" || (content !== undefined && (typeof content !== "string" || content.length > 6000))) {
     throw new ApiError(400, "画像内容最多 6000 字，且需要指定启用状态。");
+  }
+  const updatedAt = new Date().toISOString();
+  if (content === undefined) {
+    const row = await db.prepare(`INSERT INTO ai_profile(account, content, enabled, note_count, updated_at)
+      VALUES (?, '', ?, 0, ?) ON CONFLICT(account) DO UPDATE SET
+      enabled = excluded.enabled, updated_at = excluded.updated_at RETURNING *`).bind(account, Number(enabled), updatedAt).first();
+    return { profile: profileResult(row) };
   }
   const row = await db.prepare(`INSERT INTO ai_profile(account, content, enabled, note_count, updated_at)
     VALUES (?, ?, ?, COALESCE(?, 0), ?) ON CONFLICT(account) DO UPDATE SET
     content = excluded.content, enabled = excluded.enabled, note_count = COALESCE(?, ai_profile.note_count),
     updated_at = excluded.updated_at RETURNING *`).bind(
-    account, content, Number(enabled), generatedCount, new Date().toISOString(), generatedCount,
+    account, content, Number(enabled), generatedCount, updatedAt, generatedCount,
   ).first();
-  return json({ profile: profileResult(row) });
+  return { profile: profileResult(row) };
 }
 
-async function generateProfile(env, account, input, signal) {
-  const notes = await activeNotes(env.DB, account);
-  if (!notes.length) throw new ApiError(400, "先记录几条笔记再生成画像。");
+function sampleProfileNotes(notes) {
   notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const byTag = new Map();
   for (const note of notes) {
@@ -671,19 +676,39 @@ async function generateProfile(env, account, input, signal) {
     if (sampled.size >= 50) break;
     sampled.set(note.id, note);
   }
-  const relay = input.provider === "codex" && !serverAI(env);
-  const maxChars = (relay ? 12000 : 16000) - "<相关历史笔记>\n\n</相关历史笔记>".length;
-  const snippets = [...sampled.values()].map(note => {
-    const prefix = note.createdAt.slice(0, 10) + " ";
-    return prefix + note.body.slice(0, Math.floor(maxChars / sampled.size) - prefix.length - 2);
-  }).join("\n\n");
-  if (signal.aborted) throw new ApiError(499, "已取消生成画像。");
-  const reply = await modelReply({ ...input, global: true, context: "<相关历史笔记>\n" + escapeContextTags(snippets) + "\n</相关历史笔记>", history: [{
-    role: "user", text: "<画像生成任务>从提供的样本归纳长期关注、偏好及反复出现的模式。写一份可持续更新的个人画像，区分事实与推测，不编造信息，限 6000 字。</画像生成任务>",
-  }] }, env, signal);
-  const previous = await profileRow(env.DB, account);
-  if (signal.aborted) throw new ApiError(499, "已取消生成画像。");
-  return saveProfile(env.DB, account, { content: reply.slice(0, 6000), enabled: previous?.enabled !== 0 }, sampled.size);
+  return [...sampled.values()];
+}
+
+async function generateProfile(env, account, input, requestSignal) {
+  const { stream = false } = input;
+  if (typeof stream !== "boolean") throw new ApiError(400, "stream 必须为布尔值。");
+  const target = modelTarget(input, env);
+  const notes = await activeNotes(env.DB, account);
+  if (!notes.length) throw new ApiError(400, "先记录几条笔记再生成画像。");
+  const checkCancelled = signal => {
+    if (signal.aborted) throw new ApiError(499, "已取消生成画像。");
+  };
+  const work = async (signal, send) => {
+    checkCancelled(signal);
+    send?.("status", { stage: "sampling", message: "正在整理代表性笔记…" });
+    const sampled = sampleProfileNotes(notes);
+    const maxChars = (target.mode === "codex-relay" ? noteContextLimit : 16000) - "<相关历史笔记>\n\n</相关历史笔记>".length;
+    const snippets = sampled.map(note => {
+      const prefix = note.createdAt.slice(0, 10) + " ";
+      return prefix + note.body.slice(0, Math.floor(maxChars / sampled.length) - prefix.length - 2);
+    }).join("\n\n");
+    send?.("status", { stage: "generating", message: `正在基于 ${sampled.length} 条代表性笔记生成画像…` });
+    const reply = await modelReply({ ...input, global: true, context: "<相关历史笔记>\n" + escapeContextTags(snippets) + "\n</相关历史笔记>", history: [{
+      role: "user", text: "<画像生成任务>从提供的样本归纳长期关注、偏好及反复出现的模式。写一份可持续更新的个人画像，区分事实与推测，不编造信息，限 6000 字。</画像生成任务>",
+    }] }, env, signal, { target, longTimeout: true, onDelta: send && (text => send("delta", { text })) });
+    checkCancelled(signal);
+    const previous = await profileRow(env.DB, account);
+    checkCancelled(signal);
+    return saveProfile(env.DB, account, { content: reply.slice(0, 6000), enabled: previous?.enabled !== 0 }, sampled.length);
+  };
+  return stream
+    ? insightStream(requestSignal, positiveMs(env.INSIGHT_PING_INTERVAL_MS, 15_000), work, "暂时无法生成画像，请稍后重试。")
+    : json(await work(requestSignal));
 }
 
 function isInsightQuestion(turn) {
@@ -966,7 +991,7 @@ async function insightScope(db, account, input) {
   return { scope, notes, stats: computeScopeStats(notes, scope.tzOffsetMinutes) };
 }
 
-function insightStream(requestSignal, pingMs, work) {
+function insightStream(requestSignal, pingMs, work, errorMessage = "暂时无法生成洞察，请稍后重试。") {
   const cancel = new AbortController();
   const signal = AbortSignal.any([requestSignal, cancel.signal]);
   const encoder = new TextEncoder();
@@ -993,7 +1018,7 @@ function insightStream(requestSignal, pingMs, work) {
           send("done", await work(signal, send));
         } catch (error) {
           send("error", error instanceof ApiError ? { error: error.message, status: error.status }
-            : { error: "暂时无法生成洞察，请稍后重试。", status: 500 });
+            : { error: errorMessage, status: 500 });
         } finally {
           cleanup();
           if (!signal.aborted) controller.close();
@@ -1197,7 +1222,7 @@ async function api(request, url, env) {
     if (path === "/api/semantic/reindex") return json(await semanticStatus(env, account, true));
     if (path === "/api/ai") return noteChat(env, account, await readJSON(request), request.signal);
     if (path === "/api/ai/chat") return chatSession(env, account, await readJSON(request), request.signal);
-    if (path === "/api/ai/profile") return saveProfile(env.DB, account, await readJSON(request));
+    if (path === "/api/ai/profile") return json(await saveProfile(env.DB, account, await readJSON(request)));
     if (path === "/api/ai/profile/generate") return generateProfile(env, account, await readJSON(request), request.signal);
   }
   return json({ error: "这个操作不可用。" }, 404);
