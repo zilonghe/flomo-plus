@@ -26,6 +26,7 @@
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11.2a7.6 7.6 0 0 1-7.9 7.4H4.6l1.3-3.4a7 7 0 0 1-1.7-4c0-4.1 3.5-7.4 7.9-7.4S20 7.1 20 11.2Z"/><path d="M8.3 11h.1m3.6 0h.1m3.6 0h.1"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1"/></symbol>
     <symbol id="i-spark" viewBox="0 0 24 24"><path d="M10 3.8 11.8 9l5.2 1.8-5.2 1.8L10 18l-1.8-5.4L3 10.8 8.2 9 10 3.8Zm8.4 10.4.8 2.5 2.6.8-2.6.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8.8-2.5Z"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol>
     <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="15" rx="2"/><path d="M8 4v4m8-4v4M4 11h16m-12 4h1m3 0h1m3 0h1"/></symbol>
@@ -61,6 +62,7 @@
         <button class="nav-item" type="button" data-action="open-random-walk"><svg><use href="#i-shuffle"></use></svg><span>随机漫步</span></button>
         <button class="nav-item" type="button" data-action="open-ai-insights"><svg><use href="#i-spark"></use></svg><span>AI 洞察</span></button>
         <button class="nav-item" type="button" data-action="open-ai-chat"><svg><use href="#i-chat"></use></svg><span>AI 对话</span></button>
+        <button class="nav-item" type="button" data-action="open-ai-profile"><svg><use href="#i-user"></use></svg><span>个人画像</span></button>
       </nav>
       <div class="side-section tag-section" id="tag-section" hidden>
         <div class="nav-label-row">
@@ -213,6 +215,44 @@
           </div>
         </div>
       </section>
+      <section id="ai-profile-view" aria-labelledby="profile-view-title" hidden>
+        <header class="ins-toolbar">
+          <div class="ins-toolbar-inner">
+            <button class="icon-button mobile-toggle" type="button" data-action="profile-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
+            <h2 id="profile-view-title">个人画像</h2>
+            <select id="profile-model-select" class="field ins-model" aria-label="生成模型" hidden></select>
+            <button class="button button-primary" type="button" data-action="profile-generate">生成画像</button>
+            <button class="button button-secondary" type="button" data-action="profile-edit">编辑</button>
+            <button class="icon-button" type="button" data-action="profile-close" aria-label="关闭个人画像"><svg><use href="#i-close"></use></svg></button>
+          </div>
+        </header>
+        <div class="ins-scroll">
+          <div class="ins-content">
+            <div class="ins-surface">
+              <div class="profile-meta-bar">
+                <label class="profile-toggle"><input type="checkbox" id="profile-enabled" checked>对话自动带入个人画像</label>
+                <span id="profile-meta" class="ai-profile-meta"></span>
+                <span id="profile-status" class="ai-profile-status" role="status"></span>
+              </div>
+              <p id="profile-error" class="inline-error" role="alert" hidden></p>
+              <div id="profile-reader">
+                <div id="profile-empty" hidden>
+                  <p>尚未生成个人画像</p>
+                  <button class="button button-secondary" type="button" data-action="profile-edit">手动编写</button>
+                </div>
+                <div id="profile-body" class="ai-msg ai-msg-assistant"></div>
+              </div>
+              <div id="profile-editor" hidden>
+                <textarea class="field profile-textarea" id="profile-text" aria-label="个人画像" rows="16" maxlength="6000" placeholder="记录你的长期关注、思维习惯和偏好，支持 Markdown 格式。"></textarea>
+                <div class="profile-editor-actions">
+                  <button class="button button-secondary" type="button" data-action="profile-cancel-edit">取消</button>
+                  <button class="button button-primary" type="button" data-action="profile-save">保存</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
       <section id="ai-chat-view" aria-labelledby="ai-chat-title" hidden>
         <aside id="ai-session-rail" aria-label="会话历史">
           <div class="ai-rail-header">
@@ -235,22 +275,8 @@
             <button class="icon-button" type="button" data-action="ai-mobile-menu" aria-label="打开侧栏"><svg><use href="#i-menu"></use></svg></button>
             <button class="button button-secondary" type="button" data-action="ai-toggle-sessions" aria-controls="ai-session-rail" aria-expanded="false">历史</button>
             <h2 id="ai-chat-title">AI 对话</h2>
-            <button class="button button-secondary" type="button" data-action="ai-open-profile" aria-controls="ai-profile-panel" aria-expanded="false">画像</button>
             <button class="icon-button" type="button" data-action="ai-close" aria-label="关闭 AI 对话"><svg><use href="#i-close"></use></svg></button>
           </header>
-          <section id="ai-profile-panel" aria-label="个人画像" hidden>
-            <div class="ai-profile-header">
-              <label><input type="checkbox" id="ai-profile-enabled" checked>对话自动带入个人画像</label>
-              <span id="ai-profile-meta" class="ai-profile-meta"></span>
-            </div>
-            <textarea class="field" id="ai-profile-text" aria-label="个人画像" rows="6" maxlength="6000" placeholder="记录你的长期关注、思维习惯和偏好。可以手动填写，也可以让 AI 从笔记中归纳。"></textarea>
-            <p id="ai-profile-error" class="inline-error" role="alert" hidden></p>
-            <div class="ai-profile-actions">
-              <span id="ai-profile-status" class="ai-profile-status" role="status"></span>
-              <button class="button button-secondary" type="button" data-action="ai-generate-profile">生成画像</button>
-              <button class="button button-primary" type="button" data-action="ai-save-profile">保存</button>
-            </div>
-          </section>
           <div id="ai-chat-thread" role="log" aria-live="polite"></div>
           <form id="ai-chat-form">
             <button class="button button-secondary ai-scroll-bottom" id="ai-scroll-bottom" type="button" data-action="ai-scroll-bottom" aria-label="回到底部" title="回到底部" hidden>↓ 回到底部</button>

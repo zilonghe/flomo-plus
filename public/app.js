@@ -213,10 +213,13 @@ function updateProfile() {
 
 let accountEpoch = 0;
 let accountLifecycle = new AbortController();
+let pendingProfileSave = null;
 function resetAccount() {
   accountEpoch++;
   accountLifecycle.abort();
   accountLifecycle = new AbortController();
+  pendingProfileSave = null;
+  closeProfile({ restore: false });
   closeInsights({ restore: false });
   closeAIChat({ restore: false });
   ai = emptyAIState();
@@ -556,8 +559,8 @@ function renderTagList() {
 }
 
 function syncNavActive() {
-  const activeView = ai.lifecycle ? 'open-ai-chat' : ins ? 'open-ai-insights' : null;
-  for (const button of document.querySelectorAll('#sidebar [data-filter], #sidebar [data-action="open-ai-insights"], #sidebar [data-action="open-ai-chat"]')) {
+  const activeView = prof ? 'open-ai-profile' : ai.lifecycle ? 'open-ai-chat' : ins ? 'open-ai-insights' : null;
+  for (const button of document.querySelectorAll('#sidebar [data-filter], #sidebar [data-action="open-ai-insights"], #sidebar [data-action="open-ai-chat"], #sidebar [data-action="open-ai-profile"]')) {
     const selected = activeView ? button.dataset.action === activeView : button.dataset.filter === state.filter;
     button.classList.toggle('active', selected);
     if (selected) button.setAttribute('aria-current', 'page');
@@ -2215,7 +2218,8 @@ async function importFlomoNotes(event) {
 
 function sidebar(open) {
   $('sidebar').classList.toggle('open', open);
-  for (const button of [$('mobile-toggle'), document.querySelector('[data-action="ins-mobile-menu"]')]) {
+  const menus = document.querySelectorAll('#mobile-toggle, [data-action="ins-mobile-menu"], [data-action="profile-mobile-menu"]');
+  for (const button of menus) {
     button.setAttribute('aria-expanded', String(open));
     button.setAttribute('aria-label', open ? '关闭导航' : '打开导航');
   }
@@ -2355,9 +2359,11 @@ function shuffleWalk() {
 
 function openRandomWalk(button) {
   if (!state.loaded || !$('random-walk-overlay').hidden) return;
+  const profileScrollY = prof?.scrollY;
+  closeProfile({ restore: false });
   closeAIChat();
   closeInsights({ restore: false });
-  rw.scrollY = window.scrollY;
+  rw.scrollY = profileScrollY ?? window.scrollY;
   rw.opener = button;
   rw.zoom = 1;
   applyWalkZoom();
@@ -2415,7 +2421,6 @@ function emptyAIState() {
     origin: 'all', nextCursor: null, loadingSessions: false, sessionsLoaded: false,
     source: null, fromWalk: false, insightContext: null, pendingTurn: null, followBottom: true, pins: new Set(),
     sending: null, loadingSession: false, sessionLoadSeq: 0, requestKey: null, atIndex: null,
-    profile: null, profileLoading: false, profileSaving: null, profileGenerating: null,
   };
 }
 let ai = emptyAIState();
@@ -2428,7 +2433,7 @@ function hasGatewayModels() {
   return gatewayMode() && state.gatewayModels.length > 0;
 }
 
-const gatewaySelectIds = ['ins-model-select', 'ai-chat-model', 'ins-rerun-model'];
+const gatewaySelectIds = ['ins-model-select', 'ai-chat-model', 'ins-rerun-model', 'profile-model-select'];
 
 function renderGatewayModels() {
   for (const id of gatewaySelectIds) {
@@ -2466,6 +2471,199 @@ function providerSettings() {
     : { provider: 'openai', model: state.model, apiKey: state.apiKey };
 }
 
+let prof = null;
+const profileView = $('ai-profile-view');
+const profileButton = action => profileView.querySelector('[data-action="profile-' + action + '"]');
+
+function openProfile(opener) {
+  if (!state.loaded) { notify('请先登录并完成同步'); return; }
+  sidebar(false);
+  if (prof) return;
+  const scrollY = ai.lifecycle ? ai.scrollY : ins?.scrollY ?? window.scrollY;
+  closeRandomWalk({ restore: false });
+  closeAIChat({ restore: false });
+  closeInsights({ restore: false });
+  const view = prof = {
+    opener, scrollY, lifecycle: new AbortController(), profile: null,
+    loading: true, saving: false, generating: null, editing: false,
+  };
+  $('notes-topbar').hidden = $('main').hidden = true;
+  profileView.hidden = false;
+  syncNavActive();
+  window.scrollTo(0, 0);
+  profileView.querySelector('.ins-scroll').scrollTop = 0;
+  profileButton('close').focus({ preventScroll: true });
+  $('profile-status').textContent = '正在读取画像…';
+  syncProfileControls();
+  loadGatewayModels(view.lifecycle.signal);
+  loadProfile(view);
+}
+
+function closeProfile({ restore = true } = {}) {
+  const view = prof;
+  if (!view) return;
+  prof = null;
+  view.lifecycle.abort();
+  profileView.hidden = true;
+  $('profile-reader').hidden = false;
+  $('profile-editor').hidden = $('profile-empty').hidden = true;
+  $('profile-enabled').checked = true;
+  $('profile-body').replaceChildren();
+  $('profile-status').textContent = $('profile-meta').textContent = $('profile-text').value = '';
+  setError('profile-error', '');
+  $('notes-topbar').hidden = $('main').hidden = false;
+  syncNavActive();
+  if (restore) {
+    sidebar(false);
+    (view.opener.getClientRects().length ? view.opener : $('mobile-toggle')).focus({ preventScroll: true });
+    window.scrollTo(0, view.scrollY);
+  }
+}
+
+async function loadProfile(view) {
+  const signal = view.lifecycle.signal;
+  try {
+    // Reopening during a save must read the committed profile.
+    if (pendingProfileSave) await pendingProfileSave;
+    if (prof !== view) return;
+    const { profile } = await request('/api/ai/profile', undefined, signal);
+    if (prof !== view) return;
+    view.profile = profile;
+    renderProfile();
+  } catch (error) {
+    if (prof === view) setError('profile-error', error.message);
+  } finally {
+    if (prof === view) {
+      view.loading = false;
+      $('profile-status').textContent = '';
+      syncProfileControls();
+    }
+  }
+}
+
+function renderProfile() {
+  const profile = prof.profile;
+  const content = profile?.content ?? '';
+  $('profile-enabled').checked = profile?.enabled ?? true;
+  $('profile-meta').textContent = content
+    ? '基于 ' + profile.noteCount + ' 条笔记 · ' + profile.updatedAt.slice(0, 10) + ' 更新'
+    : '尚未生成';
+  $('profile-empty').hidden = Boolean(content);
+  renderSafeMarkdown($('profile-body'), content, []);
+}
+
+function syncProfileControls() {
+  const busy = prof.loading || prof.saving;
+  const generating = Boolean(prof.generating);
+  const generate = profileButton('generate');
+  generate.disabled = busy;
+  generate.textContent = generating ? '停止生成' : prof.profile?.content ? '重新生成' : '生成画像';
+  for (const button of profileView.querySelectorAll('[data-action="profile-edit"]')) {
+    button.disabled = busy || generating || prof.editing;
+  }
+  profileButton('save').disabled = profileButton('cancel-edit').disabled =
+    $('profile-enabled').disabled = $('profile-text').disabled = busy || generating;
+  $('profile-reader').hidden = prof.editing;
+  $('profile-editor').hidden = !prof.editing;
+}
+
+function setProfileEditing(editing) {
+  if (!prof || (editing && (prof.loading || prof.saving || prof.generating))) return;
+  prof.editing = editing;
+  $('profile-text').value = editing ? prof.profile?.content ?? '' : '';
+  setError('profile-error', '');
+  syncProfileControls();
+  (editing ? $('profile-text') : profileButton('edit')).focus({ preventScroll: true });
+}
+
+function saveProfile(toggleOnly = false) {
+  const view = prof;
+  if (!view || view.loading || view.saving || view.generating) return;
+  const enabled = $('profile-enabled').checked;
+  const body = toggleOnly ? { enabled } : { enabled, content: $('profile-text').value };
+  const status = $('profile-status');
+  view.saving = true;
+  status.textContent = '正在保存…';
+  setError('profile-error', '');
+  const save = pendingProfileSave = request('/api/ai/profile', body, accountLifecycle.signal).then(({ profile }) => {
+    if (prof === view) {
+      view.profile = profile;
+      if (!toggleOnly) {
+        view.editing = false;
+        $('profile-text').value = '';
+      }
+      renderProfile();
+      status.textContent = toggleOnly ? (profile.enabled ? '已启用' : '已停用') : '已保存';
+    }
+    return true;
+  }).catch(error => {
+    if (prof === view) {
+      status.textContent = '';
+      if (toggleOnly) $('profile-enabled').checked = view.profile?.enabled ?? true;
+      setError('profile-error', error.message);
+    }
+    return false;
+  }).finally(() => {
+    if (pendingProfileSave === save) pendingProfileSave = null;
+    if (prof === view) {
+      view.saving = false;
+      syncProfileControls();
+      if (!toggleOnly && !view.editing) profileButton('edit').focus({ preventScroll: true });
+    }
+  });
+  syncProfileControls();
+}
+
+async function generateProfile() {
+  const view = prof;
+  if (!view || view.loading || view.saving) return;
+  if (view.generating) { view.generating.abort(); return; }
+  const settings = providerSettings();
+  if (settings.provider === 'openai' && !settings.apiKey) {
+    setError('profile-error', '请先在设置里填写 OpenAI API Key。');
+    openSettings();
+    return;
+  }
+  const controller = view.generating = new AbortController();
+  const signal = AbortSignal.any([view.lifecycle.signal, controller.signal]);
+  const status = $('profile-status');
+  view.editing = false;
+  $('profile-text').value = '';
+  $('profile-empty').hidden = true;
+  setError('profile-error', '');
+  status.textContent = '正在整理代表性笔记…';
+  syncProfileControls();
+  let preview = '', result = null;
+  try {
+    await requestStream('/api/ai/profile/generate', { ...settings, stream: true }, {
+      signal,
+      onEvent(name, data) {
+        if (prof !== view || signal.aborted) return;
+        if (name === 'status') status.textContent = data.message;
+        else if (name === 'delta') {
+          preview = (preview + data.text).slice(0, $('profile-text').maxLength);
+          renderStreamingMarkdown($('profile-body'), preview);
+        } else if (name === 'done') result = data.profile;
+        else if (name === 'error') throw new Error(data.error || '暂时无法生成画像，请稍后重试。');
+      },
+    });
+    if (prof !== view) return;
+    if (!result) throw new Error('画像生成意外中断，请重试。');
+    view.profile = result;
+    status.textContent = '已生成并保存';
+  } catch (error) {
+    if (prof !== view) return;
+    status.textContent = signal.aborted ? '已停止生成' : '';
+    if (!signal.aborted) setError('profile-error', error.message);
+  } finally {
+    if (prof === view) {
+      view.generating = null;
+      renderProfile();
+      syncProfileControls();
+    }
+  }
+}
+
 const aiChatView = $('ai-chat-view');
 const aiButton = action => aiChatView.querySelector('[data-action="ai-' + action + '"]');
 const aiOriginLabels = { insight: '洞察续聊', note: '笔记对话', global: '全局对话' };
@@ -2482,11 +2680,6 @@ function setAISessionRail(open) {
   aiButton('toggle-sessions').setAttribute('aria-expanded', String(open));
 }
 
-function setAIProfileOpen(open) {
-  $('ai-profile-panel').hidden = !open;
-  aiButton('open-profile').setAttribute('aria-expanded', String(open));
-}
-
 function closeAIChat({ restore = true, focus = false } = {}) {
   const view = ai;
   if (!view.lifecycle) return;
@@ -2498,11 +2691,6 @@ function closeAIChat({ restore = true, focus = false } = {}) {
   $('ai-note-picker-search').value = '';
   $('ai-note-picker-results').replaceChildren();
   newAISession();
-  renderAIProfile();
-  setError('ai-profile-error', '');
-  $('ai-profile-status').textContent = '';
-  syncAIControls();
-  syncAIProfileControls();
   syncNavActive();
   if (restore) window.scrollTo(0, view.scrollY);
   if (focus) {
@@ -2515,8 +2703,9 @@ function openAIChat() {
   if (!state.loaded) { notify('请先登录并完成同步'); return false; }
   sidebar(false);
   if (ai.lifecycle) return true;
-  const scrollY = ins?.scrollY ?? window.scrollY;
+  const scrollY = prof?.scrollY ?? ins?.scrollY ?? window.scrollY;
   closeRandomWalk({ restore: false });
+  closeProfile({ restore: false });
   closeInsights({ restore: false });
   ai.lifecycle = new AbortController();
   ai.scrollY = scrollY;
@@ -2618,14 +2807,19 @@ function buildAIUserMessage(text, citations) {
   return message;
 }
 
+function renderStreamingMarkdown(container, text) {
+  renderSafeMarkdown(container, text, []);
+  const last = container.lastElementChild;
+  const end = last?.matches('ul, ol') ? last.lastElementChild : last;
+  const caret = el('span', 'ai-stream-caret');
+  caret.setAttribute('aria-hidden', 'true');
+  (end?.matches('p, li, h2, h3, h4, blockquote') ? end : container).append(caret);
+}
+
 function renderAIPendingBubble(bubble, pending) {
   bubble.classList.toggle('is-streaming', Boolean(pending.streamText));
   if (pending.streamText) {
-    renderSafeMarkdown(bubble, pending.streamText, []);
-    const last = bubble.lastElementChild;
-    const caret = el('span', 'ai-stream-caret', '');
-    if (last && /^(P|LI|H[2-4]|BLOCKQUOTE)$/.test(last.tagName)) last.append(caret);
-    else bubble.append(caret);
+    renderStreamingMarkdown(bubble, pending.streamText);
   } else {
     const thinking = el('span', 'ai-thinking');
     thinking.append(el('i'), el('i'), el('i'), el('span', '', pending.status || '正在思考…'));
@@ -2658,7 +2852,7 @@ function scrollAIThreadToBottom(smooth = false) {
   syncAIScrollButton();
 }
 
-function renderAIThread() {
+function renderAIThread(walkPinsOpen = false) {
   const turns = ai.session?.turns ?? ai.source?.turns ?? [];
   $('ai-chat-title').textContent = ai.session?.title || ai.insightContext?.title || (ai.source && aiNoteTitle(ai.source)) || 'AI 对话';
   const thread = $('ai-chat-thread');
@@ -2698,6 +2892,25 @@ function renderAIThread() {
     meta.append(el('span', 'ai-context-badge', label));
     card.append(meta,
       el('p', 'ai-context-excerpt', preview.slice(0, 120) + (preview.length > 120 ? '…' : '')));
+    if (ai.pins.size > 1) {
+      const details = el('details', 'ai-ctx-fold');
+      details.open = walkPinsOpen;
+      const list = el('ol', 'ai-walk-pin-list');
+      for (const id of ai.pins) {
+        const note = state.notes.get(id);
+        if (!note) continue;
+        const excerpt = note.body.trim().replace(/\s+/g, ' ').slice(0, 90);
+        const button = el('button', '', excerpt || '未命名笔记');
+        button.type = 'button';
+        button.dataset.openNote = id;
+        if (note.reading?.bookTitle) button.append(el('span', 'ai-walk-pin-book', '《' + note.reading.bookTitle + '》'));
+        const item = el('li');
+        item.append(button);
+        list.append(item);
+      }
+      details.append(el('summary', '', '查看引用的 ' + ai.pins.size + ' 条笔记'), list);
+      card.append(details);
+    }
     nodes.push(card);
   }
   for (const turn of turns) {
@@ -2723,25 +2936,23 @@ function renderAIThread() {
   syncAIScrollButton();
 }
 
-function renderAIProfile({ keepDraft = false } = {}) {
-  $('ai-profile-enabled').checked = ai.profile?.enabled ?? true;
-  if (!keepDraft) $('ai-profile-text').value = ai.profile?.content ?? '';
-  $('ai-profile-meta').textContent = ai.profile?.content
-    ? `基于 ${ai.profile.noteCount} 条笔记 · ${ai.profile.updatedAt.slice(0, 10)} 更新`
-    : '尚未生成';
+function aiPinLabel(note) {
+  const body = note.body.trim().replace(/\s+/g, ' ');
+  return body ? body.slice(0, 24) : (note.reading?.bookTitle || '未命名笔记');
 }
 
 function renderAIPins() {
   $('ai-pinned-notes').replaceChildren(...[...ai.pins].flatMap(id => {
     const note = state.notes.get(id);
     if (!note) return [];
-    const name = note.reading?.bookTitle || note.body.trim().split('\n')[0].slice(0, 28);
+    const label = aiPinLabel(note);
+    const excerpt = note.body.trim().slice(0, 240);
     const button = el('button', 'ai-pin-chip');
     button.type = 'button';
     button.dataset.removePin = id;
-    button.title = name;
-    button.setAttribute('aria-label', '移除引用：' + name);
-    button.append(el('span', 'ai-pin-label', name), el('span', 'ai-pin-x', '×'));
+    button.title = note.reading?.bookTitle ? '《' + note.reading.bookTitle + '》\n' + excerpt : excerpt;
+    button.setAttribute('aria-label', '移除引用：' + label);
+    button.append(el('span', 'ai-pin-label', label), el('span', 'ai-pin-x', '×'));
     return [button];
   }));
 }
@@ -2755,7 +2966,9 @@ function syncAIComposerPlaceholder() {
 function refreshAIPins() {
   renderAIPins();
   syncAIComposerPlaceholder();
-  if (!ai.session?.turns?.length && !ai.pendingTurn && ai.source) renderAIThread();
+  if (!ai.session?.turns?.length && !ai.pendingTurn && ai.source) {
+    renderAIThread($('ai-chat-thread').querySelector('.ai-ctx-fold')?.open);
+  }
 }
 
 function renderNotePicker() {
@@ -2794,37 +3007,6 @@ function pinFromPicker(id) {
   closeNotePicker(true);
 }
 
-async function toggleAIProfile() {
-  const open = $('ai-profile-panel').hidden;
-  setAIProfileOpen(open);
-  if (!open) return;
-  setAISessionRail(false);
-  closeNotePicker();
-  const view = ai;
-  if (view.profileLoading || view.profileSaving || view.profileGenerating) return;
-  const text = $('ai-profile-text');
-  const previous = view.profile?.content ?? '';
-  const signal = view.lifecycle.signal;
-  view.profileLoading = true;
-  $('ai-profile-status').textContent = '正在读取画像…';
-  setError('ai-profile-error', '');
-  syncAIProfileControls();
-  try {
-    const { profile } = await request('/api/ai/profile', undefined, signal);
-    if (ai !== view || signal.aborted || view.profileGenerating) return;
-    view.profile = profile;
-    renderAIProfile({ keepDraft: text.value !== previous });
-  } catch (error) {
-    if (ai === view && !signal.aborted) setError('ai-profile-error', error.message);
-  } finally {
-    view.profileLoading = false;
-    if (ai === view) {
-      $('ai-profile-status').textContent = '';
-      syncAIProfileControls();
-    }
-  }
-}
-
 function syncAIControls() {
   const send = $('ai-chat-send');
   const stopping = Boolean(ai.sending);
@@ -2832,96 +3014,6 @@ function syncAIControls() {
   send.classList.toggle('ai-send-stopping', stopping);
   send.querySelector('span').textContent = stopping ? '停止' : '发送';
   send.setAttribute('aria-label', stopping ? '停止回复' : '发送');
-}
-
-function syncAIProfileControls() {
-  const busy = Boolean(ai.profileLoading || ai.profileSaving);
-  const generating = Boolean(ai.profileGenerating);
-  const text = $('ai-profile-text');
-  const generate = aiButton('generate-profile');
-  text.disabled = busy;
-  text.readOnly = generating;
-  generate.disabled = busy;
-  generate.textContent = generating ? '停止生成' : text.value.trim() ? '重新生成' : '生成画像';
-  aiButton('save-profile').disabled = $('ai-profile-enabled').disabled = busy || generating;
-}
-
-function saveAIProfile(toggleOnly = false) {
-  const view = ai;
-  if (view.profileLoading || view.profileSaving || view.profileGenerating) return;
-  const enabled = $('ai-profile-enabled').checked;
-  const body = toggleOnly ? { enabled } : { enabled, content: $('ai-profile-text').value };
-  const status = $('ai-profile-status');
-  status.textContent = '正在保存…';
-  setError('ai-profile-error', '');
-  view.profileSaving = request('/api/ai/profile', body, view.lifecycle.signal).then(({ profile }) => {
-    if (ai === view) {
-      view.profile = profile;
-      renderAIProfile({ keepDraft: toggleOnly });
-      status.textContent = toggleOnly ? (profile.enabled ? '已启用' : '已停用') : '已保存';
-    }
-    return true;
-  }).catch(error => {
-    if (ai === view) {
-      status.textContent = '';
-      if (toggleOnly) $('ai-profile-enabled').checked = view.profile?.enabled ?? true;
-      setError('ai-profile-error', error.message);
-    }
-    return false;
-  }).finally(() => {
-    view.profileSaving = null;
-    if (ai === view) syncAIProfileControls();
-  });
-  syncAIProfileControls();
-}
-
-async function generateAIProfile() {
-  const view = ai;
-  if (view.profileGenerating) { view.profileGenerating.abort(); return; }
-  if (view.profileLoading || view.profileSaving) return;
-  const settings = providerSettings();
-  if (settings.provider === 'openai' && !settings.apiKey) {
-    setError('ai-profile-error', '请先在设置里填写 OpenAI API Key。');
-    openSettings();
-    return;
-  }
-  const text = $('ai-profile-text');
-  const previous = text.value;
-  const status = $('ai-profile-status');
-  const controller = view.profileGenerating = new AbortController();
-  const signal = AbortSignal.any([view.lifecycle.signal, controller.signal]);
-  setError('ai-profile-error', '');
-  status.textContent = '正在整理代表性笔记…';
-  syncAIProfileControls();
-  let preview = '', profile = null;
-  try {
-    await requestStream('/api/ai/profile/generate', { ...settings, stream: true }, {
-      signal,
-      onEvent(name, data) {
-        if (ai !== view || signal.aborted) return;
-        if (name === 'status') status.textContent = data.message;
-        else if (name === 'delta') {
-          preview = (preview + data.text).slice(0, text.maxLength);
-          text.value = preview;
-          text.scrollTop = text.scrollHeight;
-        } else if (name === 'done') profile = data.profile;
-        else if (name === 'error') throw new Error(data.error || '暂时无法生成画像，请稍后重试。');
-      },
-    });
-    if (ai !== view) return;
-    if (!profile) throw new Error('画像生成意外中断，请重试。');
-    view.profile = profile;
-    renderAIProfile();
-    status.textContent = '已生成并保存';
-  } catch (error) {
-    if (ai !== view) return;
-    text.value = previous;
-    status.textContent = signal.aborted ? '已停止生成' : '';
-    if (!signal.aborted) setError('ai-profile-error', error.message);
-  } finally {
-    view.profileGenerating = null;
-    if (ai === view) syncAIProfileControls();
-  }
 }
 
 function newAISession(source = null, session = null, { extraPinIds = [], fromWalk = false } = {}) {
@@ -2939,7 +3031,6 @@ function newAISession(source = null, session = null, { extraPinIds = [], fromWal
   $('ai-chat-input').value = '';
   syncAIComposerPlaceholder();
   setError('ai-chat-error', '');
-  setAIProfileOpen(false);
   setAISessionRail(false);
   closeNotePicker();
   renderAIThread();
@@ -3049,9 +3140,10 @@ async function sendAIChat(event) {
   let completed = false;
   try {
     if (ai !== view || signal.aborted) return;
-    if (view.profileSaving) {
-      const saved = await view.profileSaving;
-      if (ai !== view || signal.aborted) return;
+    if (pendingProfileSave) {
+      const saved = await pendingProfileSave;
+      if (ai !== view) return;
+      signal.throwIfAborted();
       if (!saved) throw new Error('个人画像设置保存失败，已取消本次发送。');
     }
     let streamError = null;
@@ -3341,10 +3433,12 @@ async function loadInsReports(view) {
 function openInsights(opener) {
   if (ins) { sidebar(false); return; }
   if (!state.loaded) { notify('请先登录并完成同步'); return; }
+  const profileScrollY = prof?.scrollY;
   closeRandomWalk({ restore: false });
+  closeProfile({ restore: false });
   closeAIChat();
   const view = ins = {
-    opener, scrollY: window.scrollY, tab: 'new', cat: '精选', range: '7d', tags: new Set(),
+    opener, scrollY: profileScrollY ?? window.scrollY, tab: 'new', cat: '精选', range: '7d', tags: new Set(),
     lifecycle: new AbortController(), lenses: [], categories: [], lensId: null, lensRevision: 0, lensesLoaded: false,
     stats: null, reports: [], historyRevision: 0,
     report: null, reportRevision: 0, preview: null, run: null, lensDraft: null, attempt: null,
@@ -3616,8 +3710,7 @@ const walkResize = new ResizeObserver(drawWalkLinks);
 walkResize.observe($('rw-stage'));
 $('rw-related').addEventListener('scroll', drawWalkLinks, { passive: true });
 $('ai-chat-form').addEventListener('submit', sendAIChat);
-$('ai-profile-enabled').addEventListener('change', () => saveAIProfile(true));
-$('ai-profile-text').addEventListener('input', syncAIProfileControls);
+$('profile-enabled').addEventListener('change', () => saveProfile(true));
 $('ai-chat-thread').addEventListener('scroll', () => {
   ai.followBottom = isAIThreadAtBottom();
   syncAIScrollButton();
@@ -3697,7 +3790,6 @@ const actions = {
   'ai-close': () => closeAIChat({ focus: true }),
   'ai-mobile-menu': () => { setAISessionRail(false); sidebar(!$('sidebar').classList.contains('open')); },
   'ai-toggle-sessions': () => setAISessionRail(!$('ai-session-rail').classList.contains('open')),
-  'ai-open-profile': toggleAIProfile,
   'ai-filter-origin': button => { ai.origin = button.dataset.origin; renderAISessions(); },
   'ai-load-more-sessions': () => loadAISessions(true),
   'open-note-ai-chat': () => openNoteAIChat(state.notes.get(state.noteID)),
@@ -3706,8 +3798,13 @@ const actions = {
   'ai-new-session': () => { if (newAISession()) $('ai-chat-input').focus({ preventScroll: true }); },
   'ai-select-session': (button) => selectAISession('/api/ai/sessions/' + button.dataset.sessionId),
   'ai-delete-session': (button) => deleteAISession(button.dataset.sessionId),
-  'ai-generate-profile': generateAIProfile,
-  'ai-save-profile': () => saveAIProfile(),
+  'open-ai-profile': openProfile,
+  'profile-close': () => closeProfile(),
+  'profile-mobile-menu': () => sidebar(!$('sidebar').classList.contains('open')),
+  'profile-generate': generateProfile,
+  'profile-edit': () => setProfileEditing(true),
+  'profile-cancel-edit': () => setProfileEditing(false),
+  'profile-save': () => saveProfile(),
   'ai-pick-note': () => $('ai-note-picker').hidden ? openNotePicker() : closeNotePicker(true),
   'ai-scroll-bottom': () => scrollAIThreadToBottom(true),
   'ai-clear-insight-context': () => {
@@ -3835,7 +3932,7 @@ const actions = {
 
 document.addEventListener('click', (event) => {
   if (!event.target.closest) return;
-  if (!$('sidebar').contains(event.target) && !event.target.closest('#mobile-toggle, [data-action="ins-mobile-menu"], [data-action="ai-mobile-menu"]')) sidebar(false);
+  if (!$('sidebar').contains(event.target) && !event.target.closest('#mobile-toggle, [data-action="ins-mobile-menu"], [data-action="ai-mobile-menu"], [data-action="profile-mobile-menu"]')) sidebar(false);
   if (ins && !$('ins-tag-popover').hidden && !event.target.closest('.ins-tags')) toggleInsTags(false);
   if (state.openMenuId && !event.target.closest('.card-menu-wrap')) closeCardMenu();
   if (state.tagSuggest.open && !event.target.closest('.composer-input-wrap')) closeTagSuggest();
@@ -3870,6 +3967,7 @@ document.addEventListener('click', (event) => {
   if (button.dataset.day) {
     closeAIChat();
     closeInsights({ restore: false });
+    closeProfile({ restore: false });
     const day = button.dataset.day;
     state.dayFilter = state.dayFilter === day ? null : day;
     sidebar(false);
@@ -3904,6 +4002,7 @@ document.addEventListener('click', (event) => {
     const sameChatFilter = ai.lifecycle && state.filter === button.dataset.filter;
     closeAIChat();
     closeInsights({ restore: false });
+    closeProfile({ restore: false });
     sidebar(false);
     if (sameChatFilter) return;
     state.filter = button.dataset.filter;
@@ -4000,6 +4099,12 @@ document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
   if (event.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
+    if (prof) {
+      event.preventDefault();
+      if (prof.editing) setProfileEditing(false);
+      else closeProfile();
+      return;
+    }
     if (ins && !$('ins-tag-popover').hidden) {
       event.preventDefault();
       toggleInsTags(false, true);
@@ -4010,7 +4115,6 @@ document.addEventListener('keydown', (event) => {
       if (!$('random-walk-overlay').hidden) closeRandomWalk();
       else if (!$('ai-note-picker').hidden) closeNotePicker(true);
       else if ($('ai-session-rail').classList.contains('open')) setAISessionRail(false);
-      else if (!$('ai-profile-panel').hidden) setAIProfileOpen(false);
       else if (ai.lifecycle) closeAIChat({ focus: true });
       else closeInsights();
       return;
