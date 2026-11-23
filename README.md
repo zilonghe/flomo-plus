@@ -74,3 +74,18 @@ npm run dev
 ## 开发
 
 `npm run build` 将网页文件嵌入 Worker 入口，输出位于 `dist/server/index.js`，构建产物不入库。`drizzle/` 存放兼容 D1/SQLite 的迁移；自托管通过 `_migrations` 记录已执行文件，兼容已有的笔记表。Sites 部署仍需要登录网关注入账户身份，独立 Node 自托管使用上述单账户访问门禁。
+
+## iOS 微记
+
+原生 SwiftUI 客户端要求 iOS 18 或更新版本。它直连同一个自托管服务，支持笔记同步、标签筛选、随机漫步、带笔记引用的流式 AI 对话、洞察和个人画像。
+
+在装有 Xcode 与 XcodeGen 的 Mac 上，从仓库根目录生成工程并打开：
+
+```sh
+xcodegen generate --spec ios/project.yml --project ios
+open ios/Weiji.xcodeproj
+```
+
+选择 `Weiji` scheme，在模拟器运行。首次打开时，在「连接设置」填写自托管服务的完整地址和 `PREVIEW_AUTH_TOKEN`，点「测试并连接」。模拟器与服务器在同一台 Mac 时可填 `http://127.0.0.1:5173`；跨网络使用 HTTPS 或受信任的 VPN。笔记缓存按服务器和账号隔离。服务凭据与可选的 OpenAI API Key 保存在系统钥匙串；服务配置了 Codex 或兼容网关时，App 默认使用它。
+
+单元测试在 Xcode 中选择 Product → Test。生成的 Xcode 工程和构建产物无需提交。

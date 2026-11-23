@@ -1,0 +1,41 @@
+name: Weiji
+options:
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: GU3H6N2XND
+targets:
+  Weiji:
+    type: application
+    platform: iOS
+    sources:
+      - path: Weiji
+        excludes: [Info.plist]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zilonghe.weiji
+        INFOPLIST_FILE: Weiji/Info.plist
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+  WeijiTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [WeijiTests]
+    dependencies:
+      - target: Weiji
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zilonghe.weiji.tests
+schemes:
+  Weiji:
+    build:
+      targets:
+        Weiji: all
+        WeijiTests: [test]
+    test:
+      targets: [WeijiTests]

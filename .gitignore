@@ -12,3 +12,7 @@ data/
 .env.*
 *.zip
 *.bak
+ios/*.xcodeproj/
+ios/DerivedData/
+ios/build/
+*.ipa
