@@ -633,7 +633,7 @@ function profileRow(db, account) {
   return db.prepare("SELECT content, enabled, note_count, updated_at FROM ai_profile WHERE account = ?").bind(account).first();
 }
 
-async function saveProfile(db, account, { content, enabled }, generatedCount = null) {
+async function saveProfile(db, account, { content, enabled }) {
   if (typeof enabled !== "boolean" || (content !== undefined && (typeof content !== "string" || content.length > 6000))) {
     throw new ApiError(400, "画像内容最多 6000 字，且需要指定启用状态。");
   }
@@ -645,11 +645,17 @@ async function saveProfile(db, account, { content, enabled }, generatedCount = n
     return { profile: profileResult(row) };
   }
   const row = await db.prepare(`INSERT INTO ai_profile(account, content, enabled, note_count, updated_at)
-    VALUES (?, ?, ?, COALESCE(?, 0), ?) ON CONFLICT(account) DO UPDATE SET
-    content = excluded.content, enabled = excluded.enabled, note_count = COALESCE(?, ai_profile.note_count),
-    updated_at = excluded.updated_at RETURNING *`).bind(
-    account, content, Number(enabled), generatedCount, updatedAt, generatedCount,
-  ).first();
+    VALUES (?, ?, ?, 0, ?) ON CONFLICT(account) DO UPDATE SET
+    content = excluded.content, enabled = excluded.enabled, updated_at = excluded.updated_at RETURNING *`)
+    .bind(account, content, Number(enabled), updatedAt).first();
+  return { profile: profileResult(row) };
+}
+
+async function saveGeneratedProfile(db, account, content, noteCount) {
+  const row = await db.prepare(`INSERT INTO ai_profile(account, content, enabled, note_count, updated_at)
+    VALUES (?, ?, 1, ?, ?) ON CONFLICT(account) DO UPDATE SET
+    content = excluded.content, note_count = excluded.note_count, updated_at = excluded.updated_at RETURNING *`)
+    .bind(account, content, noteCount, new Date().toISOString()).first();
   return { profile: profileResult(row) };
 }
 
@@ -702,9 +708,7 @@ async function generateProfile(env, account, input, requestSignal) {
       role: "user", text: "<画像生成任务>从提供的样本归纳长期关注、偏好及反复出现的模式。写一份可持续更新的个人画像，区分事实与推测，不编造信息，限 6000 字。</画像生成任务>",
     }] }, env, signal, { target, longTimeout: true, onDelta: send && (text => send("delta", { text })) });
     checkCancelled(signal);
-    const previous = await profileRow(env.DB, account);
-    checkCancelled(signal);
-    return saveProfile(env.DB, account, { content: reply.slice(0, 6000), enabled: previous?.enabled !== 0 }, sampled.length);
+    return saveGeneratedProfile(env.DB, account, reply.slice(0, 6000), sampled.length);
   };
   return stream
     ? insightStream(requestSignal, positiveMs(env.INSIGHT_PING_INTERVAL_MS, 15_000), work, "暂时无法生成画像，请稍后重试。")
