@@ -102,3 +102,57 @@ export function appendCitedText(node, text, citations = []) {
   }
   node.append(text.slice(start));
 }
+
+export function renderSafeMarkdown(container, markdown, citations = []) {
+  const doc = container.ownerDocument;
+  const blocks = [];
+  const inline = (node, text) => {
+    let start = 0;
+    for (const match of text.matchAll(/\*\*([^*\n]+)\*\*/g)) {
+      appendCitedText(node, text.slice(start, match.index), citations);
+      const strong = doc.createElement('strong');
+      appendCitedText(strong, match[1], citations);
+      node.append(strong);
+      start = match.index + match[0].length;
+    }
+    appendCitedText(node, text.slice(start), citations);
+  };
+  let list, listType;
+  let paragraph = [];
+  const flush = () => {
+    if (!paragraph.length) return;
+    const node = doc.createElement('p');
+    inline(node, paragraph.join('\n'));
+    blocks.push(node);
+    paragraph = [];
+  };
+  for (const raw of markdown.split(/\r?\n/)) {
+    const line = raw.trim();
+    const heading = line.match(/^(#{2,3})\s+(.+)$/);
+    const item = line.match(/^([-+*]|\d+\.)\s+(.+)$/);
+    if (item) {
+      flush();
+      const type = /^\d/.test(item[1]) ? 'ol' : 'ul';
+      if (!list || listType !== type) {
+        list = doc.createElement(type);
+        listType = type;
+        blocks.push(list);
+      }
+      const li = doc.createElement('li');
+      inline(li, item[2]);
+      list.append(li);
+      continue;
+    }
+    list = null;
+    if (heading) {
+      flush();
+      const node = doc.createElement('h' + heading[1].length);
+      inline(node, heading[2]);
+      blocks.push(node);
+    } else if (line) paragraph.push(line);
+    else flush();
+  }
+  flush();
+  container.textContent = '';
+  container.append(...blocks);
+}

@@ -89,16 +89,17 @@ export function tokenOverlap(queryTokens, noteTokens, isQuery) {
   return matches / (isQuery ? queryTokens.size || 1 : Math.sqrt(queryTokens.size * noteTokens.length) || 1);
 }
 
-export function rankNoteIds(metadata, { focusId, queryTokens, limit = 10, excludeIds = [], vector, vectors, matches }) {
+export function rankNoteIds(metadata, { focusId, queryTokens, limit = 10, excludeIds = [], includeIds, vector, vectors, matches }) {
   const isQuery = focusId === undefined;
   const focus = metadata.get(focusId);
   const excluded = new Set(excludeIds);
+  const included = includeIds == null || includeIds instanceof Set ? includeIds : new Set(includeIds);
   if (!isQuery) excluded.add(focusId);
   const tokens = new Set(queryTokens);
   if (isQuery && !tokens.size) return [];
   const ranked = [];
   for (const [id, note] of metadata) {
-    if (excluded.has(id)) continue;
+    if (excluded.has(id) || (included && !included.has(id))) continue;
     const candidateVector = vectors?.get(id)?.vector;
     const hasVectors = Boolean(vector && candidateVector && vector.length === candidateVector.length);
     const noteTokens = matches.get(id);
@@ -137,7 +138,7 @@ export function lexicalFallbackSearch(query, allNotes, opts) {
 }
 
 export function escapeContextTags(text) {
-  return text.replace(/<(\/?(?:当前笔记|长期个人画像|相关历史笔记|画像生成任务))>/g, '‹$1›');
+  return text.replace(/<(\/?(?:当前笔记|长期个人画像|相关历史笔记|画像生成任务|洞察笔记资料|洞察视角任务))>/g, '‹$1›');
 }
 
 export function buildNoteContextBlock(entries, { maxTotalChars = 12000, pinnedMaxChars = 2000, retrievedMaxChars = 1000 } = {}) {

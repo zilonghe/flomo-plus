@@ -59,6 +59,7 @@
         <button class="nav-item" type="button" data-filter="journal"><svg><use href="#i-note"></use></svg><span>日志</span><span class="nav-count" id="count-journal"></span></button>
         <button class="nav-item" type="button" data-filter="reading"><svg><use href="#i-book"></use></svg><span>读书摘录</span><span class="nav-count" id="count-reading"></span></button>
         <button class="nav-item" type="button" data-action="open-random-walk"><svg><use href="#i-shuffle"></use></svg><span>随机漫步</span></button>
+        <button class="nav-item" type="button" data-action="open-ai-insights"><svg><use href="#i-spark"></use></svg><span>AI 洞察</span></button>
       </nav>
       <div class="side-section tag-section" id="tag-section" hidden>
         <div class="nav-label-row">
@@ -146,6 +147,113 @@
       <p id="rw-status" role="status" hidden></p>
     </div>
   </section>
+
+  <section id="ai-insights-overlay" aria-labelledby="ins-title" hidden>
+    <header class="ins-toolbar">
+      <div class="ins-toolbar-inner">
+        <h2 id="ins-title"><svg aria-hidden="true"><use href="#i-spark"></use></svg> AI 洞察</h2>
+        <nav class="ins-tabs" aria-label="洞察视图">
+          <button type="button" data-action="ins-tab" data-tab="new">新建洞察</button>
+          <button type="button" data-action="ins-tab" data-tab="discover">发现视角</button>
+          <button type="button" data-action="ins-tab" data-tab="history">历史报告</button>
+        </nav>
+        <button class="icon-button" type="button" data-action="ins-new-lens" aria-label="新建自定义视角" title="新建自定义视角"><svg><use href="#i-plus"></use></svg></button>
+        <button class="icon-button" type="button" data-action="ins-close" aria-label="关闭 AI 洞察" title="关闭 AI 洞察"><svg><use href="#i-close"></use></svg></button>
+      </div>
+    </header>
+    <div id="ins-scroll" class="ins-scroll">
+      <div class="ins-content">
+        <p id="ins-error" class="inline-error" role="alert" hidden></p>
+        <section id="ins-scope" class="ins-surface" aria-label="笔记范围">
+          <div class="ins-scope-top">
+            <h3>笔记范围</h3>
+            <label><input id="ins-use-profile" type="checkbox"> 附带个人画像</label>
+          </div>
+          <div class="ins-pills" role="group" aria-label="日期">
+            <button type="button" data-action="ins-select-range" data-ins-range="7d">最近 7 天</button>
+            <button type="button" data-action="ins-select-range" data-ins-range="week">本周</button>
+            <button type="button" data-action="ins-select-range" data-ins-range="month">本月</button>
+            <button type="button" data-action="ins-select-range" data-ins-range="all">不限日期</button>
+            <button type="button" data-action="ins-select-range" data-ins-range="custom">自定义</button>
+          </div>
+          <div id="ins-custom-dates" class="ins-pills" hidden>
+            <label>起始 <input id="ins-start-date" class="field" type="date"></label>
+            <label>结束 <input id="ins-end-date" class="field" type="date"></label>
+          </div>
+          <div class="ins-tags">
+            <div class="ins-scope-top">
+              <span id="ins-tag-label">包含任一所选标签</span>
+              <input id="ins-tag-search" class="field" type="search" aria-label="搜索标签" placeholder="搜索标签">
+            </div>
+            <div class="ins-pills" role="group" aria-labelledby="ins-tag-label">
+              <button type="button" data-action="ins-clear-tags">全部标签</button>
+              <div class="ins-pills" id="ins-tag-list"></div>
+            </div>
+          </div>
+          <div class="ins-stats" aria-live="polite">
+            <span><strong id="ins-stat-notes">—</strong> 笔记</span>
+            <span><strong id="ins-stat-tags">—</strong> 标签</span>
+            <span><strong id="ins-stat-days">—</strong> 天数</span>
+            <span id="ins-sampling" hidden>将精选最多 80 条分析</span>
+          </div>
+        </section>
+        <section id="ins-panel-new" aria-label="新建洞察">
+          <h3>精选视角</h3>
+          <div id="ins-featured-grid" class="ins-grid"></div>
+          <h3>我的视角</h3>
+          <div id="ins-custom-grid" class="ins-grid"></div>
+        </section>
+        <section id="ins-panel-discover" aria-label="发现视角" hidden>
+          <div id="ins-category-list" class="ins-pills" role="group" aria-label="视角分类"></div>
+          <div id="ins-discover-grid" class="ins-grid"></div>
+        </section>
+        <section id="ins-panel-history" aria-label="历史报告" hidden>
+          <div id="ins-history-list"></div>
+        </section>
+        <article id="ins-report-view" class="ins-surface" aria-label="报告详情" hidden>
+          <div id="ins-report-meta"></div>
+          <div id="ins-report-body"></div>
+          <div class="ins-report-actions">
+            <button class="button button-primary" type="button" data-action="ins-continue-chat">和 AI 继续聊</button>
+            <button class="button button-secondary" type="button" data-action="ins-copy-report">复制 Markdown</button>
+            <button class="button button-danger" type="button" data-action="ins-delete-report">删除</button>
+          </div>
+        </article>
+      </div>
+    </div>
+    <footer id="ins-run-bar">
+      <span id="ins-selected-lens"></span>
+      <button class="button button-secondary" type="button" data-action="ins-cancel" hidden>停止</button>
+      <button class="button button-primary" type="button" data-action="ins-run" disabled><svg><use href="#i-spark"></use></svg>生成洞察</button>
+    </footer>
+  </section>
+
+  <dialog id="insight-lens-dialog" class="dialog" aria-labelledby="ins-lens-title">
+    <div class="dialog-header">
+      <h2 id="ins-lens-title">新建自定义视角</h2>
+      <button class="icon-button" type="button" data-action="ins-close-lens" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+    </div>
+    <form id="ins-lens-form" class="dialog-scroll">
+      <label for="ins-lens-name" class="field-label">名称</label>
+      <input id="ins-lens-name" class="field" maxlength="60" required autofocus>
+      <label for="ins-lens-desc" class="field-label">描述</label>
+      <input id="ins-lens-desc" class="field" maxlength="200" required>
+      <label for="ins-lens-prompt" class="field-label">提示词</label>
+      <textarea id="ins-lens-prompt" class="field" rows="5" maxlength="4000" required></textarea>
+      <label for="ins-lens-category" class="field-label">分类（可选）</label>
+      <input id="ins-lens-category" class="field" maxlength="30" placeholder="自定义">
+      <label for="ins-lens-suggested" class="field-label">建议日期（可选）</label>
+      <select id="ins-lens-suggested" class="field">
+        <option value="">无</option><option value="7d">最近 7 天</option><option value="week">本周</option>
+        <option value="month">本月</option><option value="all">不限日期</option>
+      </select>
+      <p id="ins-lens-error" class="inline-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" type="button" data-action="ins-close-lens">取消</button>
+        <button class="button button-primary" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
 
   <button class="button button-primary" id="ai-fab" type="button" data-action="toggle-ai-drawer" aria-controls="ai-drawer" aria-expanded="false"><svg><use href="#i-spark"></use></svg>问 AI</button>
   <aside id="ai-drawer" aria-labelledby="ai-drawer-title" hidden>

@@ -58,7 +58,10 @@ function makeEmbedder(env) {
   };
 }
 
-export function createSemanticEngine({ database, env = {}, embedder }) {
+const MAX_FAILURES = 3;
+const BACKOFF_MS = 60_000;
+
+export function createSemanticEngine({ database, env = {}, embedder, now = () => Date.now() }) {
   if (!embedder || env.EMBEDDING_PROVIDER === 'disabled' || env.EMBEDDING_PROVIDER === 'none') {
     embedder = makeEmbedder(env);
   }
@@ -68,6 +71,9 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
   const queue = new Map();
   let running;
   let inFlight = [];
+  let consecutiveEmbedFailures = 0;
+  let embedPausedUntil = 0;
+  const isEmbedPaused = () => now() < embedPausedUntil;
   const prepare = sql => database.prepare(sql);
   const allNotes = prepare('SELECT id, payload FROM journal_notes WHERE account = ? AND payload IS NOT NULL');
   const currentNote = prepare('SELECT payload FROM journal_notes WHERE account = ? AND id = ? AND payload IS NOT NULL');
@@ -152,7 +158,7 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
   }
 
   function startQueue() {
-    if (running || !queue.size) return;
+    if (running || !queue.size || isEmbedPaused()) return;
     running = (async () => {
       while (queue.size) {
         await new Promise(resolve => setImmediate(resolve));
@@ -182,8 +188,22 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
             const key = jobKey(account, id);
             if (queue.get(key)?.contentHash === entry.contentHash) queue.delete(key);
           }
+          consecutiveEmbedFailures = 0;
+          embedPausedUntil = 0;
+          accountState(account).embeddingError = null;
         } catch (error) {
           accountState(account).embeddingError = error.message || '无法生成笔记向量。';
+          // Keep failed jobs behind fresh work unless a newer write superseded them.
+          for (const job of inFlight) {
+            const key = jobKey(job.account, job.id);
+            if (!queue.has(key) && accountState(job.account).metadata.get(job.id)?.contentHash === job.contentHash) {
+              queue.set(key, job);
+            }
+          }
+          if (++consecutiveEmbedFailures >= MAX_FAILURES) {
+            embedPausedUntil = now() + BACKOFF_MS;
+            break;
+          }
         } finally {
           inFlight = [];
         }
@@ -209,9 +229,8 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     while (running) await running;
   }
 
-  async function syncAccount(account, { waitForEmbeddings = false } = {}) {
+  async function reconcileAccount(account, { waitForEmbeddings = false } = {}) {
     const state = accountState(account);
-    state.embeddingError = null;
     try {
       transact(() => {
         const active = allNotes.all(account);
@@ -242,9 +261,16 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     return getStatus(account);
   }
 
+  function syncAccount(account, options) {
+    consecutiveEmbedFailures = 0;
+    embedPausedUntil = 0;
+    accountState(account).embeddingError = null;
+    return reconcileAccount(account, options);
+  }
+
   function onNotesChanged(account, { upserts = [], deletes = [] }) {
     const state = accountState(account);
-    if (!state.ready) return syncAccount(account);
+    if (!state.ready) return reconcileAccount(account);
     try {
       transact(() => {
         for (const id of new Set([...upserts.map(note => note.id), ...deletes])) {
@@ -263,7 +289,7 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     const pending = [...queue.values(), ...inFlight].filter(job => job.account === account).length;
     return {
       provider, model, indexed: state.vectors.size,
-      total: countNotes.get(account).count, pending, indexing: pending > 0,
+      total: countNotes.get(account).count, pending, indexing: !isEmbedPaused() && pending > 0,
       ftsReady: state.ready, lastError: state.error ?? state.embeddingError,
     };
   }
@@ -300,7 +326,7 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
   }
 
   async function getRelatedNotes(account, noteId, limit = 10, { readOnly = false } = {}) {
-    if (!readOnly && !accountState(account).ready) await syncAccount(account);
+    if (!readOnly && !accountState(account).ready) await reconcileAccount(account);
     const row = currentNote.get(account, noteId);
     if (!row) return null;
     const state = retrievalState(account);
@@ -311,12 +337,12 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
       total: state.metadata.size, related };
   }
 
-  async function searchNotes(account, query, { limit = 10, excludeIds = [], readOnly = false } = {}) {
-    if (!readOnly && !accountState(account).ready) await syncAccount(account);
+  async function searchNotes(account, query, { limit = 10, excludeIds = [], includeIds, readOnly = false } = {}) {
+    if (!readOnly && !accountState(account).ready) await reconcileAccount(account);
     const queryTokens = tokenizeForFts(query);
     if (!queryTokens.length) return { mode: 'lexical', items: [] };
     let vector;
-    if (accountState(account).vectors.size) {
+    if (!isEmbedPaused() && accountState(account).vectors.size) {
       try { [vector] = await embedTexts([query], true); }
       catch (error) {
         accountState(account).embeddingError = error.message || '无法生成查询向量。';
@@ -324,7 +350,7 @@ export function createSemanticEngine({ database, env = {}, embedder }) {
     }
     const state = retrievalState(account);
     return { mode: vector ? 'hybrid' : 'lexical',
-      items: retrieve(account, state, queryTokens, { limit, excludeIds, vector }) };
+      items: retrieve(account, state, queryTokens, { limit, excludeIds, includeIds, vector }) };
   }
 
   return { syncAccount, onNotesChanged, recordError, waitIdle, getStatus, getRelatedNotes, searchNotes };

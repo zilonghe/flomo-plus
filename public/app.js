@@ -1,7 +1,7 @@
 import { parseWeRead, readWeReadFile } from './weread.js';
 import { parseFlomoFile } from './flomo.js';
 import { randomUUID } from './crypto.js';
-import { tagsFor, buildTagTree, tokenizeBody, appendCitedText } from './ux-helpers.js';
+import { tagsFor, buildTagTree, tokenizeBody, appendCitedText, renderSafeMarkdown } from './ux-helpers.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -160,6 +160,7 @@ function updateProfile() {
 let accountEpoch = 0;
 function resetAccount() {
   accountEpoch++;
+  closeInsights({ restore: false });
   ai.sending?.abort();
   ai.profileRequest?.abort();
   resetAIDrawer();
@@ -1290,7 +1291,6 @@ function openNote(id) {
   setError('detail-error', '');
   setError('chat-error', '');
   renderDetail();
-  refreshNoteChatProfile();
   if (!dialog.open) dialog.showModal();
   dialog.querySelector('.dialog-scroll').scrollTop = 0;
   return true;
@@ -1401,23 +1401,9 @@ function chatCard(turn, index, body, saved = true) {
 function updateNoteChatPrivacy() {
   const destination = providerSettings().provider === 'openai' ? 'OpenAI'
     : state.codexMode === 'gateway' ? 'Codex 服务端网关' : 'Codex 中转';
-  const materials = ['当前笔记', '近期对话'];
-  if ($('note-chat-related').checked) {
-    materials.push('匹配的历史笔记');
-    if (ai.profile === undefined) materials.push('个人画像（如已启用）');
-    else if (ai.profile?.enabled && ai.profile.content.trim()) materials.push('长期个人画像');
-  }
-  $('chat-privacy').textContent = '发送给 ' + destination + '：' + materials.join('、') + '。';
-}
-
-async function refreshNoteChatProfile() {
-  const view = ai;
-  const previous = view.profile;
-  if (view.profileTask) return;
-  const result = await request('/api/ai/profile').catch(() => null);
-  if (ai !== view || view.profileTask || view.profile !== previous) return;
-  view.profile = result?.profile;
-  updateNoteChatPrivacy();
+  $('chat-privacy').textContent = '发送给 ' + destination + ($('note-chat-related').checked
+    ? '：当前笔记、近期对话、匹配的历史笔记（如已启用，也会发送个人画像）。'
+    : '：当前笔记、近期对话。');
 }
 
 function renderChat(note) {
@@ -2451,6 +2437,7 @@ function shuffleWalk() {
 
 function openRandomWalk(button) {
   if (!state.loaded || !$('random-walk-overlay').hidden) return;
+  closeInsights({ restore: false });
   rw.scrollY = window.scrollY;
   rw.opener = button;
   rw.zoom = 1;
@@ -2781,17 +2768,387 @@ function promoteNoteChat() {
   closeNote(true);
   if (!newAISession(note)) return;
   closeRandomWalk();
+  closeInsights();
   openAIDrawer();
 }
+
+const insOverlay = $('ai-insights-overlay');
+const insRanges = { '7d': '最近 7 天', week: '本周', month: '本月', all: '不限日期', custom: '自定义日期' };
+let ins = null;
+
+function insScope() {
+  return {
+    range: ins.range, tags: [...ins.tags], tzOffsetMinutes: new Date().getTimezoneOffset(),
+    ...(ins.range === 'custom' ? { startDate: $('ins-start-date').value, endDate: $('ins-end-date').value } : {}),
+  };
+}
+
+function insPressed(button, on) {
+  button.setAttribute('aria-pressed', String(on));
+}
+
+function renderInsControls() {
+  const { tab, report, run, stats, lenses, lensId } = ins;
+  for (const name of ['new', 'discover', 'history']) $('ins-panel-' + name).hidden = Boolean(report) || name !== tab;
+  $('ins-report-view').hidden = !report;
+  $('ins-scope').hidden = Boolean(report) || tab === 'history';
+  $('ins-run-bar').hidden = !run && (Boolean(report) || tab === 'history');
+  insOverlay.querySelectorAll('[data-tab]').forEach(button => insPressed(button, button.dataset.tab === tab));
+  $('ins-custom-dates').hidden = ins.range !== 'custom';
+  insOverlay.querySelectorAll('[data-ins-range]').forEach(button => insPressed(button, button.dataset.insRange === ins.range));
+  insOverlay.querySelectorAll('[data-ins-tag]').forEach(button => insPressed(button, ins.tags.has(button.dataset.insTag)));
+  insPressed(insOverlay.querySelector('[data-action="ins-clear-tags"]'), !ins.tags.size);
+  $('ins-stat-notes').textContent = stats?.noteCount ?? '—';
+  $('ins-stat-tags').textContent = stats?.tagCount ?? '—';
+  $('ins-stat-days').textContent = stats?.dayCount ?? '—';
+  $('ins-sampling').hidden = !stats?.willSample;
+  insOverlay.querySelectorAll('[data-action="ins-select-lens"]').forEach(button => insPressed(button, button.dataset.lensId === lensId));
+  $('ins-selected-lens').textContent = lenses.find(lens => lens.id === lensId)?.name ?? '';
+  insOverlay.querySelector('[data-action="ins-run"]').disabled = !lensId || !stats?.noteCount || Boolean(run);
+  insOverlay.querySelector('[data-action="ins-cancel"]').hidden = !run;
+}
+
+function renderInsTags(query = '') {
+  const tags = state.noteIndex?.tagNames ?? new Map();
+  const search = query.trim().toLowerCase();
+  const selected = [...ins.tags].map(key => [key, tags.get(key) ?? key]);
+  const matches = [...tags].filter(([key]) => !ins.tags.has(key) && key.includes(search)).slice(0, 32);
+  const buttons = [...selected, ...matches].map(([key, name]) => {
+    const button = actionButton('#' + name, 'ins-toggle-tag');
+    button.dataset.insTag = key;
+    insPressed(button, ins.tags.has(key));
+    return button;
+  });
+  $('ins-tag-list').replaceChildren(...buttons);
+}
+
+function insLensCard(lens) {
+  const card = el('div', 'ins-lens');
+  const button = actionButton('', 'ins-select-lens');
+  button.className = 'ins-lens-card';
+  button.dataset.lensId = lens.id;
+  button.append(el('strong', '', lens.name), el('span', '', lens.description));
+  card.append(button);
+  if (!lens.builtin) {
+    const tools = el('div', 'ins-lens-tools');
+    const edit = actionButton('编辑', 'ins-edit-lens');
+    const remove = actionButton('删除', 'ins-delete-lens');
+    edit.dataset.id = remove.dataset.id = lens.id;
+    tools.append(edit, remove);
+    card.append(tools);
+  }
+  return card;
+}
+
+function renderInsLenses() {
+  const { lenses, categories, cat } = ins;
+  $('ins-featured-grid').replaceChildren(...lenses.filter(lens => lens.featured).map(insLensCard));
+  const custom = lenses.filter(lens => !lens.builtin);
+  const customButton = actionButton('新建自定义视角', 'ins-create-lens');
+  $('ins-custom-grid').replaceChildren(...(custom.length ? custom.map(insLensCard) : [customButton]));
+  $('ins-category-list').replaceChildren(...['全部', ...categories, '自定义'].map(category => {
+    const button = actionButton(category, 'ins-category');
+    button.dataset.insCat = category;
+    insPressed(button, category === cat);
+    return button;
+  }));
+  $('ins-discover-grid').replaceChildren(...lenses.filter(lens => cat === '全部' ||
+    (cat === '自定义' ? !lens.builtin : lens.category === cat)).map(insLensCard));
+  renderInsControls();
+}
+
+function insCount(report) {
+  return report.analyzedCount === report.noteCount
+    ? `已分析 ${report.analyzedCount} 条笔记`
+    : `已从 ${report.noteCount} 条中精选分析 ${report.analyzedCount} 条`;
+}
+
+function renderInsHistory() {
+  $('ins-history-list').replaceChildren(...(ins.reports.length ? ins.reports.map(report => {
+    const row = el('div', 'ins-history-row');
+    const open = actionButton('', 'ins-open-report');
+    open.className = 'ins-lens-card';
+    const remove = actionButton('删除', 'ins-delete-report', 'button-danger');
+    open.dataset.id = remove.dataset.id = report.id;
+    open.append(el('strong', '', report.title), el('span', '', [report.lensName, dayKey(new Date(report.createdAt)), insCount(report)].join(' · ')));
+    row.append(open, remove);
+    return row;
+  }) : [el('p', 'privacy-note', '暂无历史报告')]));
+}
+
+function showInsReport(report) {
+  ins.report = report;
+  const { range, startDate, endDate, tags } = report.scope;
+  const dates = range === 'custom' ? startDate + ' 至 ' + endDate : insRanges[range];
+  $('ins-report-meta').textContent = [report.lensName, dates, ...(tags ?? []).map(tag => '#' + tag), insCount(report)].filter(Boolean).join(' · ');
+  renderSafeMarkdown($('ins-report-body'), report.content, report.citations);
+  renderInsControls();
+  $('ins-scroll').scrollTop = 0;
+  $('ins-report-view').tabIndex = -1;
+  $('ins-report-view').focus({ preventScroll: true });
+}
+
+async function previewInsScope() {
+  const view = ins;
+  view.preview?.abort();
+  view.stats = null;
+  renderInsControls();
+  const scope = insScope();
+  if (scope.range === 'custom' && (!scope.startDate || !scope.endDate || scope.startDate > scope.endDate)) {
+    setError('ins-error', scope.startDate && scope.endDate ? '起始日期不能晚于结束日期。' : '');
+    return;
+  }
+  setError('ins-error', '');
+  const controller = new AbortController();
+  view.preview = controller;
+  try {
+    const stats = await request('/api/insights/preview', { scope }, controller.signal);
+    if (ins !== view || controller.signal.aborted) return;
+    view.stats = stats;
+    renderInsControls();
+  } catch (error) {
+    if (ins === view && !controller.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
+  }
+}
+
+async function loadInsLenses(view) {
+  try {
+    const result = await request('/api/insights/lenses');
+    if (ins !== view) return;
+    view.lenses = result.lenses;
+    view.categories = result.categories;
+    view.lensId = view.lenses.find(lens => lens.id === 'builtin:default')?.id ?? view.lenses[0]?.id;
+    renderInsLenses();
+  } catch (error) {
+    if (ins === view) setError('ins-error', error.message);
+  }
+}
+
+async function loadInsReports(view) {
+  const revision = ++view.historyRevision;
+  try {
+    const { reports } = await request('/api/insights/reports');
+    if (ins !== view || revision !== view.historyRevision) return;
+    view.reports = reports;
+    renderInsHistory();
+  } catch (error) {
+    if (ins === view && revision === view.historyRevision) setError('ins-error', error.message);
+  }
+}
+
+function openInsights(opener) {
+  if (ins) return;
+  if (!state.loaded) { notify('请先登录并完成同步'); return; }
+  closeRandomWalk({ restore: false });
+  closeAIDrawer();
+  const view = ins = {
+    opener, scrollY: window.scrollY, tab: 'new', cat: '全部', range: '7d', tags: new Set(),
+    lenses: [], categories: [], lensId: null, stats: null, reports: [], historyRevision: 0,
+    report: null, reportRevision: 0, preview: null, run: null, lensDraft: null, requestKey: null,
+  };
+  $('ins-start-date').value = dayKey(new Date());
+  $('ins-end-date').value = $('ins-start-date').value;
+  $('ins-use-profile').checked = false;
+  $('ins-tag-search').value = '';
+  sidebar(false);
+  insOverlay.hidden = false;
+  document.querySelector('.shell').inert = true;
+  $('ai-fab').inert = true;
+  $('ins-scroll').scrollTop = 0;
+  insOverlay.querySelector('[data-action="ins-close"]').focus({ preventScroll: true });
+  renderInsTags();
+  renderInsLenses();
+  renderInsHistory();
+  loadInsReports(view);
+  loadInsLenses(view);
+  previewInsScope();
+}
+
+function closeInsights({ restore = true } = {}) {
+  const view = ins;
+  if (!view) return;
+  ins = null;
+  view.preview?.abort();
+  view.run?.abort();
+  insOverlay.hidden = true;
+  if ($('insight-lens-dialog').open) $('insight-lens-dialog').close();
+  $('ins-lens-form').reset();
+  $('ins-lens-form').querySelector('button[type="submit"]').disabled = false;
+  for (const id of ['ins-report-body', 'ins-report-meta', 'ins-tag-list', 'ins-featured-grid', 'ins-custom-grid', 'ins-category-list', 'ins-discover-grid', 'ins-history-list']) {
+    $(id).replaceChildren();
+  }
+  $('ins-report-view').hidden = true;
+  for (const id of ['ins-stat-notes', 'ins-stat-tags', 'ins-stat-days', 'ins-selected-lens']) $(id).textContent = '';
+  $('ins-tag-search').value = '';
+  $('ins-use-profile').checked = false;
+  setError('ins-error', '');
+  setError('ins-lens-error', '');
+  document.querySelector('.shell').inert = false;
+  $('ai-fab').inert = false;
+  if (restore) {
+    (view.opener.getClientRects().length ? view.opener : $('mobile-toggle')).focus({ preventScroll: true });
+    window.scrollTo(0, view.scrollY);
+  }
+}
+
+function setInsTab(tab) {
+  ins.tab = tab;
+  ins.report = null;
+  ins.reportRevision++;
+  $('ins-report-body').replaceChildren();
+  $('ins-scroll').scrollTop = 0;
+  setError('ins-error', '');
+  renderInsControls();
+  if (tab === 'history') loadInsReports(ins);
+}
+
+function openInsLens(id) {
+  const lens = ins.lenses.find(item => item.id === id);
+  const dialog = $('insight-lens-dialog');
+  ins.lensDraft = { id: lens?.id };
+  $('ins-lens-title').textContent = lens ? '编辑自定义视角' : '新建自定义视角';
+  $('ins-lens-name').value = lens?.name ?? '';
+  $('ins-lens-desc').value = lens?.description ?? '';
+  $('ins-lens-prompt').value = lens?.prompt ?? '';
+  $('ins-lens-category').value = lens?.category ?? '';
+  $('ins-lens-suggested').value = lens?.suggestedRange ?? '';
+  setError('ins-lens-error', '');
+  dialog.showModal();
+}
+
+async function saveInsLens(event) {
+  event.preventDefault();
+  const view = ins;
+  const draft = view?.lensDraft;
+  if (!draft || draft.saving) return;
+  const submit = event.currentTarget.querySelector('button[type="submit"]');
+  const category = $('ins-lens-category').value.trim();
+  const body = {
+    id: draft.id, name: $('ins-lens-name').value, description: $('ins-lens-desc').value,
+    prompt: $('ins-lens-prompt').value, suggestedRange: $('ins-lens-suggested').value || null,
+    ...(category ? { category } : {}),
+  };
+  submit.disabled = draft.saving = true;
+  setError('ins-lens-error', '');
+  try {
+    const { lens } = await request('/api/insights/lenses', body);
+    if (ins !== view) return;
+    view.lenses = [lens, ...view.lenses.filter(item => item.id !== lens.id)];
+    renderInsLenses();
+    if (view.lensDraft === draft) $('insight-lens-dialog').close();
+  } catch (error) {
+    if (ins === view && view.lensDraft === draft) setError('ins-lens-error', error.message);
+  } finally {
+    if (ins === view && view.lensDraft === draft) submit.disabled = false;
+  }
+}
+
+async function deleteInsLens(id) {
+  const view = ins;
+  try {
+    await request('/api/insights/lenses/' + id, undefined, undefined, 'DELETE');
+    if (ins !== view) return;
+    view.lenses = view.lenses.filter(lens => lens.id !== id);
+    if (view.lensId === id) view.lensId = view.lenses[0]?.id ?? null;
+    renderInsLenses();
+  } catch (error) {
+    if (ins === view) setError('ins-error', error.message);
+  }
+}
+
+async function runInsightReport() {
+  const view = ins;
+  if (view.run || !view.lensId || !view.stats?.noteCount) return;
+  const settings = providerSettings();
+  if (settings.provider === 'openai' && !settings.apiKey) {
+    setError('ins-error', '请先在设置里填写 OpenAI API Key。');
+    openSettings();
+    return;
+  }
+  const body = { ...settings, scope: insScope(), lensId: view.lensId, useProfile: $('ins-use-profile').checked };
+  const signature = JSON.stringify({ ...body, apiKey: undefined });
+  if (view.requestKey?.signature !== signature) view.requestKey = { signature, id: randomUUID() };
+  const controller = view.run = new AbortController();
+  setError('ins-error', '');
+  renderInsControls();
+  try {
+    const { report } = await request('/api/insights/run', { ...body, clientRequestId: view.requestKey.id }, controller.signal);
+    if (ins !== view || controller.signal.aborted) return;
+    view.requestKey = null;
+    view.reportRevision++;
+    view.historyRevision++;
+    view.reports = [report, ...view.reports.filter(item => item.id !== report.id)].slice(0, 50);
+    renderInsHistory();
+    showInsReport(report);
+  } catch (error) {
+    if (ins === view && !controller.signal.aborted && error.name !== 'AbortError') setError('ins-error', error.message);
+  } finally {
+    if (ins === view && view.run === controller) {
+      view.run = null;
+      renderInsControls();
+    }
+  }
+}
+
+function cancelInsRun() {
+  ins.run?.abort();
+  ins.run = null;
+  ins.requestKey = null;
+  renderInsControls();
+}
+
+async function openInsReport(id) {
+  const view = ins;
+  const revision = ++view.reportRevision;
+  try {
+    const { report } = await request('/api/insights/reports/' + id);
+    if (ins === view && revision === view.reportRevision) showInsReport(report);
+  } catch (error) {
+    if (ins === view && revision === view.reportRevision) setError('ins-error', error.message);
+  }
+}
+
+async function deleteInsReport(id) {
+  const view = ins;
+  try {
+    await request('/api/insights/reports/' + id, undefined, undefined, 'DELETE');
+    if (ins !== view) return;
+    view.reportRevision++;
+    view.historyRevision++;
+    view.reports = view.reports.filter(report => report.id !== id);
+    if (view.report?.id === id) setInsTab('history');
+    renderInsHistory();
+  } catch (error) {
+    if (ins === view) setError('ins-error', error.message);
+  }
+}
+
+function continueInsightChat() {
+  const report = ins.report;
+  if (!report) return;
+  if (ai.loadingSession || !newAISession()) { setError('ins-error', '请等待当前对话完成。'); return; }
+  const noteIds = new Set(report.citations.map(cite => cite.noteId).filter(id => state.notes.has(id)));
+  ai.pins = new Set([...noteIds].slice(0, 10));
+  renderAIPins();
+  $('ai-drawer-input').value = `我想继续探讨《${report.title}》（${report.lensName}）里的发现：\n\n${report.content.slice(0, 1400)}`.slice(0, 2000);
+  closeInsights();
+  openAIDrawer();
+}
+
+$('ins-lens-form').addEventListener('submit', saveInsLens);
+$('insight-lens-dialog').addEventListener('close', () => {
+  if (ins) ins.lensDraft = null;
+  $('ins-lens-form').reset();
+  $('ins-lens-form').querySelector('button[type="submit"]').disabled = false;
+});
+$('ins-tag-search').addEventListener('input', event => { if (ins) renderInsTags(event.target.value); });
+for (const id of ['ins-start-date', 'ins-end-date']) $(id).addEventListener('change', () => { if (ins) previewInsScope(); });
 
 const walkResize = new ResizeObserver(drawWalkLinks);
 walkResize.observe($('rw-stage'));
 $('rw-related').addEventListener('scroll', drawWalkLinks, { passive: true });
 $('ai-drawer-form').addEventListener('submit', sendDrawerChat);
-$('note-chat-related').addEventListener('change', () => {
-  updateNoteChatPrivacy();
-  if ($('note-chat-related').checked) refreshNoteChatProfile();
-});
+$('note-chat-related').addEventListener('change', updateNoteChatPrivacy);
 $('ai-note-picker-search').addEventListener('input', renderNotePicker);
 $('ai-drawer-input').addEventListener('input', event => {
   const input = event.target;
@@ -2801,6 +3158,45 @@ $('ai-drawer-input').addEventListener('input', event => {
 $('sign-out').addEventListener('click', resetAccount);
 
 const actions = {
+  'open-ai-insights': openInsights,
+  'ins-close': () => closeInsights(),
+  'ins-tab': button => setInsTab(button.dataset.tab),
+  'ins-select-range': button => { ins.range = button.dataset.insRange; previewInsScope(); },
+  'ins-toggle-tag': button => {
+    const tag = button.dataset.insTag;
+    if (ins.tags.has(tag)) ins.tags.delete(tag);
+    else if (ins.tags.size < 20) ins.tags.add(tag);
+    else { setError('ins-error', '最多选择 20 个标签。'); return; }
+    previewInsScope();
+  },
+  'ins-clear-tags': () => { ins.tags.clear(); renderInsTags($('ins-tag-search').value); previewInsScope(); },
+  'ins-category': button => {
+    ins.cat = button.dataset.insCat;
+    renderInsLenses();
+    [...$('ins-category-list').children].find(item => item.dataset.insCat === ins.cat)?.focus();
+  },
+  'ins-select-lens': button => {
+    ins.lensId = button.dataset.lensId;
+    const suggested = ins.lenses.find(lens => lens.id === ins.lensId)?.suggestedRange;
+    if (ins.tab === 'discover' && suggested && suggested !== ins.range) {
+      ins.range = suggested;
+      previewInsScope();
+    } else renderInsControls();
+  },
+  'ins-new-lens': () => openInsLens(),
+  'ins-create-lens': () => openInsLens(),
+  'ins-edit-lens': button => openInsLens(button.dataset.id),
+  'ins-close-lens': () => $('insight-lens-dialog').close(),
+  'ins-delete-lens': button => deleteInsLens(button.dataset.id),
+  'ins-run': runInsightReport,
+  'ins-cancel': cancelInsRun,
+  'ins-open-report': button => openInsReport(button.dataset.id),
+  'ins-copy-report': () => { if (ins.report) copyText(ins.report.content); },
+  'ins-delete-report': button => {
+    const id = button.dataset.id ?? ins.report?.id;
+    if (id) deleteInsReport(id);
+  },
+  'ins-continue-chat': continueInsightChat,
   'open-random-walk': openRandomWalk,
   'rw-close': () => closeRandomWalk(),
   'rw-shuffle': shuffleWalk,
@@ -3115,10 +3511,11 @@ document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
   if (event.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
-    if (!$('ai-note-picker').hidden || !$('ai-drawer').hidden || !$('random-walk-overlay').hidden) {
+    if (!$('ai-note-picker').hidden || !$('ai-drawer').hidden || ins || !$('random-walk-overlay').hidden) {
       event.preventDefault();
       if (!$('ai-note-picker').hidden) closeNotePicker(true);
       else if (!$('ai-drawer').hidden) closeAIDrawer(true);
+      else if (ins) closeInsights();
       else closeRandomWalk();
       return;
     }

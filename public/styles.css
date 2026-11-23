@@ -297,3 +297,59 @@ hr{border:0;border-top:1px solid var(--line);margin:18px 0}
   .rw-controls{gap:2px}
 }
 @media(prefers-reduced-motion:reduce){#ai-drawer{animation:none}.rw-related-card{transition:none}}
+
+#ai-insights-overlay{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;background:#f6faf7;opacity:1;overscroll-behavior:contain;--ins-line:#dce9df}
+.ins-toolbar,#ins-run-bar{background:var(--paper);flex:none}
+.ins-toolbar{border-bottom:1px solid var(--ins-line)}
+.ins-toolbar-inner{max-width:1024px;margin:auto;display:flex;align-items:center;gap:8px;padding:12px clamp(14px,4vw,32px)}
+.ins-toolbar h2{margin:0 auto 0 0;font-size:19px;color:#164734;white-space:nowrap}
+.ins-toolbar h2 svg{color:var(--green-dark)}
+.ins-tabs,.ins-pills,.ins-report-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.ins-tabs button,.ins-pills button{border:1px solid transparent;border-radius:7px;background:transparent;padding:6px 10px;color:var(--muted);min-height:34px}
+.ins-pills button{background:#f4f7f5;text-align:left;overflow-wrap:anywhere}
+.ins-tabs button:hover,.ins-pills button:hover{background:var(--green-tint);color:#164734}
+.ins-tabs button[aria-pressed=true],.ins-pills button[aria-pressed=true]{background:var(--green-tint);border-color:#b8e2c8;color:#175936;font-weight:600}
+.ins-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.ins-content{max-width:1024px;margin:auto;padding:clamp(14px,4vw,32px)}
+.ins-surface{background:var(--paper);border:1px solid var(--ins-line);border-radius:12px;padding:clamp(14px,3vw,24px)}
+.ins-scope-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.ins-scope-top h3{margin:0;font-size:16px}
+.ins-scope-top label,.ins-tags,.ins-stats,#ins-report-meta{color:var(--muted);font-size:13px}
+#ins-custom-dates,.ins-tags{margin-top:12px}
+#ins-custom-dates label{display:flex;align-items:center;gap:5px}
+#ins-custom-dates input{width:auto;min-width:0}
+#ins-tag-label{display:block;margin-bottom:5px}
+#ins-tag-list{min-width:0;max-height:114px;overflow:auto;padding:3px}
+.ins-stats{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:12px;padding-top:10px;border-top:1px solid var(--ins-line)}
+.ins-stats strong{font-size:17px;color:#164734;font-variant-numeric:tabular-nums}
+#ins-sampling{margin-left:auto;align-self:center}
+#ins-panel-new h3{font-size:16px;margin:21px 0 10px}
+#ins-category-list{margin:18px 0 10px}
+.ins-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:10px}
+.ins-lens{display:flex;flex-direction:column;min-width:0;background:var(--paper);border:1px solid var(--ins-line);border-radius:10px}
+.ins-lens:has(.ins-lens-card[aria-pressed=true]){border-color:#73bb92;background:#f1fbf5}
+.ins-lens-card{flex:1;display:grid;align-content:start;gap:5px;text-align:left;border:0;border-radius:9px;background:transparent;color:var(--ink);padding:14px;overflow-wrap:anywhere}
+.ins-lens-card:hover{background:var(--green-tint)}
+.ins-lens-card span{color:var(--muted);font-size:13px;line-height:1.45}
+.ins-lens-tools{display:flex;gap:6px;padding:0 10px 8px}
+.ins-lens-tools .button{min-height:30px;padding:3px 8px;font-size:13px}
+#ins-run-bar{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:10px max(14px,calc((100% - 960px)/2)) max(10px,env(safe-area-inset-bottom));border-top:1px solid var(--ins-line)}
+#ins-selected-lens{flex:1;min-width:0;color:var(--muted);overflow-wrap:anywhere}
+.ins-history-row{display:flex;align-items:center;gap:8px;background:var(--paper);border:1px solid var(--ins-line);border-radius:10px;padding:8px 12px;margin-bottom:8px}
+.ins-history-row .ins-lens-card{min-width:0}
+#ins-report-view{max-width:760px;margin:auto}
+#ins-report-body{line-height:1.8;overflow-wrap:anywhere}
+#ins-report-body h2{margin:13px 0;font-size:23px;line-height:1.4}
+#ins-report-body h3{margin:18px 0 6px;font-size:17px}
+#ins-report-body p{white-space:pre-wrap}
+.ins-report-actions{padding-top:14px;margin-top:16px;border-top:1px solid var(--ins-line)}
+#ins-lens-form .field{width:100%}
+#ins-lens-form .field-label:not(:first-child){margin-top:12px}
+@media(max-width:540px){
+  .ins-toolbar-inner{flex-wrap:wrap}
+  .ins-tabs{order:1;width:100%}
+  .ins-tabs button{flex:1;padding:6px 3px}
+}
+.ins-tags .ins-scope-top{margin-bottom:4px}
+#ins-tag-label{margin:0}
+#ins-tag-search{width:min(100%,170px);min-height:30px;padding:4px 8px}
