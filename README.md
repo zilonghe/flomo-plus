@@ -104,3 +104,7 @@ xcrun devicectl device process launch --device "$WEIJI_DEVICE_ID" com.zilonghe.w
 ```
 
 首次启动如提示不受信任，在 iPhone「设置 → 通用 → VPN 与设备管理」信任开发者，再启动 App。在连接设置中填写 iPhone 能访问的服务地址与访问令牌。
+
+### 公开自托管
+
+公网环境使用 Caddy HTTPS、GitHub / Google OAuth 和邀请码准入，Web 与 iOS 共用账号。部署、迁移历史数据、管理员操作及 R2 备份见 [部署手册](deploy/DEPLOY.md)。本地开发仍可使用原有的 `PREVIEW_AUTH_TOKEN`。

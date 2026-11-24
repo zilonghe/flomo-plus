@@ -77,10 +77,11 @@ struct Turn: Codable, Sendable {
 }
 
 struct SessionInfo: Decodable, Sendable {
-    struct User: Decodable, Sendable { let id: String; let name: String }
+    struct User: Decodable, Sendable { let id: String; let name: String; let role: String? }
     let user: User
     let codexAvailable: Bool
     let codexMode: String?
+    let authMode: String?
     var defaultProvider: AIProvider { codexAvailable ? .codex : .openai }
 }
 

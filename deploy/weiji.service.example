@@ -1,0 +1,22 @@
+[Unit]
+Description=Weiji journal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weiji
+Group=weiji
+WorkingDirectory=/opt/weiji
+Environment=AUTH_MODE=oauth HOST=127.0.0.1 TRUST_PROXY=1
+EnvironmentFile=/etc/weiji/server.env
+UnsetEnvironment=ALLOW_INSECURE_PUBLIC_ORIGIN PREVIEW_AUTH_TOKEN
+ExecStart=/usr/bin/env AUTH_MODE=oauth HOST=127.0.0.1 TRUST_PROXY=1 /usr/bin/node --experimental-sqlite scripts/preview.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

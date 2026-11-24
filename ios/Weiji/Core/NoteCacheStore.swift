@@ -136,6 +136,14 @@ actor NoteCacheStore {
         try FileManager.default.removeItem(at: bindingURL(configuration.origin))
     }
 
+    func clearSession(_ configuration: ServerConfiguration, key: Key?) throws {
+        let binding = try matchingBinding(configuration)
+        if binding != nil { try revoke(configuration) }
+        if let account = key ?? binding.map({ Key(origin: configuration.origin, userId: $0.userId) }) {
+            try invalidate(account)
+        }
+    }
+
     private func matchingBinding(_ configuration: ServerConfiguration) throws -> Binding? {
         let url = bindingURL(configuration.origin)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }

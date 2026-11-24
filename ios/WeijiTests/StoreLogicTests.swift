@@ -479,6 +479,68 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(seen.withLock { $0 }, [nil, "Bearer origin-b-token"])
     }
 
+    func testLogoutRevokesSessionClearsStateAndBlocksOfflineFallback() async throws {
+        let revoked = OSAllocatedUnfairLock(initialState: false)
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/auth/logout":
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token-123")
+                revoked.withLock { $0 = true }
+                return .init(status: 200, body: #"{"ok":true}"#)
+            case "/api/session":
+                if revoked.withLock({ $0 }) { return .init(status: 0, body: "", failure: .notConnectedToInternet) }
+                return .init(status: 200, body: #"{"user":{"id":"account","name":"测试账户","role":"user"},"codexAvailable":false,"authMode":"oauth"}"#)
+            case "/api/notes": return .init(status: 200, body: notesFixture)
+            default: return .init(status: 500, body: "Unexpected request")
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let cache = NoteCacheStore(directory: directory)
+        let previousOrigin = UserDefaults.standard.string(forKey: "weiji.origin")
+        defer {
+            transport.invalidateAndCancel()
+            StubProtocol.remove(config)
+            UserDefaults.standard.set(previousOrigin, forKey: "weiji.origin")
+            try? FileManager.default.removeItem(at: directory)
+        }
+        var credentials: [String: String] = [:]
+        let tokens = KeychainStore.ServerTokens(
+            read: { credentials[$0] },
+            write: { token, origin in credentials[origin] = token.isEmpty ? nil : token }
+        )
+        let store = AppStore(cache: cache, serverTokens: tokens, makeTransport: StubProtocol.transport)
+        store.connect(config, save: true)
+        try await waitUntil("初次同步") { !store.syncing }
+        XCTAssertNotNil(store.notesById["note"], store.error ?? "Missing synced note")
+        XCTAssertEqual(tokens.read(config.origin), config.token)
+        let account = NoteCacheStore.Key(origin: config.origin, userId: "account")
+        let cached = try await cache.loadOffline(config)
+        XCTAssertNotNil(cached?.first)
+        store.chat.draft = "退出后清理草稿"
+
+        await store.logout()
+        XCTAssertTrue(revoked.withLock { $0 })
+        XCTAssertNil(tokens.read(config.origin))
+        XCTAssertNil(UserDefaults.standard.string(forKey: "weiji.origin"))
+        XCTAssertNil(store.configuration)
+        XCTAssertNil(store.identity)
+        XCTAssertNil(store.api)
+        XCTAssertTrue(store.results.isEmpty && store.notesById.isEmpty)
+        XCTAssertTrue(store.chat.draft.isEmpty)
+        let cachedAfter = try await cache.load(account)
+        let offlineAfter = try await cache.loadOffline(config)
+        XCTAssertNil(cachedAfter)
+        XCTAssertNil(offlineAfter)
+
+        let restarted = AppStore(initial: config, temporary: true, cache: cache, makeTransport: StubProtocol.transport)
+        restarted.start()
+        try await waitUntil("退出后离线重启") { !restarted.syncing }
+        XCTAssertFalse(restarted.isOffline)
+        XCTAssertTrue(restarted.notesById.isEmpty)
+        XCTAssertTrue(restarted.showSettings)
+    }
+
     private func waitUntil(_ reason: String, _ ready: () -> Bool) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(3)
@@ -543,7 +605,7 @@ final class StoreLogicTests: XCTestCase {
 private let sessionFixture = #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":false}"#
 private let notesFixture = #"{"notes":[{"id":"note","body":"原始版本","createdAt":"2025-02-01T00:00:00.000Z","turns":[],"revision":2}],"deleted":[]}"#
 
-private func jsonBody(_ request: URLRequest) -> [String: Any]? {
+func jsonBody(_ request: URLRequest) -> [String: Any]? {
     let data: Data
     if let body = request.httpBody {
         data = body

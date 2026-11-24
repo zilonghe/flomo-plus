@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Weiji SQLite backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+Unit=weiji-backup.service
+
+[Install]
+WantedBy=timers.target

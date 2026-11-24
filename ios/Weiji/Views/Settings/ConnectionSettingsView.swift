@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ConnectionSettingsDraft {
     private(set) var address: String
@@ -6,7 +7,7 @@ struct ConnectionSettingsDraft {
     private var tokenOrigin: String?
 
     init(configuration: ServerConfiguration?) {
-        address = configuration?.origin ?? "http://10.199.197.116:5173"
+        address = configuration?.origin ?? ""
         token = configuration?.token ?? ""
         tokenOrigin = configuration?.origin
     }
@@ -31,6 +32,13 @@ struct ConnectionSettingsView: View {
     @State private var error: String?
     @State private var semantic: SemanticStatus?
     @State private var indexing = false
+    @State private var oauth = OAuthSessionCoordinator()
+    @State private var providers: OAuthProviders?
+    @State private var loginBusy = false
+
+    private var origin: String? {
+        try? ServerConfiguration(address: draft.address, token: "").origin
+    }
 
     init(store: AppStore) {
         self.store = store
@@ -45,12 +53,27 @@ struct ConnectionSettingsView: View {
                 Section("自托管服务") {
                     TextField("服务器地址", text: Binding(get: { draft.address }, set: {
                         draft.setAddress($0, savedToken: store.savedConnectionToken(for:))
-                    }))
+                    }), prompt: Text("https://weiji.example.com"))
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("访问令牌", text: $draft.token).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("测试并连接", action: connect).disabled(store.syncing)
-                    if store.syncing { ProgressView("正在连接") }
+                        .disabled(loginBusy || store.signingOut)
+                    if let providers, providers.authMode == "oauth", providers.publicOrigin == origin {
+                        ForEach(providers.providers) { provider in
+                            Button("用 \(provider.name) 登录") { login(provider.id) }
+                                .disabled(loginBusy || store.syncing || store.signingOut)
+                        }
+                    }
+                    SecureField("手动访问令牌", text: $draft.token).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .disabled(loginBusy || store.signingOut)
+                    Button("测试并连接", action: connect).disabled(store.syncing || loginBusy || store.signingOut)
+                    if store.syncing || loginBusy || store.signingOut { ProgressView() }
                     if let user = store.identity?.user { LabeledContent("账户", value: user.name) }
+                    if store.identity != nil || store.isOffline {
+                        Button("退出登录", role: .destructive) {
+                            error = nil
+                            draft.token = ""
+                            Task { await store.logout() }
+                        }.disabled(loginBusy || store.signingOut)
+                    }
                     InlineError(message: error ?? store.error)
                 }
                 if store.api != nil {
@@ -69,9 +92,39 @@ struct ConnectionSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
             }
+            .task(id: origin) { await discoverProviders() }
             .onAppear {
                 if store.api != nil { updateIndex(rebuild: false) }
             }
+        }
+    }
+
+    private func discoverProviders() async {
+        providers = nil
+        guard let origin else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(350))
+            let config = try ServerConfiguration(address: origin, token: "")
+            let client = WeijiAPIClient(configuration: config)
+            defer { Task { await client.cancel() } }
+            let result = try await client.authProviders()
+            if !Task.isCancelled, self.origin == origin { providers = result }
+        } catch {}
+    }
+
+    private func login(_ provider: String) {
+        guard let origin else { return }
+        error = nil
+        loginBusy = true
+        Task {
+            defer { loginBusy = false }
+            do {
+                let pkce = try OAuthPKCE.generate()
+                let url = try pkce.startURL(origin: origin, provider: provider)
+                let callback = try await oauth.authenticate(url)
+                try await store.finishOAuth(origin: origin, callback: callback, pkce: pkce, deviceLabel: UIDevice.current.model)
+            } catch is CancellationError {
+            } catch { self.error = error.localizedDescription }
         }
     }
 

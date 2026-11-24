@@ -1,4 +1,6 @@
+import CommonCrypto
 import Foundation
+import Security
 
 struct ServerConfiguration: Equatable, Sendable {
     let origin: String
@@ -52,6 +54,85 @@ struct WeijiAPIError: LocalizedError {
     private struct Conflict<Value: Decodable>: Decodable { let current: Value? }
 }
 
+struct OAuthProviders: Decodable, Sendable {
+    struct Provider: Decodable, Identifiable, Sendable { let id: String; let name: String }
+    let authMode: String
+    let inviteRequired: Bool
+    let publicOrigin: String
+    let providers: [Provider]
+}
+
+struct OAuthExchange: Decodable, Sendable {
+    let token: String
+    let sessionId: String
+    let expiresAt: String
+}
+
+struct OAuthPKCE: Sendable {
+    static let callback = "weiji://auth/callback"
+    let verifier: String
+    let state: String
+
+    static func generate() throws -> Self {
+        Self(verifier: try randomValue(), state: try randomValue())
+    }
+
+    private static func randomValue() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = bytes.withUnsafeMutableBytes {
+            SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!)
+        }
+        guard status == errSecSuccess else { throw WeijiAPIError.interrupted }
+        return base64URL(bytes)
+    }
+
+    private static func base64URL(_ bytes: [UInt8]) -> String {
+        Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    var challenge: String {
+        let data = Data(verifier.utf8)
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { _ = CC_SHA256($0.baseAddress, CC_LONG($0.count), &digest) }
+        return Self.base64URL(digest)
+    }
+
+    func startURL(origin: String, provider: String) throws -> URL {
+        guard ["github", "google"].contains(provider),
+              var url = URLComponents(string: origin + "/auth/" + provider + "/start") else {
+            throw WeijiAPIError.interrupted
+        }
+        url.queryItems = [
+            .init(name: "client", value: "ios"),
+            .init(name: "code_challenge", value: challenge),
+            .init(name: "state", value: state),
+            .init(name: "redirect_uri", value: Self.callback)
+        ]
+        guard let target = url.url else { throw WeijiAPIError.interrupted }
+        return target
+    }
+
+    func code(from callbackURL: URL) throws -> String {
+        guard var parts = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+              parts.fragment == nil else { throw WeijiAPIError.interrupted }
+        let query = parts.queryItems ?? []
+        parts.query = nil
+        let states = query.filter { $0.name == "state" }
+        guard parts.string == Self.callback, states.count == 1, states[0].value == state else {
+            throw WeijiAPIError(status: 0, message: "登录回调与当前请求不匹配，请重新登录。")
+        }
+        if query.contains(where: { $0.name == "error" && $0.value == "account_disabled" }) {
+            throw WeijiAPIError(status: 403, message: "该账号已停用。")
+        }
+        let codes = query.filter { $0.name == "code" }
+        guard codes.count == 1, let code = codes[0].value, !code.isEmpty else { throw WeijiAPIError.interrupted }
+        return code
+    }
+}
+
 private final class NoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
@@ -87,7 +168,8 @@ actor WeijiAPIClient {
         guard path.hasPrefix("/api/"), let url = URL(string: configuration.origin + path) else {
             throw WeijiAPIError(status: 0, message: "无效的服务路径。")
         }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        let timeout: TimeInterval = ["/api/session", "/api/auth/providers"].contains(path) ? 10 : 90
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         if !configuration.token.isEmpty {
             request.setValue("Bearer " + configuration.token, forHTTPHeaderField: "Authorization")
@@ -114,6 +196,23 @@ actor WeijiAPIClient {
 
     func delete<Result: Decodable & Sendable>(_ path: String) async throws -> Result {
         try await send(request(path, method: "DELETE"))
+    }
+
+    func authProviders() async throws -> OAuthProviders {
+        try await get("/api/auth/providers")
+    }
+
+    func exchangeOAuthCallback(_ callback: URL, pkce: OAuthPKCE, deviceLabel: String) async throws -> OAuthExchange {
+        let code = try pkce.code(from: callback)
+        return try await post("/api/auth/exchange", [
+            "code": code, "codeVerifier": pkce.verifier, "deviceLabel": deviceLabel
+        ])
+    }
+
+    func logout() async throws {
+        struct Result: Decodable { let ok: Bool }
+        let result: Result = try await send(request("/api/auth/logout", method: "POST"))
+        if !result.ok { throw WeijiAPIError.interrupted }
     }
 
     private func send<Result: Decodable>(_ request: URLRequest) async throws -> Result {

@@ -62,7 +62,8 @@ function currentUser(request) {
       name = "";
     }
   }
-  return { id, name: name || email || "我的笔记", email };
+  const role = request.headers.get("oai-authenticated-user-role") === "admin" ? "admin" : "user";
+  return { id, name: name || email || "我的笔记", email, role };
 }
 
 function validateOrigin(request, origin) {
@@ -1189,7 +1190,7 @@ async function api(request, url, env) {
   if (request.method === "GET") {
     if (path === "/api/session") {
       const codexMode = serverAI(env) ? "gateway" : codexRelay(env) ? "relay" : null;
-      return json({ user, codexAvailable: codexMode !== null, codexMode });
+      return json({ user, authMode: request.headers.get("oai-authenticated-auth-mode") || "legacy", codexAvailable: codexMode !== null, codexMode });
     }
     if (path === "/api/ai/models") return json(await listGatewayModels(env));
     if (path === "/api/notes") return listNotes(env.DB, account);

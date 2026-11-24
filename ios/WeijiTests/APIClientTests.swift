@@ -1,4 +1,5 @@
 import Foundation
+import os
 import XCTest
 @testable import Weiji
 
@@ -141,6 +142,89 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(related.related.first?.relevancePercent, 47)
         let readOnly = Data(#"{"id":"x","body":"x","createdAt":"2025-02-01T00:00:00.000Z","turns":[]}"#.utf8)
         XCTAssertThrowsError(try JSONDecoder().decode(Note.self, from: readOnly))
+    }
+
+    func testProbeRequestsUse10SecondTimeoutWhileDefaultIs90() async throws {
+        let config = try ServerConfiguration(address: "https://weiji.example", token: "")
+        let client = WeijiAPIClient(configuration: config)
+        for (path, timeout) in [("/api/session", 10.0), ("/api/auth/providers", 10.0), ("/api/notes", 90.0)] {
+            let request = try await client.request(path)
+            XCTAssertEqual(request.timeoutInterval, timeout, path)
+        }
+        await client.cancel()
+    }
+
+    @MainActor
+    func testOAuthPKCEChallengeMatchesRFC7636AndExchangesCode() async throws {
+        let pkce = OAuthPKCE(verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", state: "expected-state")
+        XCTAssertEqual(pkce.challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        let requests = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            requests.withLock { $0 += 1 }
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/auth/exchange")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            let body = jsonBody(request)
+            XCTAssertEqual(body?["code"] as? String, "app-code")
+            XCTAssertEqual(body?["codeVerifier"] as? String, pkce.verifier)
+            XCTAssertEqual(body?["deviceLabel"] as? String, "iPhone")
+            return .init(status: 200, body: #"{"token":"issued-token","sessionId":"new-session","expiresAt":"2026-11-24T08:51:00Z"}"#)
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let start = try pkce.startURL(origin: config.origin, provider: "github")
+        let query = URLComponents(url: start, resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(query?.first { $0.name == "code_challenge" }?.value, pkce.challenge)
+        XCTAssertEqual(query?.first { $0.name == "redirect_uri" }?.value, OAuthPKCE.callback)
+
+        var credentialWrites = 0
+        let tokens = KeychainStore.ServerTokens(read: { _ in nil }, write: { _, _ in credentialWrites += 1 })
+        let store = AppStore(reset: true, serverTokens: tokens, makeTransport: StubProtocol.transport)
+        let wrong = try XCTUnwrap(URL(string: "weiji://auth/callback?code=app-code&state=wrong"))
+        do {
+            try await store.finishOAuth(origin: config.origin, callback: wrong, pkce: pkce, deviceLabel: "iPhone")
+            XCTFail("Mismatched state must stop login")
+        } catch let error as WeijiAPIError {
+            XCTAssertEqual(error.status, 0)
+        }
+        XCTAssertEqual(requests.withLock { $0 }, 0)
+        XCTAssertNil(store.configuration)
+        XCTAssertEqual(credentialWrites, 0)
+
+        let right = try XCTUnwrap(URL(string: "weiji://auth/callback?code=app-code&state=expected-state"))
+        let anonymous = try ServerConfiguration(address: config.origin, token: "")
+        let exchange = try await WeijiAPIClient(configuration: anonymous, transport: transport)
+            .exchangeOAuthCallback(right, pkce: pkce, deviceLabel: "iPhone")
+        XCTAssertEqual(exchange.token, "issued-token")
+        XCTAssertEqual(exchange.sessionId, "new-session")
+        XCTAssertEqual(requests.withLock { $0 }, 1)
+    }
+
+    func testAuthProvidersDecodingAndLogoutRevocationRequest() async throws {
+        let revocations = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            if request.url?.path == "/api/auth/providers" {
+                XCTAssertEqual(request.httpMethod, "GET")
+                return .init(status: 200, body: #"{"authMode":"oauth","publicOrigin":"https://weiji.example","inviteRequired":true,"providers":[{"id":"github","name":"GitHub"},{"id":"google","name":"Google"}]}"#)
+            }
+            XCTAssertEqual(request.url?.path, "/api/auth/logout")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token-123")
+            let server = request.url.flatMap { URL(string: "/", relativeTo: $0)?.absoluteURL }
+            let expectedOrigin = server.flatMap { try? ServerConfiguration(address: $0.absoluteString, token: "").origin }
+            XCTAssertNotNil(expectedOrigin)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), expectedOrigin)
+            revocations.withLock { $0 += 1 }
+            return .init(status: 200, body: #"{"ok":true}"#)
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let client = WeijiAPIClient(configuration: config, transport: transport)
+        let result = try await client.authProviders()
+        XCTAssertEqual(result.authMode, "oauth")
+        XCTAssertEqual(result.publicOrigin, "https://weiji.example")
+        XCTAssertTrue(result.inviteRequired)
+        XCTAssertEqual(result.providers.map(\.id), ["github", "google"])
+        try await client.logout()
+        XCTAssertEqual(revocations.withLock { $0 }, 1)
     }
 
     private func bytes(_ value: String) -> AsyncStream<UInt8> {

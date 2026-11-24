@@ -23,6 +23,7 @@ final class AppStore {
     private(set) var api: WeijiAPIClient?
     private(set) var configuration: ServerConfiguration?
     private(set) var syncing = false
+    private(set) var signingOut = false
     private(set) var isOffline = false
     var options = AIOptions()
     var gatewayModels: [String] = []
@@ -32,6 +33,7 @@ final class AppStore {
     @ObservationIgnored private let cache: NoteCacheStore
     @ObservationIgnored private let temporary: Bool
     @ObservationIgnored private let initial: ServerConfiguration?
+    @ObservationIgnored private let serverTokens: KeychainStore.ServerTokens
     @ObservationIgnored private let makeTransport: () -> URLSession?
     @ObservationIgnored private var accountKey: NoteCacheStore.Key?
     @ObservationIgnored private var rejectedChatDraft: (key: NoteCacheStore.Key, text: String)?
@@ -47,9 +49,11 @@ final class AppStore {
     @ObservationIgnored private var offlineFallbackAllowed = true
 
     init(initial: ServerConfiguration? = nil, temporary: Bool = false, reset: Bool = false,
-         cache: NoteCacheStore? = nil, makeTransport: @escaping () -> URLSession? = { nil }) {
+         cache: NoteCacheStore? = nil, serverTokens: KeychainStore.ServerTokens? = nil,
+         makeTransport: @escaping () -> URLSession? = { nil }) {
         self.initial = initial
         self.temporary = temporary
+        self.serverTokens = serverTokens ?? .live
         self.makeTransport = makeTransport
         self.cache = cache ?? (reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore())
     }
@@ -59,7 +63,7 @@ final class AppStore {
         started = true
         if let initial { connect(initial, save: false); return }
         if let origin = UserDefaults.standard.string(forKey: "weiji.origin"),
-           let token = KeychainStore.read(origin: origin),
+           let token = serverTokens.read(origin),
            let config = try? ServerConfiguration(address: origin, token: token) {
             connect(config, save: false)
         } else {
@@ -68,6 +72,7 @@ final class AppStore {
     }
 
     func connect(_ config: ServerConfiguration, save: Bool) {
+        guard !signingOut else { return }
         let previousKey = accountKey
         let previous = configuration
         if let previous, previous != config { offlineFallbackAllowed = false }
@@ -92,7 +97,7 @@ final class AppStore {
                 try Task.checkCancellation()
                 guard stamp == connectionGeneration else { return }
                 if save && !temporary {
-                    try KeychainStore.write(config.token, origin: config.origin)
+                    try serverTokens.write(config.token, config.origin)
                     UserDefaults.standard.set(config.origin, forKey: "weiji.origin")
                 }
                 try? await cache.bind(config, userId: session.user.id)
@@ -143,7 +148,7 @@ final class AppStore {
         }
     }
 
-    private func resetConnection(to config: ServerConfiguration) {
+    private func resetConnection(to config: ServerConfiguration?) {
         connectionTask?.cancel()
         refreshTask?.cancel()
         searchTask?.cancel()
@@ -171,6 +176,49 @@ final class AppStore {
         walk.reset()
         chat.reset()
         insights.reset()
+    }
+
+    func finishOAuth(origin: String, callback: URL, pkce: OAuthPKCE, deviceLabel: String) async throws {
+        let generation = connectionGeneration
+        let config = try ServerConfiguration(address: origin, token: "")
+        let client = WeijiAPIClient(configuration: config, transport: makeTransport())
+        defer { Task { await client.cancel() } }
+        let exchange = try await client.exchangeOAuthCallback(callback, pkce: pkce, deviceLabel: deviceLabel)
+        try Task.checkCancellation()
+        guard generation == connectionGeneration, !signingOut else { throw CancellationError() }
+        connect(try ServerConfiguration(address: origin, token: exchange.token), save: true)
+    }
+
+    func logout() async {
+        guard let config = configuration, !signingOut else { return }
+        let key = accountKey
+        let mode = identity?.authMode
+        signingOut = true
+        defer { signingOut = false }
+        offlineFallbackAllowed = false
+        rejectedChatDraft = nil
+        resetConnection(to: nil)
+        syncing = false
+        showSettings = true
+        var failure: String?
+        if !temporary {
+            if UserDefaults.standard.string(forKey: "weiji.origin") == config.origin {
+                UserDefaults.standard.removeObject(forKey: "weiji.origin")
+            }
+            do { try serverTokens.write("", config.origin) }
+            catch { failure = error.localizedDescription }
+        }
+        do { try await cache.clearSession(config, key: key) }
+        catch { failure = failure ?? "未能清除本地笔记缓存。" }
+        if mode == "oauth" || (mode == nil && !config.token.isEmpty) {
+            // A separate client avoids re-entering the store's authentication rejection handler.
+            let client = WeijiAPIClient(configuration: config, transport: makeTransport())
+            do { try await client.logout() }
+            catch let error as WeijiAPIError where error.status == 401 {}
+            catch { failure = failure ?? "已退出本机，但无法确认服务端会话已退出。" }
+            await client.cancel()
+        }
+        error = failure
     }
 
     private func rejectConnection(_ config: ServerConfiguration, failure: WeijiAPIError, generation: Int) async {
@@ -204,7 +252,7 @@ final class AppStore {
     }
 
     func savedConnectionToken(for origin: String) -> String? {
-        KeychainStore.read(origin: origin)
+        serverTokens.read(origin)
     }
 
     func setAPIKey(_ key: String) throws {

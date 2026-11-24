@@ -1,0 +1,19 @@
+[Unit]
+Description=CLIProxyAPI for Weiji
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weiji-cpa
+Group=weiji-cpa
+WorkingDirectory=/var/lib/weiji-cpa
+ExecStart=/usr/local/bin/cli-proxy-api -config /etc/weiji/cpa.yaml
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

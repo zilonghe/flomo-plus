@@ -481,7 +481,18 @@
     <form id="settings-form" class="dialog-scroll">
       <h3>账号与同步</h3>
       <p class="help-text" id="settings-account"></p>
-      <p class="help-text">在 iOS 微记里使用同一 ChatGPT 账号登录，即可同步笔记及对话。</p>
+      <p class="help-text" id="settings-sync-help">在 iOS 微记里使用同一 ChatGPT 账号登录，即可同步笔记及对话。</p>
+      <section class="auth-section" id="auth-sessions-section" hidden>
+        <h3>登录设备</h3>
+        <ul id="auth-sessions-list" class="auth-list"></ul>
+      </section>
+      <section class="auth-section" id="admin-invites-section" hidden>
+        <h3>邀请码管理</h3>
+        <button id="admin-invite-create" class="button button-secondary" type="button">创建单次邀请码</button>
+        <p id="admin-invite-created" aria-live="polite" hidden></p>
+        <ul id="admin-invites-list" class="auth-list"></ul>
+      </section>
+      <p id="auth-settings-error" class="inline-error" role="alert" hidden></p>
       <hr>
       <h3>AI 服务</h3>
       <p class="help-text">AI 对话会从全库检索相关笔记并发送给所选 AI 服务。启用个人画像后，对话也会发送画像；生成画像时会发送代表性笔记的摘录。</p>

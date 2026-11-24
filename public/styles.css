@@ -553,3 +553,29 @@ hr{border:0;border-top:1px solid var(--sidebar-border);margin:18px 0}
   .ins-toolbar-inner{padding:8px 12px;gap:5px}
   .ins-toolbar-inner .button{padding-inline:7px}
 }
+
+.auth-page {
+  max-width: 26rem;
+  margin: min(18vh, 8rem) auto;
+  padding: 1.5rem;
+}
+.auth-page nav, .auth-page form {
+  display: grid;
+  gap: 0.75rem;
+}
+.auth-page nav a, .auth-page form button, .auth-page input {
+  display: block;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.auth-page nav a, .auth-page form button { text-align: center; }
+.auth-page form button { cursor: pointer; }
+.auth-section { margin-top: 1rem; }
+.auth-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+.auth-list li { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; padding-block: 0.25rem; }
+#admin-invite-created { font-family: monospace; user-select: all; }

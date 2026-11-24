@@ -2,6 +2,17 @@ import Foundation
 import Security
 
 enum KeychainStore {
+    @MainActor
+    struct ServerTokens {
+        let read: (String) -> String?
+        let write: (String, String) throws -> Void
+
+        static let live = Self(
+            read: { KeychainStore.read(origin: $0) },
+            write: { try KeychainStore.write($0, origin: $1) }
+        )
+    }
+
     private static func query(origin: String, kind: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "com.zilonghe.weiji." + kind,

@@ -25,6 +25,7 @@ const state = {
   openMenuId: null,
   tagSuggest: { open: false, items: [], activeIndex: 0, start: 0, end: 0 },
   user: null,
+  authMode: null,
   loaded: false,
   refreshing: false,
   writeEpoch: 0,
@@ -205,10 +206,12 @@ function updateProfile() {
   const { name, email } = state.user || {};
   const label = name || email || '我的空间';
   $('profile-name').textContent = label;
-  $('profile-caption').textContent = email || (state.user ? 'ChatGPT 账号' : '未登录');
+  const oauth = state.authMode === 'oauth';
+  $('profile-caption').textContent = email || (state.user ? oauth ? '微记账号' : 'ChatGPT 账号' : '未登录');
   $('avatar').textContent = state.user ? (Array.from(label)[0] || '微').toUpperCase() : '微';
   $('sign-out').hidden = !state.user;
-  $('settings-account').textContent = email ? '已登录 · ' + email : state.user ? '已使用 ChatGPT 账号登录。' : '请先使用 ChatGPT 账号登录。';
+  $('settings-account').textContent = email ? '已登录 · ' + email : oauth ? label : state.user ? '已使用 ChatGPT 账号登录。' : '请先使用 ChatGPT 账号登录。';
+  $('settings-sync-help').textContent = oauth ? '在 iOS 微记里用同一账号登录，即可同步笔记及对话。' : '在 iOS 微记里使用同一 ChatGPT 账号登录，即可同步笔记及对话。';
 }
 
 let accountEpoch = 0;
@@ -216,6 +219,7 @@ let accountLifecycle = new AbortController();
 let pendingProfileSave = null;
 let failedProfileSave = null;
 function resetAccount() {
+  if (state.authMode === 'oauth') { location.replace('/'); return; }
   accountEpoch++;
   accountLifecycle.abort();
   accountLifecycle = new AbortController();
@@ -278,10 +282,12 @@ async function refresh({ silent = false } = {}) {
       const result = await request('/api/session');
       if (!result.user) throw new ApiError(401, null, '请先登录。');
       state.user = result.user;
+      state.authMode = result.authMode;
       state.codexAvailable = result.codexAvailable === true;
       state.codexMode = result.codexMode;
       state.chatProvider = state.codexAvailable ? 'codex' : 'openai';
       updateProfile();
+      if ($('settings-dialog').open) void loadAuthSettings();
     }
     const result = await request('/api/notes');
     if (epoch !== state.writeEpoch || state.writeCount) return;
@@ -1458,7 +1464,68 @@ function openSettings() {
   $('openai-model').value = state.model;
   setError('settings-error', '');
   $('settings-dialog').showModal();
+  void loadAuthSettings();
 }
+
+function authRow(label, actionName, action) {
+  const row = el('li', '', label);
+  if (action) {
+    const button = actionButton(actionName, actionName === '作废' ? 'revoke-invite' : 'revoke-session');
+    button.addEventListener('click', () => authSettingsAction(button, action));
+    row.append(button);
+  }
+  return row;
+}
+
+async function authSettingsAction(button, action) {
+  button.disabled = true;
+  setError('auth-settings-error', '');
+  try { await action(); }
+  catch (error) { if (error.name !== 'AbortError') setError('auth-settings-error', error.message); }
+  finally { button.disabled = false; }
+}
+
+async function loadAuthSettings() {
+  const oauth = state.authMode === 'oauth';
+  const admin = oauth && state.user?.role === 'admin';
+  $('auth-sessions-section').hidden = !oauth;
+  $('admin-invites-section').hidden = !admin;
+  if (!oauth) return;
+  setError('auth-settings-error', '');
+  try {
+    const { sessions } = await request('/api/auth/sessions');
+    $('auth-sessions-list').replaceChildren(...sessions.map(session => {
+      const row = authRow((session.label || (session.kind === 'ios' ? 'iOS' : '浏览器')) + (session.current ? ' · 当前设备' : ''), '退出', async () => {
+        await request('/api/auth/sessions/' + encodeURIComponent(session.id), undefined, undefined, 'DELETE');
+        if (session.current) location.replace('/');
+        else await loadAuthSettings();
+      });
+      row.dataset.sessionId = session.id;
+      return row;
+    }));
+    if (!admin) return;
+    const { invites } = await request('/api/admin/invites');
+    $('admin-invites-list').replaceChildren(...invites.map(invite => {
+      const available = !invite.revokedAt && invite.usedCount < invite.maxUses &&
+        (!invite.expiresAt || Date.parse(invite.expiresAt) > Date.now());
+      return authRow('…' + invite.codeHint + ' · ' + invite.usedCount + '/' + invite.maxUses +
+        (invite.revokedAt ? ' · 已作废' : !available ? ' · 已失效' : ''), '作废', available ? async () => {
+        await request('/api/admin/invites/' + encodeURIComponent(invite.codeHash), undefined, undefined, 'DELETE');
+        await loadAuthSettings();
+      } : null);
+    }));
+  } catch (error) {
+    if (error.name !== 'AbortError') setError('auth-settings-error', error.message);
+  }
+}
+
+$('admin-invite-create').addEventListener('click', event => authSettingsAction(event.currentTarget, async () => {
+  const { code } = await request('/api/admin/invites', { maxUses: 1 });
+  const output = $('admin-invite-created');
+  output.textContent = code;
+  output.hidden = false;
+  await loadAuthSettings();
+}));
 
 function saveSettings(event) {
   event.preventDefault();
@@ -3741,7 +3808,16 @@ $('ai-chat-input').addEventListener('input', event => {
   const index = input.selectionStart - 1;
   if (!event.isComposing && event.data === '@' && input.value[index] === '@') openNotePicker('', index);
 });
-$('sign-out').addEventListener('click', resetAccount);
+$('sign-out').addEventListener('click', async event => {
+  if (state.authMode !== 'oauth') { resetAccount(); return; }
+  event.preventDefault();
+  try {
+    await request('/api/auth/logout', {});
+    location.replace('/');
+  } catch (error) {
+    if (error.name !== 'AbortError') notify(error.message);
+  }
+});
 
 const actions = {
   'open-ai-insights': openInsights,
@@ -4050,7 +4126,11 @@ $('import-dialog').addEventListener('cancel', (event) => {
 $('import-dialog').addEventListener('close', resetWereadImport);
 $('flomo-dialog').addEventListener('cancel', (event) => { if (state.flomoWorking) event.preventDefault(); });
 $('flomo-dialog').addEventListener('close', () => resetFlomoImport(true));
-$('settings-dialog').addEventListener('close', () => { $('openai-key').value = ''; });
+$('settings-dialog').addEventListener('close', () => {
+  $('openai-key').value = '';
+  $('admin-invite-created').textContent = '';
+  $('admin-invite-created').hidden = true;
+});
 $('settings-form').addEventListener('submit', saveSettings);
 $('chat-provider').addEventListener('change', updateAISettings);
 $('import-form').addEventListener('submit', importNotes);
