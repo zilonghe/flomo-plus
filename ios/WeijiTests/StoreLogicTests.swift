@@ -65,6 +65,8 @@ final class StoreLogicTests: XCTestCase {
             let version: Int
             let message: String
             let pins: [String]
+            let model: String
+            let otherFields: Data
         }
         let wire = OSAllocatedUnfairLock(initialState: [Sent]())
         let persisted = OSAllocatedUnfairLock(initialState: [String]())
@@ -84,18 +86,20 @@ final class StoreLogicTests: XCTestCase {
             }
             XCTAssertEqual(request.url?.path, "/api/ai/chat")
             XCTAssertEqual(request.httpMethod, "POST")
-            guard let body = jsonBody(request),
-                  let id = body["clientRequestId"] as? String,
+            guard var body = jsonBody(request),
+                  let id = body.removeValue(forKey: "clientRequestId") as? String,
+                  let model = body.removeValue(forKey: "model") as? String,
                   let version = body["expectedVersion"] as? Int,
                   let message = body["message"] as? String,
-                  let pins = body["referencedNoteIds"] as? [String] else {
+                  let pins = body["referencedNoteIds"] as? [String],
+                  let otherFields = try? JSONSerialization.data(withJSONObject: body, options: .sortedKeys) else {
                 XCTFail("Missing fields in the chat POST")
                 return .init(status: 500, body: "{}")
             }
             XCTAssertEqual(body["sessionId"] as? String, "session")
             let (attempt, duplicate) = wire.withLock { sent in
                 let duplicate = sent.contains { $0.id == id }
-                sent.append(Sent(id: id, version: version, message: message, pins: pins))
+                sent.append(Sent(id: id, version: version, message: message, pins: pins, model: model, otherFields: otherFields))
                 return (sent.count, duplicate)
             }
             if attempt <= 2, !duplicate { persisted.withLock { $0.append(message) } }
@@ -118,8 +122,8 @@ final class StoreLogicTests: XCTestCase {
         chat.togglePin("ref")
         chat.draft = "原始问题"
 
-        func send() async throws {
-            chat.send(api: client, options: AIOptions(provider: .codex), profile: profile)
+        func send(model: String = "model-a") async throws {
+            chat.send(api: client, options: AIOptions(provider: .codex, model: model), profile: profile)
             XCTAssertTrue(chat.sending)
             try await waitUntil("聊天请求完成") { !chat.sending }
         }
@@ -141,15 +145,143 @@ final class StoreLogicTests: XCTestCase {
         try await send()
         XCTAssertEqual(chat.session?.version, 3)
         try await send()
+        try await send(model: "model-b")
 
         let requests = wire.withLock { $0 }
-        XCTAssertEqual(requests.map(\.version), [1, 1, 2, 2, 2, 3])
-        XCTAssertEqual(requests.map(\.message), ["原始问题", "原始问题", "下一问", "修改后的问题", "修改后的问题", "修改后的问题"])
-        XCTAssertEqual(requests.map(\.pins), [["ref"], ["ref"], ["ref"], ["ref"], ["ref", "second"], ["ref", "second"]])
-        guard requests.count == 6 else { return }
-        XCTAssertTrue(requests.allSatisfy { UUID(uuidString: $0.id) != nil })
-        XCTAssertEqual(requests[0].id, requests[1].id)
-        XCTAssertEqual(Set(requests.dropFirst().map(\.id)).count, 5)
+        XCTAssertEqual(requests.map(\.version), [1, 1, 2, 2, 2, 3, 3])
+        XCTAssertEqual(requests.map(\.message), ["原始问题", "原始问题", "下一问", "修改后的问题", "修改后的问题", "修改后的问题", "修改后的问题"])
+        XCTAssertEqual(requests.map(\.pins), [["ref"], ["ref"], ["ref"], ["ref"], ["ref", "second"], ["ref", "second"], ["ref", "second"]])
+        if requests.count == 7 {
+            XCTAssertTrue(requests.allSatisfy { UUID(uuidString: $0.id) != nil })
+            XCTAssertEqual(requests[0].id, requests[1].id)
+            XCTAssertEqual(Set(requests.dropFirst().map(\.id)).count, 6)
+            XCTAssertEqual(requests[5].model, "model-a")
+            XCTAssertEqual(requests[6].model, "model-b")
+            XCTAssertEqual(requests[5].otherFields, requests[6].otherFields)
+            XCTAssertNotEqual(requests[5].id, requests[6].id, "Changing only the POST model must change its request ID")
+        }
+
+        let typed = "问题"
+        let insight = InsightReport(id: "report", title: "洞察", lensName: "回顾", content: "报告正文", excerpt: nil,
+                                    citations: nil, createdAt: "2025-02-01T00:00:00Z")
+        let base = ChatSignature(sessionId: "session", expectedVersion: 1, sourceNoteId: "note", message: typed,
+                                 referencedNoteIds: ["ref"], model: "model-a", provider: .codex, useProfile: true)
+        let changes: [(String, (inout ChatSignature) -> Void)] = [
+            ("sessionId", { $0.sessionId = nil }),
+            ("expectedVersion", { $0.expectedVersion = 2 }),
+            ("sourceNoteId", { $0.sourceNoteId = nil }),
+            ("message", { $0.message += "?" }),
+            ("referencedNoteIds", { $0.referencedNoteIds.append("second") }),
+            ("model", { $0.model = "model-b" }),
+            ("provider", { $0.provider = .openai }),
+            ("useProfile", { $0.useProfile = false }),
+            // Insight context is sent as part of the message, even when the typed question stays the same.
+            ("insightContext", { $0.message = AIChatStore.message(typed, insight: insight) }),
+        ]
+        var ids = ChatRequestID()
+        let first = ids.resolve(base)
+        XCTAssertNotNil(UUID(uuidString: first))
+        XCTAssertEqual(first, ids.resolve(base))
+        for (field, edit) in changes {
+            var changed = base
+            let oldID = ids.resolve(base)
+            edit(&changed)
+            let newID = ids.resolve(changed)
+            XCTAssertNotNil(UUID(uuidString: newID), field)
+            XCTAssertNotEqual(newID, oldID, field)
+            XCTAssertEqual(newID, ids.resolve(changed), field)
+        }
+        let last = ids.resolve(base)
+        ids.clear()
+        let afterClear = ids.resolve(base)
+        XCTAssertNotNil(UUID(uuidString: afterClear))
+        XCTAssertNotEqual(afterClear, last)
+    }
+
+    func testSameAccountReauthRecoversChatDraftAndIsolatesOtherAccount() async throws {
+        let draft = "same-account-unsent-draft"
+        let otherCredential = UUID().uuidString
+        let otherSession = #"{"user":{"id":"other-account","name":"另一个账户"},"codexAvailable":false}"#
+        let emptyNotes = #"{"notes":[],"deleted":[]}"#
+        let oldSessions = #"{"sessions":[{"id":"old-session","title":"旧会话","version":1,"updatedAt":"2025-02-01T00:00:00Z","origin":"chat"}]}"#
+        let statuses = [401, 401, 403]
+        let posts = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/session"):
+                let isOther = request.value(forHTTPHeaderField: "Authorization") == "Bearer " + otherCredential
+                return .init(status: 200, body: isOther ? otherSession : sessionFixture)
+            case ("GET", "/api/notes"):
+                let isOld = request.value(forHTTPHeaderField: "X-Journal-Account") == "account"
+                return .init(status: 200, body: isOld ? notesFixture : emptyNotes)
+            case ("GET", "/api/ai/sessions"):
+                return .init(status: 200, body: oldSessions)
+            case ("POST", "/api/ai/chat"):
+                XCTAssertEqual(request.value(forHTTPHeaderField: "X-Journal-Account"), "account")
+                XCTAssertEqual(jsonBody(request)?["message"] as? String, draft)
+                let attempt = posts.withLock { $0 += 1; return $0 }
+                let status = statuses.indices.contains(attempt - 1) ? statuses[attempt - 1] : 500
+                return .init(status: status, body: "HTTP \(status)")
+            default:
+                XCTFail("Unexpected request to the original origin")
+                return .init(status: 404, body: "")
+            }
+        }
+        let (otherOrigin, otherTransport) = try StubProtocol.make { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/session"): return .init(status: 200, body: sessionFixture)
+            case ("GET", "/api/notes"): return .init(status: 200, body: emptyNotes)
+            default:
+                XCTFail("Unexpected request to the other origin")
+                return .init(status: 404, body: "")
+            }
+        }
+        defer {
+            transport.invalidateAndCancel(); StubProtocol.remove(config)
+            otherTransport.invalidateAndCancel(); StubProtocol.remove(otherOrigin)
+        }
+        let renewed = try ServerConfiguration(address: config.origin.uppercased() + "/", token: UUID().uuidString)
+        let otherAccount = try ServerConfiguration(address: config.origin, token: otherCredential)
+
+        func authenticate(_ store: AppStore, with config: ServerConfiguration, userId: String) async throws {
+            store.connect(config, save: false)
+            try await waitUntil("完成认证与笔记同步") { !store.syncing }
+            XCTAssertEqual(store.identity?.user.id, userId)
+            XCTAssertNotNil(store.api)
+            XCTAssertFalse(store.showSettings)
+        }
+
+        for (next, userId, status, expectedDraft) in [(renewed, "account", 401, draft),
+                                                       (otherAccount, "other-account", 401, ""),
+                                                       (otherOrigin, "account", 403, "")] {
+            let store = AppStore(temporary: true, reset: true, makeTransport: StubProtocol.transport)
+            try await authenticate(store, with: config, userId: "account")
+            try await waitUntil("旧账户笔记可见") { store.results.map(\.id) == ["note"] }
+            let api = try XCTUnwrap(store.api)
+            store.chat.refreshSessions(api: api)
+            try await waitUntil("旧账户会话可见") { store.chat.sessions.map(\.id) == ["old-session"] }
+
+            store.chat.draft = draft
+            store.chat.send(api: api, options: store.options, profile: store.insights)
+            XCTAssertTrue(store.chat.sending)
+            try await waitUntil("认证失效并显示设置") { store.showSettings && !store.syncing }
+            XCTAssertEqual(store.error, "HTTP \(status)")
+            XCTAssertNil(store.api)
+            XCTAssertNil(store.identity)
+            XCTAssertFalse(store.isOffline)
+            XCTAssertTrue(store.notesById.isEmpty)
+            XCTAssertTrue(store.results.isEmpty)
+            XCTAssertTrue(store.chat.sessions.isEmpty)
+            XCTAssertEqual(store.chat.draft, "")
+
+            try await authenticate(store, with: next, userId: userId)
+            XCTAssertEqual(store.chat.draft, expectedDraft, "Reauth as \(userId) at \(next.origin)")
+            if next != renewed { XCTAssertTrue(store.notesById.isEmpty) }
+
+            try await authenticate(store, with: renewed, userId: "account")
+            XCTAssertEqual(store.chat.draft, "", "A consumed or discarded draft must not reappear")
+        }
+        XCTAssertEqual(posts.withLock { $0 }, statuses.count)
     }
 
     func testOfflineColdStartLoadsCachedNotesAndIsolatesChangedCredentials() async throws {

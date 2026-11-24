@@ -34,6 +34,7 @@ final class AppStore {
     @ObservationIgnored private let initial: ServerConfiguration?
     @ObservationIgnored private let makeTransport: () -> URLSession?
     @ObservationIgnored private var accountKey: NoteCacheStore.Key?
+    @ObservationIgnored private var rejectedChatDraft: (key: NoteCacheStore.Key, text: String)?
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
@@ -70,6 +71,7 @@ final class AppStore {
         let previousKey = accountKey
         let previous = configuration
         if let previous, previous != config { offlineFallbackAllowed = false }
+        if let rejectedChatDraft, rejectedChatDraft.key.origin != config.origin { self.rejectedChatDraft = nil }
         resetConnection(to: config)
         let stamp = connectionGeneration
         syncing = true
@@ -105,6 +107,8 @@ final class AppStore {
                     await self?.rejectConnection(config, failure: failure, generation: stamp)
                 }
                 api = client
+                if let rejectedChatDraft, rejectedChatDraft.key == key { chat.draft = rejectedChatDraft.text }
+                rejectedChatDraft = nil
                 showSettings = false
                 if let cached = try? await cache.load(key), stamp == connectionGeneration, workingNotes.isEmpty {
                     await replace(with: cached, persist: false)
@@ -172,6 +176,7 @@ final class AppStore {
     private func rejectConnection(_ config: ServerConfiguration, failure: WeijiAPIError, generation: Int) async {
         guard generation == connectionGeneration else { return }
         offlineFallbackAllowed = false
+        if let accountKey, !chat.draft.isEmpty { rejectedChatDraft = (accountKey, chat.draft) }
         resetConnection(to: config)
         let stamp = connectionGeneration
         try? await cache.revoke(config)
