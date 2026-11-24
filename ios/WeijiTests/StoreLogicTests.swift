@@ -951,6 +951,9 @@ final class StoreLogicTests: XCTestCase {
         let unknownThinking = ModelMeta.inferred(from: "custom-thinking-preview")
         XCTAssertFalse(unknownThinking.thinking)
         XCTAssertTrue(unknownThinking.efforts.isEmpty)
+        let unknownVersion = ModelMeta.inferred(from: "gpt-6.99-chat-thinking")
+        XCTAssertFalse(unknownVersion.thinking)
+        XCTAssertTrue(unknownVersion.efforts.isEmpty)
     }
 
     private func waitUntil(_ reason: String, _ ready: () -> Bool) async throws {

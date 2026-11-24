@@ -160,6 +160,16 @@ struct ModelMeta: Decodable, Equatable, Identifiable, Sendable {
     let defaultEffort: String?
 
     static let supportedEfforts = ["low", "medium", "high", "xhigh"]
+    private static let fourLevelEffortModels: Set<String> = [
+        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+        "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6-chat-thinking",
+        "gpt-6.1-sol", "gpt-6.1-terra",
+        "gpt-6.2-astra", "gpt-6.2-sol",
+    ]
+    private static let threeLevelEffortModels: Set<String> = [
+        "gemini-3-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash-tiered",
+        "o1", "o3", "o3-mini", "o4-mini",
+    ]
 
     var selectableEfforts: [String] {
         guard thinking, fixedEffort == nil else { return [] }
@@ -177,9 +187,9 @@ struct ModelMeta: Decodable, Equatable, Identifiable, Sendable {
         let fixed = ["medium", "high", "xhigh"].first { name.hasSuffix("-" + $0) }
         let efforts: [String]
         if fixed != nil { efforts = [] }
-        else if name.range(of: #"^(?:gpt-6(?:\.\d+)?|gpt-5\.6)-(?:astra|sol|luna|terra|chat-thinking)$"#, options: .regularExpression) != nil {
+        else if Self.fourLevelEffortModels.contains(name) {
             efforts = supportedEfforts
-        } else if name.range(of: #"^(?:gemini-3(?:\.\d+)?-flash(?:-lite|-tiered)?|o[1-9](?:-mini|-pro)?)$"#, options: .regularExpression) != nil {
+        } else if Self.threeLevelEffortModels.contains(name) {
             efforts = Array(supportedEfforts.prefix(3))
         } else { efforts = [] }
 

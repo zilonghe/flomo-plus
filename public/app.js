@@ -13,6 +13,27 @@ function authEventStamp() {
   try { return localStorage.getItem(weijiAuthEvent); } catch { return null; }
 }
 let pageAuthStamp = authEventStamp();
+function parseAuthEvent(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return { type: 'logout' }; }
+}
+function authEventRevokesAccount(raw, account = state.user?.id ?? pageUserId) {
+  if (!raw || raw === pageAuthStamp) return false;
+  const payload = parseAuthEvent(raw);
+  if (!payload) return false;
+  if (payload.type === 'session') {
+    if (!account) return false;
+    return payload.userId !== account;
+  }
+  return true;
+}
+function syncAuthStampIfCompatible(account = state.user?.id ?? pageUserId) {
+  const current = authEventStamp();
+  if (current === pageAuthStamp) return true;
+  if (authEventRevokesAccount(current, account)) return false;
+  pageAuthStamp = current;
+  return true;
+}
 const state = {
   notes: new Map(),
   deletedNotes: new Map(),
@@ -140,7 +161,7 @@ function apiHeaders(hasBody) {
 
 function checkRequestContext(epoch, signal) {
   if (epoch !== state.syncEpoch || signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
-  if (pageAuthStamp !== authEventStamp()) {
+  if (!syncAuthStampIfCompatible()) {
     if (!state.authSuspended) void invalidateAccount({ broadcast: false });
     throw new DOMException('登录状态已变化', 'AbortError');
   }
@@ -307,7 +328,7 @@ function showSyncSkeleton(show) {
   document.body.classList.toggle('auth-checking', show);
 }
 
-async function invalidateAccount({ reload = false, broadcast = true, notice = true } = {}) {
+async function invalidateAccount({ reload = false, broadcast = true, notice = true, authEvent = null } = {}) {
   const account = state.user?.id ?? pageUserId;
   const oauth = state.authMode === 'oauth';
   suspendedComposeDraft = null;
@@ -315,7 +336,7 @@ async function invalidateAccount({ reload = false, broadcast = true, notice = tr
   resetAccount();
   const epoch = state.syncEpoch;
   if (broadcast) {
-    publishWeijiAuthEvent(window, { type: 'logout', ...(account ? { userId: account } : {}) });
+    publishWeijiAuthEvent(window, authEvent ?? { type: 'logout', ...(account ? { userId: account } : {}) });
     pageAuthStamp = authEventStamp();
   }
   await clearWeijiCacheDB(account);
@@ -336,7 +357,7 @@ function cacheSnapshot() {
   const snapshot = {
     userId, etag: state.notesETag, notes: [...state.notes.values()], deleted: [...state.deletedNotes.values()], savedAt: Date.now(),
   };
-  return notesCacheTransaction('readwrite', store => store.put(snapshot), () => epoch === state.syncEpoch && pageAuthStamp === authEventStamp())
+  return notesCacheTransaction('readwrite', store => store.put(snapshot), () => epoch === state.syncEpoch && syncAuthStampIfCompatible(userId))
     .catch(() => {});
 }
 
@@ -405,7 +426,11 @@ async function syncNotes({ silent = false } = {}) {
       notesRequest?.catch(() => {});
       const result = await request('/api/session', undefined, signal);
       if (!result.user?.id || (pageUserId && result.user.id !== pageUserId)) {
-        await invalidateAccount({ reload: Boolean(result.user?.id) });
+        const switched = Boolean(result.user?.id);
+        await invalidateAccount({
+          reload: switched,
+          authEvent: switched ? { type: 'session', userId: result.user.id } : { type: 'logout', ...(pageUserId ? { userId: pageUserId } : {}) },
+        });
         return;
       }
       state.user = result.user;
@@ -4760,15 +4785,9 @@ let pageHidden = false;
 let suspendedComposeDraft = null;
 window.addEventListener('storage', event => {
   if (event.key !== weijiAuthEvent || !event.newValue) return;
-  let payload = null;
-  try { payload = JSON.parse(event.newValue); } catch {}
-  if (payload?.type === 'session') {
-    const activeUser = state.user?.id ?? pageUserId;
-    if (!activeUser) return;
-    if (payload.userId === activeUser) {
-      pageAuthStamp = event.newValue;
-      return;
-    }
+  if (!authEventRevokesAccount(event.newValue)) {
+    pageAuthStamp = event.newValue;
+    return;
   }
   pageHidden = false;
   suspendedComposeDraft = null;
@@ -4784,18 +4803,10 @@ window.addEventListener('pagehide', () => {
 });
 window.addEventListener('pageshow', event => {
   if (!event.persisted || !pageHidden) return;
-  const currentStamp = authEventStamp();
-  if (pageAuthStamp !== currentStamp) {
-    let payload = null;
-    try { payload = JSON.parse(currentStamp || ''); } catch {}
-    const expectedUser = pageUserId;
-    if (payload?.type === 'session' && expectedUser && payload.userId === expectedUser) {
-      pageAuthStamp = currentStamp;
-    } else {
-      suspendedComposeDraft = null;
-      void invalidateAccount({ broadcast: false });
-      return;
-    }
+  if (!syncAuthStampIfCompatible(pageUserId)) {
+    suspendedComposeDraft = null;
+    void invalidateAccount({ broadcast: false });
+    return;
   }
   state.authSuspended = false;
   void refresh();

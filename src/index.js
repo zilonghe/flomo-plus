@@ -332,14 +332,25 @@ function serverAI(env) {
 }
 
 const reasoningEfforts = ["low", "medium", "high", "xhigh"];
+const fourLevelEffortModels = new Set([
+  "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+  "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6-chat-thinking",
+  "gpt-6.1-sol", "gpt-6.1-terra",
+  "gpt-6.2-astra", "gpt-6.2-sol",
+]);
+const threeLevelEffortModels = new Set([
+  "gemini-3-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash-tiered",
+  "o1", "o3", "o3-mini", "o4-mini",
+]);
 
 function describeModel(id) {
+  const key = id.toLowerCase();
   const vendor = /gemini/i.test(id) ? "gemini" : /claude/i.test(id) ? "claude" :
     /^(?:gpt|o[1-9]|codex)/i.test(id) ? "openai" : "other";
   const fixedEffort = id.match(/(?:^|-)(xhigh|high|medium)$/i)?.[1].toLowerCase() ?? null;
   const efforts = fixedEffort ? [] :
-    /^(?:gpt-6(?:\.\d+)?|gpt-5\.6)-(?:astra|sol|luna|terra|chat-thinking)$/i.test(id) ? reasoningEfforts :
-    /^(?:gemini-3(?:\.\d+)?-flash(?:-lite|-tiered)?|o[1-9](?:-mini|-pro)?)$/i.test(id) ? reasoningEfforts.slice(0, 3) : [];
+    fourLevelEffortModels.has(key) ? reasoningEfforts :
+    threeLevelEffortModels.has(key) ? reasoningEfforts.slice(0, 3) : [];
   const label = (fixedEffort ? id.slice(0, -(fixedEffort.length + 1)) || id : id)
     .replace(/^(claude-[a-z]+-\d+)-(\d+)(?=-|$)/i, "$1.$2")
     .split("-").map(word => word.replace(/^./, ch => ch.toUpperCase())).join(" ")

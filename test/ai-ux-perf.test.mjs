@@ -97,7 +97,7 @@ test('Notes validators bind the full ordered snapshot and authenticated page ide
 async function upstream(t) {
   const calls = [];
   const models = ['gemini-3-flash', 'gemini-3.5-flash-lite', 'gemini-4-neon-xhigh', 'gpt-6.2-sol', 'gpt-6.2-astra',
-    'claude-opus-5-5-high', 'claude-sonnet-5-5-high', 'gpt-4.1-mini', 'other-model', 'custom-thinking-preview', 'o3'];
+    'claude-opus-5-5-high', 'claude-sonnet-5-5-high', 'gpt-4.1-mini', 'other-model', 'custom-thinking-preview', 'gpt-6.99-chat-thinking', 'o3'];
   const server = createServer(async (req, res) => {
     if (req.url === '/v1/models') {
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: models.map(id => ({ id })) }));
@@ -167,6 +167,8 @@ test('Model catalog and chat stream honor capacity and preserve only completed s
   assert.equal(meta('other-model').vendor, 'other');
   assert.equal(meta('custom-thinking-preview').thinking, false);
   assert.deepEqual(meta('custom-thinking-preview').efforts, []);
+  assert.equal(meta('gpt-6.99-chat-thinking').thinking, false);
+  assert.deepEqual(meta('gpt-6.99-chat-thinking').efforts, []);
   assert.deepEqual(meta('o3').efforts, ['low', 'medium', 'high']);
 
   put('A', note('相关的历史资料'));
@@ -219,6 +221,7 @@ test('Model catalog and chat stream honor capacity and preserve only completed s
     [{ model: 'other-model', reasoningEffort: 'high' }, env],
     [{ model: 'custom-thinking-preview', reasoningEffort: 'high' }, env],
     [{ model: 'unlisted-thinking-model', reasoningEffort: 'high' }, env],
+    [{ model: 'gpt-6.99-chat-thinking', reasoningEffort: 'high' }, env],
     [{ model: 'gemini-3-flash', reasoningEffort: 'xhigh' }, env],
     [{ provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-direct-key', reasoningEffort: 'high', useGateway: true }, env],
     [{ provider: 'openai', model: 'gpt-6.2-sol', apiKey: 'test-direct-key', reasoningEffort: 'high', useGateway: true }, env],
@@ -470,6 +473,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     }));
     const sessions = [];
     const notes = [];
+    const noteWrites = [];
     const history = [];
     const chats = [];
     const connect = [];
@@ -481,6 +485,11 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     const web = createServer(async (req, res) => {
       if (req.url === '/test-seed') return res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><title>Test fixture</title>');
       if (req.url === '/api/session') return void sessions.push((user, status) => json(res, sessionData(user), status));
+      if (req.url === '/api/notes' && req.method === 'POST') {
+        let raw = '';
+        for await (const chunk of req) raw += chunk;
+        return void noteWrites.push({ headers: req.headers, body: JSON.parse(raw), res });
+      }
       if (req.url === '/api/notes') return void notes.push({ headers: req.headers, res });
       if (req.url === '/api/auth/logout') return void logouts.push(res);
       if (req.url === '/api/ai/models') return json(res, {
@@ -598,6 +607,25 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     assert.equal(await found(page, bodyA), true);
     assert.equal(await page.evaluate("document.getElementById('sign-in').hidden"), true);
     await page.send('Page.bringToFront');
+
+    const concurrentBody = '同账号并发保存-777';
+    await page.evaluate(`(() => {
+      const input = document.getElementById('note-body');
+      input.value = ${JSON.stringify(concurrentBody)};
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      document.getElementById('composer').requestSubmit();
+    })()`);
+    const write = await receive(noteWrites, 'in-flight note save during same-account stamp update');
+    // Simulate another same-account tab writing localStorage before this tab handles storage callback.
+    await page.evaluate(`localStorage.setItem('weiji_auth_event', JSON.stringify({ type: 'session', userId: 'A', at: Date.now(), nonce: 99999 })); true`);
+    const savedId = write.body.note.id;
+    json(write.res, { note: { ...note(concurrentBody, savedId), revision: 1 } });
+    await until(() => found(page, concurrentBody), 'concurrent same-account save stayed authenticated');
+    assert.equal(await page.evaluate("document.getElementById('sign-in').hidden"), true);
+    await until(() => page.evaluate(`import('/ux-helpers.js').then(m => m.notesCacheTransaction('readonly', s => s.get('A'))).then(s => Boolean(s?.notes?.some(n => n.body === ${JSON.stringify(concurrentBody)})))`),
+      'concurrent same-account save persisted to IndexedDB');
+    // Restore original ETag fixture for subsequent latePage/connect checks.
+    await page.evaluate(`import('/ux-helpers.js').then(m => m.notesCacheTransaction('readwrite', s => s.put(${JSON.stringify(cached)})))`);
 
     await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
     await until(() => page.evaluate("document.querySelectorAll('[data-session-id]').length >= 4"), 'history list');
@@ -720,7 +748,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     assert.equal(await activeTabB.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readonly', s => s.get('B'))).then(Boolean)"), true);
     await activeTabB.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readwrite', s => s.delete('B')))");
 
-    for (const status of [401, 200]) {
+    for (const status of [200, 401]) {
       const stale = await seedPage();
       pageAccount = 'A';
       await stale.navigate(local + '/');
@@ -737,6 +765,8 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
         assert.equal(request.headers['if-none-match'], undefined);
         json(request.res, { notes: [{ ...note(bodyB), revision: 1 }], deleted: [] });
         await until(() => found(stale, bodyB), 'new account body');
+        assert.equal(await found(activeTabB, bodyB), true);
+        assert.equal(await activeTabB.evaluate("document.getElementById('sign-in').hidden"), true);
       } else {
         await until(() => stale.evaluate("!document.getElementById('sign-in').hidden"), 'expired login notice');
       }
