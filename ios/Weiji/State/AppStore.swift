@@ -50,7 +50,7 @@ final class AppStore {
     @ObservationIgnored private var rejectedChatDraft: (key: NoteCacheStore.Key, text: String)?
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
-    @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var searchTask: Task<Void, Never>?
     @ObservationIgnored private var connectionGeneration = 0
     @ObservationIgnored private var refreshGeneration = 0
     @ObservationIgnored private var searchGeneration = 0

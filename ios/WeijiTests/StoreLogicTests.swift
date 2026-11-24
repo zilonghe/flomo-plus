@@ -434,8 +434,11 @@ final class StoreLogicTests: XCTestCase {
             XCTAssertNil(store.identity)
             XCTAssertEqual(store.notesById[cachedNote.id]?.body, cachedNote.body)
 
+            var staleSearchTask: Task<Void, Never>?
             if status == 500 {
                 store.query = "预载"
+                staleSearchTask = store.searchTask
+                XCTAssertNotNil(staleSearchTask, "旧搜索任务必须已创建")
                 try await waitUntil("旧搜索必须进入在途态") { searchEntered.withLock { $0 } }
             } else if status != 200 {
                 store.query = "预载"
@@ -455,13 +458,10 @@ final class StoreLogicTests: XCTestCase {
                 XCTAssertTrue(store.results.isEmpty)
                 XCTAssertTrue(store.notesById.isEmpty)
                 if status == 500 {
-                    // Release the in-flight stale search strictly AFTER 500 cleared state; it must never refill results.
+                    // Release the in-flight stale search strictly AFTER 500 cleared state and await the exact MainActor writeback task.
                     searchRelease.signal()
-                    try await waitUntil("旧搜索应完成返回") { searchDone.withLock { $0 } }
-                    for _ in 0..<10 {
-                        await Task.yield()
-                        try await Task.sleep(for: .milliseconds(10))
-                    }
+                    await staleSearchTask?.value
+                    XCTAssertTrue(searchDone.withLock { $0 }, "旧搜索应已完成计算")
                     XCTAssertTrue(store.results.isEmpty, "晚到旧搜索不得回填 results")
                     XCTAssertTrue(store.notesById.isEmpty)
                 }
