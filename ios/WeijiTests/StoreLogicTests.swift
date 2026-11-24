@@ -413,7 +413,7 @@ final class StoreLogicTests: XCTestCase {
                                  runSearch: { index, query, filter in
                                      if status == 500 && query == "预载" {
                                          searchEntered.withLock { $0 = true }
-                                         _ = searchRelease.wait(timeout: .now() + 8)
+                                         XCTAssertEqual(searchRelease.wait(timeout: .now() + 8), .success, "旧搜索门闩不得提前超时")
                                          let found = index.search(query, filter: filter)
                                          searchDone.withLock { $0 = true }
                                          return found
