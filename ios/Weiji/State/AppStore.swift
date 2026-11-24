@@ -33,7 +33,7 @@ final class AppStore {
     @ObservationIgnored private let cache: NoteCacheStore
     @ObservationIgnored private let temporary: Bool
     @ObservationIgnored private let initial: ServerConfiguration?
-    @ObservationIgnored private let serverTokens: KeychainStore.ServerTokens
+    @ObservationIgnored private let credentials: KeychainStore
     @ObservationIgnored private let makeTransport: () -> URLSession?
     @ObservationIgnored private var accountKey: NoteCacheStore.Key?
     @ObservationIgnored private var rejectedChatDraft: (key: NoteCacheStore.Key, text: String)?
@@ -49,11 +49,11 @@ final class AppStore {
     @ObservationIgnored private var offlineFallbackAllowed = true
 
     init(initial: ServerConfiguration? = nil, temporary: Bool = false, reset: Bool = false,
-         cache: NoteCacheStore? = nil, serverTokens: KeychainStore.ServerTokens? = nil,
+         cache: NoteCacheStore? = nil, credentials: KeychainStore? = nil,
          makeTransport: @escaping () -> URLSession? = { nil }) {
         self.initial = initial
         self.temporary = temporary
-        self.serverTokens = serverTokens ?? .live
+        self.credentials = credentials ?? .live
         self.makeTransport = makeTransport
         self.cache = cache ?? (reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore())
     }
@@ -63,7 +63,7 @@ final class AppStore {
         started = true
         if let initial { connect(initial, save: false); return }
         if let origin = UserDefaults.standard.string(forKey: "weiji.origin"),
-           let token = serverTokens.read(origin),
+           let token = credentials.serverToken(for: origin),
            let config = try? ServerConfiguration(address: origin, token: token) {
             connect(config, save: false)
         } else {
@@ -97,7 +97,7 @@ final class AppStore {
                 try Task.checkCancellation()
                 guard stamp == connectionGeneration else { return }
                 if save && !temporary {
-                    try serverTokens.write(config.token, config.origin)
+                    try credentials.saveServerToken(config.token, for: config.origin)
                     UserDefaults.standard.set(config.origin, forKey: "weiji.origin")
                 }
                 try? await cache.bind(config, userId: session.user.id)
@@ -107,7 +107,9 @@ final class AppStore {
                 identity = session
                 options.provider = session.defaultProvider
                 options.model = session.defaultProvider == .openai ? "gpt-4.1-mini" : ""
-                if !temporary { options.apiKey = KeychainStore.read(origin: config.origin, kind: "openai") ?? "" }
+                if !temporary && !key.userId.isEmpty {
+                    options.apiKey = credentials.openAIKey(origin: key.origin, userId: key.userId) ?? ""
+                }
                 let client = WeijiAPIClient(configuration: config, account: session.user.id, transport: makeTransport()) { [weak self] failure in
                     await self?.rejectConnection(config, failure: failure, generation: stamp)
                 }
@@ -205,7 +207,7 @@ final class AppStore {
             if UserDefaults.standard.string(forKey: "weiji.origin") == config.origin {
                 UserDefaults.standard.removeObject(forKey: "weiji.origin")
             }
-            do { try serverTokens.write("", config.origin) }
+            do { try credentials.saveServerToken("", for: config.origin) }
             catch { failure = error.localizedDescription }
         }
         do { try await cache.clearSession(config, key: key) }
@@ -252,11 +254,14 @@ final class AppStore {
     }
 
     func savedConnectionToken(for origin: String) -> String? {
-        serverTokens.read(origin)
+        credentials.serverToken(for: origin)
     }
 
     func setAPIKey(_ key: String) throws {
-        if let origin = configuration?.origin, !temporary { try KeychainStore.write(key, origin: origin, kind: "openai") }
+        guard let accountKey, !accountKey.userId.isEmpty else {
+            throw WeijiAPIError(status: 0, message: "请先连接微记账号。")
+        }
+        if !temporary { try credentials.saveOpenAIKey(key, origin: accountKey.origin, userId: accountKey.userId) }
         options.apiKey = key
     }
 

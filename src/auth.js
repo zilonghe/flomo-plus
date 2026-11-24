@@ -142,10 +142,10 @@ function page(title, content, status = 200) {
     },
   });
 }
-function redirect(location, cookies = []) {
+function redirect(location, cookies = [], status = 302) {
   const headers = new Headers({ ...privateHeaders, Location: location });
   for (const cookie of cookies) headers.append("Set-Cookie", cookie);
-  return new Response(null, { status: 302, headers });
+  return new Response(null, { status, headers });
 }
 function cookieValue(request, name) {
   const item = request.headers.get("Cookie")?.split(";").find(part => part.trimStart().startsWith(name + "="));
@@ -445,7 +445,8 @@ export function createAuth(db, { origin, providers, trustProxy }) {
       }
       const current = session(request);
       if (!current && path.startsWith("/api/")) reject(401, "请先登录。");
-      if (!current && (path === "/" || path === "/connect" || path === "/login")) {
+      if (!current && path === "/connect" && (method === "GET" || method === "HEAD")) return redirect(`${origin}/`);
+      if (!current && (path === "/" || path === "/login")) {
         return page("登录微记", '<nav>' + Array.from(providers.values(), ({ id, name }) =>
           `<a href="/auth/${id}/start">用 ${name} 登录</a>`).join("") + "</nav>");
       }
@@ -460,11 +461,16 @@ export function createAuth(db, { origin, providers, trustProxy }) {
           return json({ sessions: sessions.map(row => ({ ...row, current: row.id === current.sessionId })) });
         }
         const sessionID = path.match(/^\/api\/auth\/sessions\/([^/]+)$/)?.[1];
-        if ((sessionID && method === "DELETE") || (path === "/api/auth/logout" && method === "POST")) {
+        const logout = path === "/api/auth/logout" && method === "POST";
+        if ((sessionID && method === "DELETE") || logout) {
           const id = sessionID || current.sessionId;
           if (!db.prepare(`UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND user_id = ?
             AND revoked_at IS NULL AND expires_at > ?`).run(stamp(), id, current.id, stamp()).changes) reject(404, "找不到该会话。");
-          return json({ ok: true }, 200, id === current.sessionId ? { "Set-Cookie": sessionCookie("", 0) } : undefined);
+          const cookie = id === current.sessionId ? sessionCookie("", 0) : null;
+          if (logout && request.headers.get("Accept")?.toLowerCase().includes("text/html")) {
+            return redirect(`${origin}/`, [cookie], 303);
+          }
+          return json({ ok: true }, 200, cookie ? { "Set-Cookie": cookie } : undefined);
         }
         if (path === "/api/admin/invites" && method === "GET") return json({ invites: listInvites(db) });
         if (path === "/api/admin/invites" && method === "POST") {

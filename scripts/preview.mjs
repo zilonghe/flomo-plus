@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
+import { constants } from "node:fs";
 import { createServer } from "node:http";
-import { mkdir } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
@@ -23,7 +24,16 @@ database.exec("PRAGMA busy_timeout = 5000;");
 const mainFile = database.prepare("PRAGMA database_list").all().find(row => row.name === "main")?.file;
 if (config && !mainFile) throw new Error("OAuth requires a persistent SQLite database");
 if (mainFile) database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
-await import("./build.mjs");
+if (process.env.SKIP_BUILD !== "1") {
+  const canBuild = await access(new URL("../", import.meta.url), constants.W_OK)
+    .then(() => access(new URL("../dist/", import.meta.url), constants.W_OK))
+    .then(() => true, error => {
+      if (error.code === "ENOENT") return true;
+      if (["EACCES", "EPERM", "EROFS"].includes(error.code)) return false;
+      throw error;
+    });
+  if (canBuild) await import("./build.mjs");
+}
 const { default: worker } = await import("../dist/server/index.js");
 const auth = config && createAuth(database, config);
 await applyMigrations(database);

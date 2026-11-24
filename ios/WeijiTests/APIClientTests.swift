@@ -177,8 +177,8 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(query?.first { $0.name == "redirect_uri" }?.value, OAuthPKCE.callback)
 
         var credentialWrites = 0
-        let tokens = KeychainStore.ServerTokens(read: { _ in nil }, write: { _, _ in credentialWrites += 1 })
-        let store = AppStore(reset: true, serverTokens: tokens, makeTransport: StubProtocol.transport)
+        let credentials = KeychainStore(read: { _, _ in nil }, write: { _, _, _ in credentialWrites += 1 })
+        let store = AppStore(reset: true, credentials: credentials, makeTransport: StubProtocol.transport)
         let wrong = try XCTUnwrap(URL(string: "weiji://auth/callback?code=app-code&state=wrong"))
         do {
             try await store.finishOAuth(origin: config.origin, callback: wrong, pkce: pkce, deviceLabel: "iPhone")

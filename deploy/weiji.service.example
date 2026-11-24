@@ -9,14 +9,16 @@ User=weiji
 Group=weiji
 WorkingDirectory=/opt/weiji
 Environment=AUTH_MODE=oauth HOST=127.0.0.1 TRUST_PROXY=1
-EnvironmentFile=/etc/weiji/server.env
+EnvironmentFile=/etc/weiji/app.env
 UnsetEnvironment=ALLOW_INSECURE_PUBLIC_ORIGIN PREVIEW_AUTH_TOKEN
-ExecStart=/usr/bin/env AUTH_MODE=oauth HOST=127.0.0.1 TRUST_PROXY=1 /usr/bin/node --experimental-sqlite scripts/preview.mjs
+ExecStart=/usr/bin/env AUTH_MODE=oauth HOST=127.0.0.1 TRUST_PROXY=1 SKIP_BUILD=1 /usr/bin/node --experimental-sqlite scripts/preview.mjs
 Restart=on-failure
 RestartSec=3
-UMask=0077
+UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/weiji /var/cache/weiji
 
 [Install]
 WantedBy=multi-user.target

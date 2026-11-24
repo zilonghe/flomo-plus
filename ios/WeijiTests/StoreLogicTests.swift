@@ -505,15 +505,15 @@ final class StoreLogicTests: XCTestCase {
             try? FileManager.default.removeItem(at: directory)
         }
         var credentials: [String: String] = [:]
-        let tokens = KeychainStore.ServerTokens(
-            read: { credentials[$0] },
-            write: { token, origin in credentials[origin] = token.isEmpty ? nil : token }
+        let keychain = KeychainStore(
+            read: { origin, _ in credentials[origin] },
+            write: { token, origin, _ in credentials[origin] = token.isEmpty ? nil : token }
         )
-        let store = AppStore(cache: cache, serverTokens: tokens, makeTransport: StubProtocol.transport)
+        let store = AppStore(cache: cache, credentials: keychain, makeTransport: StubProtocol.transport)
         store.connect(config, save: true)
         try await waitUntil("初次同步") { !store.syncing }
         XCTAssertNotNil(store.notesById["note"], store.error ?? "Missing synced note")
-        XCTAssertEqual(tokens.read(config.origin), config.token)
+        XCTAssertEqual(keychain.serverToken(for: config.origin), config.token)
         let account = NoteCacheStore.Key(origin: config.origin, userId: "account")
         let cached = try await cache.loadOffline(config)
         XCTAssertNotNil(cached?.first)
@@ -521,7 +521,7 @@ final class StoreLogicTests: XCTestCase {
 
         await store.logout()
         XCTAssertTrue(revoked.withLock { $0 })
-        XCTAssertNil(tokens.read(config.origin))
+        XCTAssertNil(keychain.serverToken(for: config.origin))
         XCTAssertNil(UserDefaults.standard.string(forKey: "weiji.origin"))
         XCTAssertNil(store.configuration)
         XCTAssertNil(store.identity)
@@ -539,6 +539,61 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertFalse(restarted.isOffline)
         XCTAssertTrue(restarted.notesById.isEmpty)
         XCTAssertTrue(restarted.showSettings)
+    }
+
+    func testOriginSwitchAccountIsolatesPersonalOpenAIKey() async throws {
+        let (a, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session":
+                let userId: String
+                switch request.value(forHTTPHeaderField: "Authorization") {
+                case "Bearer test-token-123", "Bearer renewed-a-token": userId = "account-a"
+                case "Bearer account-b-token": userId = "account-b"
+                default: return .init(status: 401, body: "Invalid token")
+                }
+                return .init(status: 200, body: #"{"user":{"id":"\#(userId)","name":"Test"},"codexAvailable":false,"authMode":"oauth"}"#)
+            case "/api/notes": return .init(status: 200, body: notesFixture)
+            case "/api/auth/logout": return .init(status: 200, body: #"{"ok":true}"#)
+            default: return .init(status: 500, body: "Unexpected request")
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer {
+            transport.invalidateAndCancel()
+            StubProtocol.remove(a)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let b = try ServerConfiguration(address: a.origin, token: "account-b-token")
+        let renewedA = try ServerConfiguration(address: a.origin, token: "renewed-a-token")
+        var entries = [a.origin: ["openai": "legacy-origin-only-key"]]
+        let keychain = KeychainStore(
+            read: { origin, kind in entries[origin]?[kind] },
+            write: { secret, origin, kind in entries[origin, default: [:]][kind] = secret.isEmpty ? nil : secret }
+        )
+        let store = AppStore(cache: NoteCacheStore(directory: directory), credentials: keychain, makeTransport: StubProtocol.transport)
+        XCTAssertThrowsError(try store.setAPIKey("unverified-key"))
+
+        store.connect(a, save: false)
+        try await waitUntil("账号 A 已验证") { !store.syncing }
+        XCTAssertEqual(store.identity?.user.id, "account-a")
+        XCTAssertEqual(store.options.apiKey, "")
+        try store.setAPIKey("a-personal-key")
+        XCTAssertEqual(store.options.apiKey, "a-personal-key")
+
+        await store.logout()
+        XCTAssertEqual(store.options.apiKey, "")
+
+        store.connect(b, save: false)
+        try await waitUntil("同源账号 B 已验证") { !store.syncing }
+        XCTAssertEqual(store.identity?.user.id, "account-b")
+        XCTAssertEqual(store.options.apiKey, "")
+        try store.setAPIKey("b-personal-key")
+
+        store.connect(renewedA, save: false)
+        XCTAssertEqual(store.options.apiKey, "")
+        try await waitUntil("账号 A 以新令牌重新登录") { !store.syncing }
+        XCTAssertEqual(store.identity?.user.id, "account-a")
+        XCTAssertEqual(store.options.apiKey, "a-personal-key")
     }
 
     private func waitUntil(_ reason: String, _ ready: () -> Bool) async throws {

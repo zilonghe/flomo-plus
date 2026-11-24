@@ -1152,8 +1152,13 @@ async function insightsApi(request, path, env, account) {
   return json({ error: "这个操作不可用。" }, 404);
 }
 
-function connectionPage(connected) {
-  return html(`<!doctype html>
+function connectionPage(connected, authMode) {
+  const oauth = authMode === "oauth";
+  const login = oauth ? '<a href="/">前往登录</a>' :
+    '<a href="/signin-with-chatgpt?return_to=%2Fconnect" target="_top">用 ChatGPT 账号登录</a>';
+  const logout = oauth ? '<form method="POST" action="/api/auth/logout"><button type="submit">退出账号</button></form>' :
+    '<a href="/signout-with-chatgpt?return_to=%2Fconnect" target="_top">退出账号</a>';
+  const response = html(`<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1169,11 +1174,14 @@ main{max-width:420px;padding:48px 24px;margin:0 auto}h1{font-size:27px;margin:0 
 <body>
 <main>
 <h1>${connected ? "微记账号已连接" : "连接微记账号"}</h1>
-<p>${connected ? "回到微记 App，即可在这台设备同步笔记。" : "用 ChatGPT 账号登录后，就可以同步这份日志。"}</p>
-<nav>${connected ? '<a href="/">打开网页版</a><a href="/signout-with-chatgpt?return_to=%2Fconnect" target="_top">退出账号</a>' : '<a href="/signin-with-chatgpt?return_to=%2Fconnect" target="_top">用 ChatGPT 账号登录</a>'}</nav>
+<p>${connected ? "回到微记 App，即可在这台设备同步笔记。" : oauth ? "登录后即可同步笔记。" : "用 ChatGPT 账号登录后，就可以同步这份日志。"}</p>
+<nav>${connected ? '<a href="/">打开网页版</a>' + logout : login}</nav>
 </main>
 </body>
 </html>`);
+  // A same-origin form POST must send the real Origin for the logout check.
+  if (oauth) response.headers.set("Referrer-Policy", "same-origin");
+  return response;
 }
 
 async function api(request, url, env) {
@@ -1249,7 +1257,7 @@ export default {
       return new Response(null, { status: 405, headers: { ...pageHeaders, Allow: "GET, HEAD" } });
     }
     if (url.pathname === "/connect" || (url.pathname === "/" && !currentUser(request))) {
-      const response = connectionPage(Boolean(currentUser(request)));
+      const response = connectionPage(Boolean(currentUser(request)), request.headers.get("oai-authenticated-auth-mode"));
       return request.method === "HEAD" ? new Response(null, response) : response;
     }
     if (url.pathname.startsWith("/relay/") && !currentUser(request)) return html("", 401);

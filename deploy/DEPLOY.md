@@ -4,22 +4,28 @@
 
 准备 Linux VPS、域名、Caddy、SQLite CLI 和 Node.js 24 LTS（最低 Node 22，须支持 `node:sqlite` 与 FTS5）。将域名的 A/AAAA 记录指向 VPS，仅对外开放 80、443 和受限 SSH。微记和可选的 CLIProxyAPI 均绑定回环。以下示例假定 Node 在 `/usr/bin/node`，安装路径不同时修改 unit。
 
-以发布的提交安装到 `/opt/weiji`，在该目录运行 `npm ci --omit=dev`。现有构建脚本在服务启动时删除并重建 `dist/`，因此示例把这一份发布副本交给专用 `weiji` 用户。凭据始终放在 `/etc/weiji`。
+以部署账号在 `/opt/weiji` 安装已发布的提交，预构建后将发布目录交给 root。升级时也先准备好预构建的发布副本，再切换。Web 服务以 `SKIP_BUILD=1` 加载 `dist/server/index.js`，只在数据目录和模型缓存目录写入。备份服务使用独立用户和独立凭据，并通过 `weiji` 组只读访问 SQLite。
 
 ```sh
-sudo useradd --system --home-dir /var/lib/weiji --shell /usr/sbin/nologin weiji
+npm ci --omit=dev
+npm run build
+sudo chown -R root:root /opt/weiji
+sudo chmod -R go-w /opt/weiji
+sudo useradd --system --user-group --home-dir /var/lib/weiji --shell /usr/sbin/nologin weiji
+sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin weiji-backup
 sudo install -d -m 0750 -o root -g root /etc/weiji
-sudo install -d -m 0700 -o weiji -g weiji /var/lib/weiji
-sudo chown -R weiji:weiji /opt/weiji
-sudoedit /etc/weiji/server.env /etc/weiji/backup.env
-sudo chmod 0600 /etc/weiji/server.env /etc/weiji/backup.env
+sudo install -d -m 0750 -o weiji -g weiji /var/lib/weiji /var/cache/weiji
+sudoedit /etc/weiji/app.env /etc/weiji/backup.env
+sudo chown root:weiji /etc/weiji/app.env
+sudo chown root:weiji-backup /etc/weiji/backup.env
+sudo chmod 0640 /etc/weiji/app.env /etc/weiji/backup.env
 sudo install -m 0644 deploy/weiji.service.example /etc/systemd/system/weiji.service
 sudo install -m 0644 deploy/weiji-backup.service.example /etc/systemd/system/weiji-backup.service
 sudo install -m 0644 deploy/weiji-backup.timer.example /etc/systemd/system/weiji-backup.timer
 sudo systemctl daemon-reload
 ```
 
-按 [env.example](env.example) 分别填写两个 environment 文件，备份文件也需同一个 `SQLITE_PATH`。不要启动仍使用占位凭据的服务。配置 `PUBLIC_ORIGIN=https://你的域名`，不要添加尾斜杠。按需配置一家或两家 OAuth，未使用的提供商留空：
+按 [env.example](env.example) 的两个区段分别填写 `app.env` 和 `backup.env`。两者使用同一个 `SQLITE_PATH`，R2 凭据只放在 `backup.env`。systemd 在切换到服务用户前读取环境文件。若沿用旧库，在停服时把主库权限设为 `weiji:weiji`、`0640`，确保备份进程也能读取运行时的 WAL/SHM 文件。不要启动仍使用占位凭据的服务。配置 `PUBLIC_ORIGIN=https://你的域名`，不要添加尾斜杠。按需配置一家或两家 OAuth，未使用的提供商留空：
 
 | 提供商 | 注册的回调 URL |
 | --- | --- |
@@ -65,8 +71,9 @@ api-keys:
    sqlite3 -readonly "$OLD_DB" "VACUUM INTO '/secure/staging/weiji-cutover.db';"
    sqlite3 -readonly /secure/staging/weiji-cutover.db 'PRAGMA integrity_check;'
    ```
-3. VPS 上确认新服务还没有接流量，保存原始快照，再以 `0600`、属主 `weiji` 把快照安装到配置的 `SQLITE_PATH`（如目标文件已存在，先核对并另存）。管理员 CLI 会应用迁移。在 `/opt/weiji` 运行，使用实际旧账号和返回的 `userId`：
+3. VPS 上确认新服务还没有接流量，保存原始快照，再以 `0640`、属主 `weiji:weiji` 把快照安装到配置的 `SQLITE_PATH`（如目标文件已存在，先核对并另存）。管理员 CLI 会应用迁移。在 `/opt/weiji` 运行，使用实际旧账号和返回的 `userId`：
    ```sh
+   sudo install -m 0640 -o weiji -g weiji /secure/staging/weiji-cutover.db /var/lib/weiji/weiji.db
    sudo -u weiji env SQLITE_PATH=/var/lib/weiji/weiji.db /usr/bin/node --experimental-sqlite scripts/admin.mjs \
      prebind-admin --provider github --subject "$GITHUB_USER_ID" --name "$OWNER_NAME"
    sudo -u weiji env SQLITE_PATH=/var/lib/weiji/weiji.db /usr/bin/node --experimental-sqlite scripts/admin.mjs \
@@ -81,6 +88,6 @@ api-keys:
 
 运维命令以服务用户运行并明确指定 `SQLITE_PATH`。例如 `node --experimental-sqlite scripts/admin.mjs invite create --max-uses 1 --days 7 --note "测试"`；明文邀请码只在创建时显示。用 `invite list` 查看哈希和尾号，用 `invite revoke <codeOrHash>` 作废。账号停用用 `user disable <userId>`，会吊销该账号的活跃会话。
 
-给备份凭据分配目标 bucket 的 List、Put、Delete 权限，使用微记独立前缀（结尾是 `/`）。先运行 `sudo systemctl start weiji-backup.service`，查看 `journalctl -u weiji-backup.service` 及 R2 对象，再启用 `sudo systemctl enable --now weiji-backup.timer`。默认每日 UTC 03:00，按配置仅清理本前缀的过期 `.db.gz`。备份含私有笔记与账号元数据，限制存储访问。
+给备份凭据分配目标 bucket 的 List、Put、Delete 权限，使用微记独立前缀（结尾是 `/`）。在 Web 服务运行时执行 `sudo systemctl start weiji-backup.service`，查看 `journalctl -u weiji-backup.service` 及 R2 对象，再启用 `sudo systemctl enable --now weiji-backup.timer`。默认每日 UTC 03:00，按配置仅清理本前缀的过期 `.db.gz`。备份含私有笔记与账号元数据，限制存储访问。
 
 定期下载一份快照到受限目录并用 `node --experimental-sqlite scripts/backup-r2.mjs --verify snapshot.db.gz` 验证。恢复前停止服务，先保存当前库及 WAL，再把解压的新库安装到单独路径做完整性和数据核对；切换 `SQLITE_PATH` 后重启。恢复旧快照可能恢复当时还活跃而后来被吊销的会话，切换前在恢复库吊销所有旧会话并删除未完成的 OAuth 状态，要求用户重新登录。

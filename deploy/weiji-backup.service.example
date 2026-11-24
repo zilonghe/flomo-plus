@@ -5,11 +5,12 @@ After=network-online.target weiji.service
 
 [Service]
 Type=oneshot
-User=weiji
+User=weiji-backup
 Group=weiji
 WorkingDirectory=/opt/weiji
 EnvironmentFile=/etc/weiji/backup.env
 ExecStart=/usr/bin/node --experimental-sqlite scripts/backup-r2.mjs
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
+PrivateTmp=yes
+ProtectSystem=strict

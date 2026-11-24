@@ -1,17 +1,26 @@
 import Foundation
 import Security
 
-enum KeychainStore {
-    @MainActor
-    struct ServerTokens {
-        let read: (String) -> String?
-        let write: (String, String) throws -> Void
+@MainActor
+struct KeychainStore {
+    let read: (String, String) -> String?
+    let write: (String, String, String) throws -> Void
 
-        static let live = Self(
-            read: { KeychainStore.read(origin: $0) },
-            write: { try KeychainStore.write($0, origin: $1) }
-        )
+    static let live = Self(read: load, write: save)
+
+    func serverToken(for origin: String) -> String? { read(origin, "server") }
+    func saveServerToken(_ token: String, for origin: String) throws { try write(token, origin, "server") }
+
+    func openAIKey(origin: String, userId: String) -> String? {
+        read(origin, openAIKind(userId))
     }
+
+    func saveOpenAIKey(_ key: String, origin: String, userId: String) throws {
+        try write(key, origin, openAIKind(userId))
+    }
+
+    // An origin-only key has no verified owner and must never be read as a fallback.
+    private func openAIKind(_ userId: String) -> String { "openai:\(userId)" }
 
     private static func query(origin: String, kind: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
@@ -19,7 +28,7 @@ enum KeychainStore {
          kSecAttrAccount as String: origin]
     }
 
-    static func read(origin: String, kind: String = "server") -> String? {
+    private static func load(origin: String, kind: String) -> String? {
         var query = query(origin: origin, kind: kind)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -29,7 +38,7 @@ enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ secret: String, origin: String, kind: String = "server") throws {
+    private static func save(_ secret: String, origin: String, kind: String) throws {
         var query = query(origin: origin, kind: kind)
         if secret.isEmpty {
             let status = SecItemDelete(query as CFDictionary)
