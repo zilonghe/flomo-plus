@@ -142,16 +142,24 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate {
     }
 }
 
+enum NotesFetchResult: Sendable {
+    case notModified
+    case updated([Note], etag: String?)
+}
+
 actor WeijiAPIClient {
     nonisolated let configuration: ServerConfiguration
     private let session: URLSession
     private let account: String?
+    private let onObsidianNotesChanged: (@Sendable () async -> Void)?
     private let onAuthenticationRejected: (@Sendable (WeijiAPIError) async -> Void)?
 
     init(configuration: ServerConfiguration, account: String? = nil, transport: URLSession? = nil,
+         onObsidianNotesChanged: (@Sendable () async -> Void)? = nil,
          onAuthenticationRejected: (@Sendable (WeijiAPIError) async -> Void)? = nil) {
         self.configuration = configuration
         self.account = account
+        self.onObsidianNotesChanged = onObsidianNotesChanged
         self.onAuthenticationRejected = onAuthenticationRejected
         if let transport {
             session = transport
@@ -192,6 +200,23 @@ actor WeijiAPIClient {
         try await send(request(path))
     }
 
+    func fetchNotes(ifNoneMatch: String? = nil) async throws -> NotesFetchResult {
+        var request = try request("/api/notes")
+        if let ifNoneMatch, !ifNoneMatch.isEmpty {
+            request.setValue(ifNoneMatch, forHTTPHeaderField: "If-None-Match")
+        }
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        let http = response as? HTTPURLResponse
+        switch http?.statusCode {
+        case 304: return .notModified
+        case 200:
+            let result = try JSONDecoder().decode(NotesResponse.self, from: data)
+            return .updated(result.notes, etag: http?.value(forHTTPHeaderField: "ETag"))
+        default: throw await responseError(http?.statusCode ?? 0, data)
+        }
+    }
+
     func post<Result: Decodable & Sendable>(_ path: String, _ body: some Encodable & Sendable) async throws -> Result {
         try await send(request(path, method: "POST", body: JSONEncoder().encode(body)))
     }
@@ -209,7 +234,9 @@ actor WeijiAPIClient {
     }
 
     func triggerObsidianSync() async throws -> ObsidianSyncResponse {
-        try await post("/api/admin/obsidian/sync", [String: String]())
+        let result: ObsidianSyncResponse = try await post("/api/admin/obsidian/sync", [String: String]())
+        if result.stats.created > 0 || result.stats.updated > 0 { await onObsidianNotesChanged?() }
+        return result
     }
 
     func exchangeOAuthCallback(_ callback: URL, pkce: OAuthPKCE, deviceLabel: String) async throws -> OAuthExchange {
@@ -278,7 +305,9 @@ actor WeijiAPIClient {
             let data = Data(frame.data.utf8)
             switch frame.event {
             case "error": throw WeijiAPIError.stream(data)
-            case "done": result = try JSONDecoder().decode(Result.self, from: data)
+            case "done":
+                result = try JSONDecoder().decode(Result.self, from: data)
+                await onFrame(frame)
             default: await onFrame(frame)
             }
         }

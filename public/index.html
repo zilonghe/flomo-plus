@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" type="module"></script>
 </head>
-<body>
+<body class="auth-checking">
   <svg class="symbol-bank" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <symbol id="i-mark" viewBox="0 0 24 24"><path d="M5 19.3V7.8A2.8 2.8 0 0 1 7.8 5h11v11.4h-11A2.8 2.8 0 0 0 5 19.2c0 1 .8 1.8 1.8 1.8H19"/><path d="M9 9.1h5.7m-5.7 3h3.9"/></symbol>
     <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.2"/><rect x="14" y="4" width="6" height="6" rx="1.2"/><rect x="4" y="14" width="6" height="6" rx="1.2"/><rect x="14" y="14" width="6" height="6" rx="1.2"/></symbol>
@@ -92,6 +92,7 @@
       </header>
 
       <main class="main-content" id="main">
+        <div class="loading-skeleton" id="sync-skeleton" role="status" aria-label="正在验证登录"><i></i><i></i><i></i></div>
         <div id="connection-error" class="notice" hidden>
           <span id="connection-error-text"></span>
           <a class="button button-secondary" id="sign-in" href="/signin-with-chatgpt?return_to=/" target="_top" hidden>使用 ChatGPT 登录</a>
@@ -291,7 +292,18 @@
               <textarea class="ai-chat-textarea" id="ai-chat-input" rows="2" maxlength="8000" aria-label="问题" placeholder="问问你的笔记…"></textarea>
               <div class="ai-composer-actions">
                 <button class="icon-button ai-pick-btn" type="button" data-action="ai-pick-note" aria-label="引用笔记" title="引用笔记">@</button>
-                <select id="ai-chat-model" class="field ai-chat-model" aria-label="对话模型" hidden></select>
+                <div id="ai-model-picker" class="ai-model-picker" hidden>
+                  <button id="ai-model-toggle" class="ai-picker-pill" type="button" aria-label="选择对话模型" aria-expanded="false" aria-controls="ai-model-popover"></button>
+                  <div id="ai-model-popover" class="ai-picker-popover" hidden>
+                    <input class="field" id="ai-model-search" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off">
+                    <div id="ai-model-options"></div>
+                  </div>
+                </div>
+                <div id="ai-effort-picker" class="ai-effort-picker" hidden>
+                  <span id="ai-effort-fixed" class="ai-picker-pill" hidden></span>
+                  <button id="ai-effort-toggle" class="ai-picker-pill" type="button" aria-label="思考档位" aria-expanded="false" aria-controls="ai-effort-popover"></button>
+                  <div id="ai-effort-popover" class="ai-picker-popover" role="group" aria-label="思考档位" hidden></div>
+                </div>
                 <button class="button button-primary ai-send-btn" id="ai-chat-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
               </div>
             </div>

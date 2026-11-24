@@ -99,6 +99,17 @@ actor NoteCacheStore {
         }
     }
 
+    struct Snapshot: Sendable {
+        let notes: [Note]
+        let etag: String?
+    }
+
+    private struct StoredSnapshot: Codable {
+        let version: Int
+        let etag: String?
+        let notes: [Note]
+    }
+
     private struct Binding: Codable {
         let tokenDigest: String
         let userId: String
@@ -110,14 +121,27 @@ actor NoteCacheStore {
     }
 
     func load(_ key: Key) throws -> [Note]? {
+        try loadSnapshot(key)?.notes
+    }
+
+    func loadSnapshot(_ key: Key) throws -> Snapshot? {
         let url = directory.appending(path: key.filename)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try JSONDecoder().decode([Note].self, from: Data(contentsOf: url))
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        if let stored = try? decoder.decode(StoredSnapshot.self, from: data), stored.version == 1 {
+            return Snapshot(notes: stored.notes, etag: stored.etag)
+        }
+        return Snapshot(notes: try decoder.decode([Note].self, from: data), etag: nil)
     }
 
     func save(_ notes: [Note], for key: Key) throws {
+        try save(notes, etag: nil, for: key)
+    }
+
+    func save(_ notes: [Note], etag: String?, for key: Key) throws {
         try Task.checkCancellation()
-        try write(notes, to: directory.appending(path: key.filename))
+        try write(StoredSnapshot(version: 1, etag: etag, notes: notes), to: directory.appending(path: key.filename))
     }
 
     func bind(_ configuration: ServerConfiguration, userId: String) throws {
@@ -127,10 +151,15 @@ actor NoteCacheStore {
     }
 
     func loadOfflineEntry(_ configuration: ServerConfiguration) throws -> (key: Key, notes: [Note])? {
+        guard let entry = try loadOfflineSnapshot(configuration) else { return nil }
+        return (entry.key, entry.snapshot.notes)
+    }
+
+    func loadOfflineSnapshot(_ configuration: ServerConfiguration) throws -> (key: Key, snapshot: Snapshot)? {
         guard let binding = try matchingBinding(configuration) else { return nil }
         let key = Key(origin: configuration.origin, userId: binding.userId)
-        guard let notes = try load(key) else { return nil }
-        return (key, notes)
+        guard let snapshot = try loadSnapshot(key) else { return nil }
+        return (key, snapshot)
     }
 
     func loadOffline(_ configuration: ServerConfiguration) throws -> [Note]? {

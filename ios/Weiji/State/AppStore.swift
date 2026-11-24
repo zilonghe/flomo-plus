@@ -29,9 +29,20 @@ final class AppStore {
     private(set) var syncing = false
     private(set) var signingOut = false
     private(set) var isOffline = false
-    var options = AIOptions()
-    var gatewayModels: [String] = []
-    var gatewayDefault: String?
+    private(set) var options = AIOptions()
+    private(set) var gatewayModelMeta: [ModelMeta] = []
+    private(set) var gatewayDefault: String?
+
+    var selectedModelMeta: ModelMeta? {
+        if let selectedGatewayModel { return selectedGatewayModel }
+        return options.model.isEmpty ? nil : .inferred(from: options.model)
+    }
+
+    var selectedGatewayModel: ModelMeta? {
+        guard options.provider == .codex, identity?.codexMode == "gateway" else { return nil }
+        let selected = options.model.isEmpty ? gatewayDefault : options.model
+        return gatewayModelMeta.first { $0.id == selected }
+    }
     var notesById: [String: Note] { index.byId }
     var authScreenState: AuthScreenState {
         if identity != nil { return .online }
@@ -55,6 +66,7 @@ final class AppStore {
     @ObservationIgnored private var refreshGeneration = 0
     @ObservationIgnored private var searchGeneration = 0
     @ObservationIgnored private var dataGeneration = 0
+    @ObservationIgnored private var notesETag: String?
     @ObservationIgnored private var workingNotes: [String: Note] = [:]
     @ObservationIgnored private var started = false
     @ObservationIgnored private var offlineFallbackAllowed = true
@@ -105,11 +117,11 @@ final class AppStore {
             do {
                 if let previousKey, previous?.origin != config.origin { try? await cache.invalidate(previousKey) }
                 var preloadedKey: NoteCacheStore.Key?
-                if canPreload, let entry = try? await cache.loadOfflineEntry(config) {
+                if canPreload, let entry = try? await cache.loadOfflineSnapshot(config) {
                     guard stamp == connectionGeneration, !Task.isCancelled else { return }
                     preloadedKey = entry.key
                     isOffline = true
-                    await replace(with: entry.notes, persist: false)
+                    await replace(with: entry.snapshot.notes, etag: entry.snapshot.etag, persist: false)
                 }
                 guard stamp == connectionGeneration, !Task.isCancelled else { return }
                 let session: SessionInfo = try await probe.get("/api/session")
@@ -127,6 +139,14 @@ final class AppStore {
                     try credentials.saveServerToken(config.token, for: config.origin)
                     UserDefaults.standard.set(config.origin, forKey: "weiji.origin")
                 }
+                let confirmedSnapshot: NoteCacheStore.Snapshot?
+                if save, preloadedKey == nil, previous == nil || previous == config,
+                   let entry = try? await cache.loadOfflineSnapshot(config), entry.key == key {
+                    confirmedSnapshot = entry.snapshot
+                } else {
+                    confirmedSnapshot = nil
+                }
+                guard stamp == connectionGeneration, !Task.isCancelled else { return }
                 try? await cache.bind(config, userId: session.user.id)
                 guard stamp == connectionGeneration, !Task.isCancelled else { return }
                 offlineFallbackAllowed = true
@@ -134,29 +154,41 @@ final class AppStore {
                 accountKey = key
                 identity = session
                 options.provider = session.defaultProvider
-                options.model = session.defaultProvider == .openai ? "gpt-4.1-mini" : ""
+                restoreModelPreferences()
                 if !temporary && !key.userId.isEmpty {
                     options.apiKey = credentials.openAIKey(origin: key.origin, userId: key.userId) ?? ""
                 }
-                let client = WeijiAPIClient(configuration: config, account: session.user.id, transport: makeTransport()) { [weak self] failure in
+                let client = WeijiAPIClient(configuration: config, account: session.user.id, transport: makeTransport(),
+                                            onObsidianNotesChanged: { [weak self] in
+                    await self?.invalidateNotesETag(connection: stamp)
+                }, onAuthenticationRejected: { [weak self] failure in
                     await self?.rejectConnection(config, failure: failure, generation: stamp)
-                }
+                })
                 api = client
                 if let rejectedChatDraft, rejectedChatDraft.key == key { chat.draft = rejectedChatDraft.text }
                 rejectedChatDraft = nil
                 showSettings = false
-                if workingNotes.isEmpty, let cached = try? await cache.load(key),
-                   stamp == connectionGeneration, !Task.isCancelled, workingNotes.isEmpty {
-                    await replace(with: cached, persist: false)
+                if let confirmedSnapshot {
+                    await replace(with: confirmedSnapshot.notes, etag: confirmedSnapshot.etag, persist: false)
+                } else if preloadedKey != key, let cached = try? await cache.loadSnapshot(key),
+                          stamp == connectionGeneration, !Task.isCancelled, workingNotes.isEmpty {
+                    // A validator can only come from a snapshot bound to this credential before authentication.
+                    await replace(with: cached.notes, persist: false)
                 }
                 guard stamp == connectionGeneration else { return }
                 await fetchNotes()
                 guard stamp == connectionGeneration else { return }
                 if session.codexMode == "gateway" {
                     let models: ModelOptions? = try? await client.get("/api/ai/models")
-                    if stamp == connectionGeneration {
-                        gatewayModels = models?.models ?? []
-                        gatewayDefault = models?.defaultModel
+                    if stamp == connectionGeneration, let models {
+                        gatewayModelMeta = models.resolvedMeta
+                        gatewayDefault = models.defaultModel
+                        if options.provider == .codex {
+                            restoreModelPreferences()
+                            if !gatewayModelMeta.isEmpty, !options.model.isEmpty, selectedGatewayModel == nil {
+                                setModel("")
+                            }
+                        }
                     }
                 }
             } catch is CancellationError {
@@ -167,10 +199,10 @@ final class AppStore {
                     return
                 }
                 if offlineFallbackAllowed, Self.isNetworkUnavailable(error) {
-                    if !isOffline, let cached = try? await cache.loadOffline(config) {
+                    if !isOffline, let cached = try? await cache.loadOfflineSnapshot(config) {
                         guard stamp == connectionGeneration, !Task.isCancelled else { return }
                         isOffline = true
-                        await replace(with: cached, persist: false)
+                        await replace(with: cached.snapshot.notes, etag: cached.snapshot.etag, persist: false)
                     }
                     guard stamp == connectionGeneration, !Task.isCancelled else { return }
                     if isOffline { return }
@@ -195,7 +227,7 @@ final class AppStore {
         filter = NoteFilter()
         clearLoadedState()
         error = nil
-        gatewayModels = []
+        gatewayModelMeta = []
         gatewayDefault = nil
         options = AIOptions()
     }
@@ -207,6 +239,7 @@ final class AppStore {
         dataGeneration += 1
         detail = nil
         isOffline = false
+        notesETag = nil
         workingNotes = [:]
         index = NoteIndex()
         results = []
@@ -262,12 +295,13 @@ final class AppStore {
     private func rejectConnection(_ config: ServerConfiguration, failure: WeijiAPIError, generation: Int) async {
         guard generation == connectionGeneration else { return }
         offlineFallbackAllowed = false
-        if let accountKey, !chat.draft.isEmpty { rejectedChatDraft = (accountKey, chat.draft) }
+        let key = accountKey
+        if let key, !chat.draft.isEmpty { rejectedChatDraft = (key, chat.draft) }
         resetConnection(to: config)
         showSettings = false
         error = failure.localizedDescription
         let stamp = connectionGeneration
-        try? await cache.revoke(config)
+        try? await cache.clearSession(config, key: key)
         guard stamp == connectionGeneration else { return }
         syncing = false
         error = failure.localizedDescription
@@ -287,7 +321,41 @@ final class AppStore {
     func setProvider(_ provider: AIProvider) {
         guard options.provider != provider else { return }
         options.provider = provider
-        options.model = provider == .openai ? "gpt-4.1-mini" : ""
+        restoreModelPreferences()
+    }
+
+    func setModel(_ model: String) {
+        guard options.model != model else { return }
+        options.model = model
+        setReasoningEffort(options.reasoningEffort)
+    }
+
+    func setReasoningEffort(_ effort: String) {
+        options.reasoningEffort = selectedGatewayModel?.selectableEfforts.contains(effort) == true ? effort : ""
+        guard let key = modelPreferencesKey else { return }
+        UserDefaults.standard.set(options.model, forKey: key + ".model")
+        UserDefaults.standard.set(options.reasoningEffort, forKey: key + ".effort")
+    }
+
+    private var modelPreferencesKey: String? {
+        guard !temporary, let accountKey else { return nil }
+        return "weiji.ai." + accountKey.filename + "." + options.provider.rawValue
+    }
+
+    private func restoreModelPreferences() {
+        let key = modelPreferencesKey
+        options.model = key.flatMap { UserDefaults.standard.string(forKey: $0 + ".model") }
+            ?? (options.provider == .openai ? "gpt-4.1-mini" : "")
+        let effort = key.flatMap { UserDefaults.standard.string(forKey: $0 + ".effort") } ?? ""
+        options.reasoningEffort = selectedGatewayModel?.selectableEfforts.contains(effort) == true ? effort : ""
+    }
+
+    private func invalidateNotesETag(connection: Int) {
+        guard connection == connectionGeneration else { return }
+        notesETag = nil
+        refreshGeneration += 1
+        refreshTask?.cancel()
+        syncing = false
     }
 
     func savedConnectionToken(for origin: String) -> String? {
@@ -321,16 +389,20 @@ final class AppStore {
         syncing = true
         defer { if connection == connectionGeneration && stamp == refreshGeneration { syncing = false } }
         do {
-            let response: NotesResponse = try await api.get("/api/notes")
+            let result = try await api.fetchNotes(ifNoneMatch: workingNotes.isEmpty ? nil : notesETag)
             guard connection == connectionGeneration, stamp == refreshGeneration, !Task.isCancelled else { return }
-            await replace(with: response.notes)
+            if case .updated(let notes, let etag) = result {
+                await replace(with: notes, etag: etag)
+            }
         } catch is CancellationError {
         } catch {
             if connection == connectionGeneration, stamp == refreshGeneration { self.error = error.localizedDescription }
         }
     }
 
-    private func replace(with notes: [Note], persist: Bool = true) async {
+    private func replace(with notes: [Note], etag: String? = nil, persist: Bool = true) async {
+        notesETag = nil
+        let refresh = refreshGeneration
         dataGeneration += 1
         let stamp = dataGeneration
         let connection = connectionGeneration
@@ -339,9 +411,10 @@ final class AppStore {
         let updated = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
         guard connection == connectionGeneration, stamp == dataGeneration else { return }
         index = updated
+        if refresh == refreshGeneration { notesETag = etag }
         scheduleSearch()
         if persist, let key = accountKey {
-            do { try await cache.save(updated.entries.map(\.note), for: key) }
+            do { try await cache.save(updated.entries.map(\.note), etag: notesETag, for: key) }
             catch is CancellationError {}
             catch { if connection == connectionGeneration { self.error = "无法更新本地笔记缓存。" } }
         }
@@ -416,9 +489,7 @@ final class AppStore {
     }
 
     func applyRecord(_ record: NoteRecord?, id: String) async {
-        refreshGeneration += 1
-        refreshTask?.cancel()
-        syncing = false
+        invalidateNotesETag(connection: connectionGeneration)
         workingNotes[id] = record?.note
         await replace(with: Array(workingNotes.values))
     }

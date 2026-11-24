@@ -58,6 +58,58 @@ final class StubProtocol: URLProtocol {
 }
 
 final class APIClientTests: XCTestCase {
+    func testFetchNotesSendsValidatorAndAcceptsEmpty304() async throws {
+        let (config, transport) = try StubProtocol.make { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/notes")
+            if let tag = request.value(forHTTPHeaderField: "If-None-Match") {
+                XCTAssertEqual(tag, #"W/"notes-v1""#)
+                return .init(status: 304, body: "")
+            }
+            return .init(status: 200,
+                         body: #"{"notes":[{"id":"a","body":"body","createdAt":"2026-11-24","turns":[],"revision":1}],"deleted":[]}"#,
+                         headers: ["ETag": #"W/"notes-v1""#])
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let client = WeijiAPIClient(configuration: config, transport: transport)
+        guard case .updated(let notes, let tag) = try await client.fetchNotes(ifNoneMatch: "") else {
+            return XCTFail("An empty validator must fetch a snapshot")
+        }
+        XCTAssertEqual(notes.map(\.id), ["a"])
+        XCTAssertEqual(tag, #"W/"notes-v1""#)
+        guard case .notModified = try await client.fetchNotes(ifNoneMatch: tag) else {
+            return XCTFail("A 304 with no body must skip decoding")
+        }
+    }
+
+    func testModelCatalogUsesMetadataAndInfersMissingEntries() throws {
+        let current = #"{"models":["gemini-3-flash","gpt-4.1-mini"],"defaultModel":"gemini-3-flash","modelMeta":[{"id":"gemini-3-flash","label":"Flash","vendor":"gemini","thinking":true,"efforts":["medium"],"fixedEffort":null,"defaultEffort":"medium"}]}"#
+        let catalog = try JSONDecoder().decode(ModelOptions.self, from: Data(current.utf8))
+        XCTAssertEqual(catalog.resolvedMeta.map(\.label), ["Flash", "GPT-4.1 Mini"])
+        XCTAssertEqual(catalog.resolvedMeta[0].selectableEfforts, ["medium"])
+        XCTAssertEqual(catalog.resolvedMeta[0].defaultEffort, "medium")
+        XCTAssertFalse(catalog.resolvedMeta[1].thinking)
+
+        let legacy = #"{"models":["gpt-6.2-sol","gemini-4-neon-xhigh","gemini-3-flash","claude-opus-5-5-high"]}"#
+        let inferred = try JSONDecoder().decode(ModelOptions.self, from: Data(legacy.utf8)).resolvedMeta
+        XCTAssertEqual(inferred.map(\.vendor), ["openai", "gemini", "gemini", "claude"])
+        XCTAssertTrue(inferred[0].selectableEfforts.contains("xhigh"))
+        XCTAssertEqual(inferred[1].fixedEffort, "xhigh")
+        XCTAssertTrue(inferred[1].selectableEfforts.isEmpty)
+        XCTAssertEqual(inferred[2].selectableEfforts, ["low", "medium", "high"])
+        XCTAssertEqual(inferred[3].fixedEffort, "high")
+    }
+
+    func testChatOptionsEncodeOnlyAnExplicitReasoningEffort() throws {
+        var options = AIOptions(provider: .codex, model: "gemini-3-flash")
+        func encoded() throws -> [String: Any] {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(options.fields)) as? [String: Any])
+        }
+        XCTAssertNil(try encoded()["reasoningEffort"])
+        options.reasoningEffort = "medium"
+        XCTAssertEqual(try encoded()["reasoningEffort"] as? String, "medium")
+    }
+
     func testObsidianStatusAndManualSyncUseAdminRoutes() async throws {
         XCTAssertEqual(ServerConfiguration.defaultOrigin, "https://weiji.18818888.xyz")
         let stats = #"{"scanned":12,"fetched":5,"created":2,"updated":1,"skipped":7,"excluded":1,"conflicts":1}"#

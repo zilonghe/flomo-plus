@@ -114,6 +114,9 @@ export function renderSafeMarkdown(container, markdown, citations = []) {
         const strong = doc.createElement('strong');
         appendCitedText(strong, match[1], citations);
         node.append(strong);
+      } else if (/^(?:\[N\d+\](?:[\s,，、]*))+$/.test(match[2]) &&
+          citations.some(({ ref }) => match[2].includes('[' + ref + ']'))) {
+        appendCitedText(node, match[2], citations);
       } else {
         const code = doc.createElement('code');
         code.textContent = match[2];
@@ -132,7 +135,30 @@ export function renderSafeMarkdown(container, markdown, citations = []) {
     blocks.push(node);
     paragraph = [];
   };
+  let fence = 0, codeLines = [];
+  const flushCode = () => {
+    const pre = doc.createElement('pre');
+    const code = doc.createElement('code');
+    code.textContent = codeLines.join('\n');
+    pre.append(code);
+    blocks.push(pre);
+    codeLines = [];
+  };
   for (const raw of markdown.split(/\r?\n/)) {
+    const marker = codeFence(raw);
+    if (fence) {
+      if (marker && marker[1].length >= fence && !marker[2].trim()) {
+        flushCode();
+        fence = 0;
+      } else codeLines.push(raw);
+      continue;
+    }
+    if (marker) {
+      flush();
+      list = null;
+      fence = marker[1].length;
+      continue;
+    }
     const line = raw.trim();
     const heading = line.match(/^(#{1,4})\s+(.+)$/);
     const item = line.match(/^([-+*]|\d+\.)\s+(.+)$/);
@@ -168,6 +194,119 @@ export function renderSafeMarkdown(container, markdown, citations = []) {
     else flush();
   }
   flush();
-  container.textContent = '';
-  container.append(...blocks);
+  if (fence) flushCode();
+  container.replaceChildren(...blocks);
 }
+
+function codeFence(line) {
+  return /^ {0,3}(`{3,})([^`]*)$/.exec(line);
+}
+
+export function splitStreamingMarkdown(markdown) {
+  const stableBlocks = [];
+  let fence = 0, start = 0;
+  for (const line of markdown.matchAll(/([^\r\n]*)\r?\n/g)) {
+    const marker = codeFence(line[1]);
+    if (marker) {
+      if (!fence) fence = marker[1].length;
+      else if (marker[1].length >= fence && !marker[2].trim()) fence = 0;
+    }
+    const end = line.index + line[0].length;
+    if (!fence && !line[1].trim()) {
+      const block = markdown.slice(start, end).trimEnd();
+      if (block.trim()) stableBlocks.push(block);
+      start = end;
+    }
+  }
+  return { stableBlocks, tail: markdown.slice(start) };
+}
+
+// Only the tail is replaced. A paragraph joins the frozen prefix once its blank line arrives.
+const renderedStreams = new WeakMap();
+const noCitations = [];
+export function updateStreamingMarkdown(container, markdown, citations = noCitations) {
+  let stream = renderedStreams.get(container);
+  if (!stream || !markdown.startsWith(stream.prefix) || stream.citations !== citations) {
+    container.replaceChildren();
+    stream = { prefix: '', citations, tail: container.ownerDocument.createElement('div'), text: null };
+    stream.tail.className = 'ai-stream-tail';
+    container.append(stream.tail);
+    renderedStreams.set(container, stream);
+  }
+  const rest = markdown.slice(stream.prefix.length);
+  const { stableBlocks, tail } = splitStreamingMarkdown(rest);
+  if (stableBlocks.length) {
+    const fragment = container.ownerDocument.createElement('div');
+    for (const block of stableBlocks) {
+      renderSafeMarkdown(fragment, block, citations);
+      stream.tail.before(...fragment.childNodes);
+    }
+  }
+  stream.prefix += rest.slice(0, rest.length - tail.length);
+  if (tail !== stream.text) {
+    renderSafeMarkdown(stream.tail, tail, citations);
+    stream.text = tail;
+  }
+  return stream.tail;
+}
+
+export async function notesCacheTransaction(mode, operation, isCurrent = () => true, win = globalThis) {
+  const db = await new Promise((resolve, reject) => {
+    const open = win.indexedDB.open('weiji-notes-cache', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('accounts', { keyPath: 'userId' });
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+  try {
+    if (!isCurrent()) return;
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction('accounts', mode);
+      const request = operation(tx.objectStore('accounts'));
+      tx.oncomplete = () => resolve(request.result);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export function clearWeijiCacheDB(userId, win = globalThis) {
+  return notesCacheTransaction('readwrite', store => userId ? store.delete(userId) : store.clear(), undefined, win)
+    .catch(() => {});
+}
+
+export const weijiAuthEvent = 'weiji_auth_event';
+export function publishWeijiAuthEvent(win = globalThis.window) {
+  try { win.localStorage.setItem(weijiAuthEvent, JSON.stringify({ type: 'logout', at: Date.now() })); } catch {}
+}
+
+export function bindConnectLogout(doc = globalThis.document, win = globalThis.window) {
+  const control = doc?.querySelector('[data-connect-logout]');
+  if (!control || control.dataset.logoutBound) return;
+  control.dataset.logoutBound = 'true';
+  const oauth = control.dataset.connectLogout === 'oauth';
+  const button = oauth ? control.querySelector('button[type="submit"]') : null;
+  const signoutHref = control.dataset.signoutHref;
+  let pending = false;
+  const logout = async event => {
+    event.preventDefault();
+    if (pending) return;
+    pending = true;
+    if (button) button.disabled = true;
+    publishWeijiAuthEvent(win);
+    await clearWeijiCacheDB(undefined, win);
+    if (oauth) control.submit();
+    else (win.top ?? win).location.href = signoutHref;
+  };
+  control.addEventListener(oauth ? 'submit' : 'click', logout);
+  if (button) button.disabled = false;
+  else {
+    control.addEventListener('auxclick', event => { if (event.button === 1) void logout(event); });
+    control.addEventListener('contextmenu', event => event.preventDefault());
+    control.href = signoutHref;
+    control.removeAttribute('aria-disabled');
+    control.removeAttribute('tabindex');
+  }
+}
+
+bindConnectLogout();

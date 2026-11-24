@@ -72,8 +72,12 @@ final class StoreLogicTests: XCTestCase {
         let persisted = OSAllocatedUnfairLock(initialState: [String]())
         let (config, transport) = try StubProtocol.make { request in
             func session(version: Int) -> String {
-                let turns = persisted.withLock { messages in
-                    messages.flatMap { [["role": "user", "text": $0], ["role": "assistant", "text": "回复"]] }
+                let turns: [[String: Any]] = persisted.withLock { messages in
+                    messages.flatMap { [
+                        ["role": "user", "text": $0],
+                        ["role": "assistant", "text": "回复", "steps": [["id": "retrieve", "kind": "retrieve",
+                                                                        "label": "检索笔记", "durationMs": 120]]],
+                    ] }
                 }
                 let data = try! JSONSerialization.data(withJSONObject: turns)
                 return """
@@ -122,8 +126,8 @@ final class StoreLogicTests: XCTestCase {
         chat.togglePin("ref")
         chat.draft = "原始问题"
 
-        func send(model: String = "model-a") async throws {
-            chat.send(api: client, options: AIOptions(provider: .codex, model: model), profile: profile)
+        func send(model: String = "model-a", effort: String = "") async throws {
+            chat.send(api: client, options: AIOptions(provider: .codex, model: model, reasoningEffort: effort), profile: profile)
             XCTAssertTrue(chat.sending)
             try await waitUntil("聊天请求完成") { !chat.sending }
         }
@@ -134,6 +138,10 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertNil(chat.error)
         XCTAssertEqual(chat.draft, "")
         XCTAssertEqual(chat.session?.turns?.map(\.role), ["user", "assistant"])
+        XCTAssertEqual(chat.session?.turns?.last?.steps?.first?.durationMs, 120)
+        XCTAssertTrue(chat.liveSteps.isEmpty)
+        XCTAssertTrue(chat.liveCitations.isEmpty)
+        XCTAssertTrue(chat.liveReasoning.isEmpty)
         let reloaded: ChatResponse = try await client.get("/api/ai/sessions/session")
         XCTAssertEqual(reloaded.session?.turns?.map(\.text), ["原始问题", "回复"])
 
@@ -146,19 +154,23 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(chat.session?.version, 3)
         try await send()
         try await send(model: "model-b")
+        try await send(model: "model-b", effort: "high")
 
         let requests = wire.withLock { $0 }
-        XCTAssertEqual(requests.map(\.version), [1, 1, 2, 2, 2, 3, 3])
-        XCTAssertEqual(requests.map(\.message), ["原始问题", "原始问题", "下一问", "修改后的问题", "修改后的问题", "修改后的问题", "修改后的问题"])
-        XCTAssertEqual(requests.map(\.pins), [["ref"], ["ref"], ["ref"], ["ref"], ["ref", "second"], ["ref", "second"], ["ref", "second"]])
-        if requests.count == 7 {
+        XCTAssertEqual(requests.map(\.version), [1, 1, 2, 2, 2, 3, 3, 3])
+        XCTAssertEqual(requests.map(\.message), ["原始问题", "原始问题", "下一问", "修改后的问题", "修改后的问题", "修改后的问题", "修改后的问题", "修改后的问题"])
+        XCTAssertEqual(requests.map(\.pins), [["ref"], ["ref"], ["ref"], ["ref"], ["ref", "second"], ["ref", "second"], ["ref", "second"], ["ref", "second"]])
+        if requests.count == 8 {
             XCTAssertTrue(requests.allSatisfy { UUID(uuidString: $0.id) != nil })
             XCTAssertEqual(requests[0].id, requests[1].id)
-            XCTAssertEqual(Set(requests.dropFirst().map(\.id)).count, 6)
+            XCTAssertEqual(Set(requests.dropFirst().map(\.id)).count, 7)
             XCTAssertEqual(requests[5].model, "model-a")
             XCTAssertEqual(requests[6].model, "model-b")
             XCTAssertEqual(requests[5].otherFields, requests[6].otherFields)
             XCTAssertNotEqual(requests[5].id, requests[6].id, "Changing only the POST model must change its request ID")
+            XCTAssertNotEqual(requests[6].id, requests[7].id, "Changing only the effort must change its request ID")
+            let effortFields = try XCTUnwrap(JSONSerialization.jsonObject(with: requests[7].otherFields) as? [String: Any])
+            XCTAssertEqual(effortFields["reasoningEffort"] as? String, "high")
         }
 
         let typed = "问题"
@@ -175,6 +187,7 @@ final class StoreLogicTests: XCTestCase {
             ("model", { $0.model = "model-b" }),
             ("provider", { $0.provider = .openai }),
             ("useProfile", { $0.useProfile = false }),
+            ("reasoningEffort", { $0.reasoningEffort = "high" }),
             // Insight context is sent as part of the message, even when the typed question stays the same.
             ("insightContext", { $0.message = AIChatStore.message(typed, insight: insight) }),
         ]
@@ -373,6 +386,122 @@ final class StoreLogicTests: XCTestCase {
         assertIsolated(try await launch(config))
     }
 
+    func testLegacySnapshotOpensOfflineThenFetchesUnconditionally() async throws {
+        let online = OSAllocatedUnfairLock(initialState: false)
+        let (config, transport) = try StubProtocol.make { request in
+            if !online.withLock({ $0 }) { return .init(status: 0, body: "", failure: .notConnectedToInternet) }
+            if request.url?.path == "/api/session" { return .init(status: 200, body: sessionFixture) }
+            XCTAssertEqual(request.url?.path, "/api/notes")
+            XCTAssertNil(request.value(forHTTPHeaderField: "If-None-Match"))
+            return .init(status: 200, body: notesFixture, headers: ["ETag": #""from-server""#])
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let cache = NoteCacheStore(directory: directory)
+        let key = NoteCacheStore.Key(origin: config.origin, userId: "account")
+        defer {
+            transport.invalidateAndCancel(); StubProtocol.remove(config)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try await cache.bind(config, userId: key.userId)
+        let legacy = Note(id: "legacy", body: "离线旧快照", createdAt: "2025-02-01T00:00:00Z", revision: 1)
+        try JSONEncoder().encode([legacy]).write(to: directory.appending(path: key.filename))
+        let old = try await cache.loadSnapshot(key)
+        XCTAssertEqual(old?.notes.map(\.id), [legacy.id])
+        XCTAssertNil(old?.etag)
+
+        let store = AppStore(initial: config, temporary: true, cache: cache, makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("旧版离线笔记") { !store.syncing && store.results.first?.id == legacy.id }
+        XCTAssertTrue(store.isOffline)
+        online.withLock { $0 = true }
+        store.refresh()
+        try await waitUntil("在线笔记") { !store.syncing && store.results.first?.id == "note" }
+        let updated = try await cache.loadSnapshot(key)
+        XCTAssertEqual(updated?.notes.map(\.id), ["note"])
+        XCTAssertEqual(updated?.etag, #""from-server""#)
+    }
+
+    func testMatched304SkipsIndexAndValidatorIsClearedOnChangesAndAuthRejection() async throws {
+        let requests = OSAllocatedUnfairLock(initialState: [String?]())
+        let searches = OSAllocatedUnfairLock(initialState: 0)
+        let rejection = OSAllocatedUnfairLock(initialState: 0)
+        let tag = #""server-v2""#
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes" where request.httpMethod == "POST":
+                return .init(status: 200, body: #"{"note":{"id":"note","body":"本地编辑","createdAt":"2025-02-01T00:00:00Z","turns":[],"revision":3}}"#)
+            case "/api/admin/obsidian/sync":
+                return .init(status: 200, body: #"{"ok":true,"stats":{"scanned":1,"fetched":1,"created":0,"updated":1,"skipped":0,"excluded":0,"conflicts":0},"status":{"configured":true}}"#)
+            case "/api/notes":
+                let supplied = request.value(forHTTPHeaderField: "If-None-Match")
+                requests.withLock { $0.append(supplied) }
+                let status = rejection.withLock { $0 }
+                if status != 0 { return .init(status: status, body: "Rejected") }
+                if supplied != nil { return .init(status: 304, body: "") }
+                return .init(status: 200, body: notesFixture, headers: ["ETag": tag])
+            default: return .init(status: 404, body: "")
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let cache = NoteCacheStore(directory: directory)
+        let key = NoteCacheStore.Key(origin: config.origin, userId: "account")
+        defer {
+            transport.invalidateAndCancel(); StubProtocol.remove(config)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let note = Note(id: "note", body: "已缓存", createdAt: "2025-02-01T00:00:00Z", revision: 2)
+        try await cache.save([note], etag: tag, for: key)
+        try await cache.bind(config, userId: key.userId)
+        let store = AppStore(initial: config, temporary: true, cache: cache, makeTransport: StubProtocol.transport,
+                             runSearch: { index, query, filter in
+                                 searches.withLock { $0 += 1 }
+                                 return index.search(query, filter: filter)
+                             })
+        store.start()
+        try await waitUntil("缓存命中 304") { !store.syncing && store.identity != nil }
+        await store.searchTask?.value
+        XCTAssertEqual(store.results.first?.body, note.body)
+        XCTAssertEqual(searches.withLock { $0 }, 1, "304 must not schedule another index search")
+        XCTAssertEqual(requests.withLock { $0 }, [tag])
+
+        try await store.update(note, body: "本地编辑")
+        let mutated = try await cache.loadSnapshot(key)
+        XCTAssertNil(mutated?.etag)
+        XCTAssertEqual(mutated?.notes.first?.body, "本地编辑")
+        store.refresh()
+        try await waitUntil("写入后刷新") { !store.syncing }
+        XCTAssertEqual(requests.withLock { $0 }, [tag, nil])
+
+        let api = try XCTUnwrap(store.api)
+        _ = try await api.triggerObsidianSync()
+        store.refresh()
+        try await waitUntil("Obsidian 同步后刷新") { !store.syncing }
+        XCTAssertEqual(requests.withLock { $0 }, [tag, nil, nil])
+
+        let changed = try ServerConfiguration(address: config.origin, token: "changed-token")
+        store.connect(changed, save: false)
+        try await waitUntil("同一账号更换凭据后连接") { !store.syncing && store.identity != nil }
+        XCTAssertEqual(requests.withLock { $0 }, [tag, nil, nil, nil])
+
+        for status in [401, 403] {
+            rejection.withLock { $0 = status }
+            store.refresh()
+            try await waitUntil("拒绝后清除可见笔记") { !store.syncing && store.identity == nil }
+            XCTAssertTrue(store.notesById.isEmpty)
+            XCTAssertTrue(store.results.isEmpty)
+            let erased = try await cache.loadSnapshot(key)
+            let offline = try await cache.loadOfflineSnapshot(changed)
+            XCTAssertNil(erased)
+            XCTAssertNil(offline)
+
+            rejection.withLock { $0 = 0 }
+            store.connect(changed, save: false)
+            try await waitUntil("重新登录") { !store.syncing && store.identity != nil }
+        }
+        XCTAssertEqual(requests.withLock { $0 }, [tag, nil, nil, nil, tag, nil, tag, nil])
+    }
+
     func testPreloadsBoundCacheWhileSessionRequestIsPending() async throws {
         let cachedNote = Note(id: "cached", body: "本地预载笔记", createdAt: "2025-02-01T00:00:00Z", revision: 1)
         for status in [200, 500, 401] {
@@ -478,6 +607,7 @@ final class StoreLogicTests: XCTestCase {
             case "/api/session":
                 return .init(status: 200, body: #"{"user":{"id":"new-user","name":"新用户"},"codexAvailable":false,"authMode":"oauth"}"#)
             case "/api/notes":
+                XCTAssertNil(request.value(forHTTPHeaderField: "If-None-Match"))
                 return .init(status: 500, body: "notes fetch failed")
             default:
                 return .init(status: 404, body: "")
@@ -491,7 +621,7 @@ final class StoreLogicTests: XCTestCase {
         }
         let cache = NoteCacheStore(directory: directory)
         let oldKey = NoteCacheStore.Key(origin: config.origin, userId: "old-user")
-        try await cache.save([cachedNote], for: oldKey)
+        try await cache.save([cachedNote], etag: "old-user-etag", for: oldKey)
         try await cache.bind(config, userId: oldKey.userId)
         let store = AppStore(initial: config, temporary: true, cache: NoteCacheStore(directory: directory),
                              makeTransport: StubProtocol.transport)
@@ -734,6 +864,61 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(store.options.apiKey, "a-personal-key")
     }
 
+    func testGatewayModelPreferencesPersistAndFixedAndPlainModelsClearEffort() async throws {
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session":
+                return .init(status: 200, body: #"{"user":{"id":"models","name":"Test"},"codexAvailable":true,"codexMode":"gateway"}"#)
+            case "/api/notes":
+                return .init(status: 200, body: notesFixture)
+            case "/api/ai/models":
+                return .init(status: 200, body: #"{"models":["gemini-3-flash","gemini-4-neon-xhigh","gpt-4.1-mini"],"defaultModel":"gemini-3-flash"}"#)
+            default: return .init(status: 404, body: "")
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let key = NoteCacheStore.Key(origin: config.origin, userId: "models")
+        let preferences = "weiji.ai." + key.filename + ".codex"
+        defer {
+            transport.invalidateAndCancel(); StubProtocol.remove(config)
+            try? FileManager.default.removeItem(at: directory)
+            UserDefaults.standard.removeObject(forKey: preferences + ".model")
+            UserDefaults.standard.removeObject(forKey: preferences + ".effort")
+        }
+        let credentials = KeychainStore(read: { _, _ in nil }, write: { _, _, _ in })
+        func connect(temporary: Bool = false) async throws -> AppStore {
+            let store = AppStore(initial: config, temporary: temporary, cache: NoteCacheStore(directory: directory),
+                                 credentials: credentials, makeTransport: StubProtocol.transport)
+            store.start()
+            try await waitUntil("模型目录可用") { !store.gatewayModelMeta.isEmpty }
+            return store
+        }
+        let store = try await connect()
+        XCTAssertEqual(store.selectedGatewayModel?.id, "gemini-3-flash")
+        store.setModel("gemini-3-flash")
+        store.setReasoningEffort("high")
+        XCTAssertEqual(store.options.reasoningEffort, "high")
+        let restarted = try await connect()
+        XCTAssertEqual(restarted.options.model, "gemini-3-flash")
+        XCTAssertEqual(restarted.options.reasoningEffort, "high")
+
+        let temporary = try await connect(temporary: true)
+        XCTAssertEqual(temporary.options.model, "")
+        XCTAssertEqual(temporary.options.reasoningEffort, "")
+        temporary.setReasoningEffort("low")
+        XCTAssertEqual(UserDefaults.standard.string(forKey: preferences + ".effort"), "high")
+
+        restarted.setModel("gemini-4-neon-xhigh")
+        restarted.setReasoningEffort("xhigh")
+        XCTAssertEqual(restarted.selectedGatewayModel?.fixedEffort, "xhigh")
+        XCTAssertEqual(restarted.options.reasoningEffort, "")
+        restarted.setModel("gemini-3-flash")
+        restarted.setReasoningEffort("medium")
+        restarted.setModel("gpt-4.1-mini")
+        XCTAssertFalse(restarted.selectedGatewayModel?.thinking == true)
+        XCTAssertEqual(restarted.options.reasoningEffort, "")
+    }
+
     private func waitUntil(_ reason: String, _ ready: () -> Bool) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(3)
@@ -763,6 +948,58 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertNil(chat.session)
     }
 
+    func testLiveStepsCitationsAndTextCoalesceThenClearOnDone() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let (config, transport) = try StubProtocol.make { _ in
+            _ = release.wait(timeout: .now() + 8)
+            return .init(status: 200, body: """
+            event: done
+            data: {"session":{"id":"chat","version":1,"title":"对话","origin":"chat","updatedAt":"2026-11-24","turns":[{"role":"assistant","text":"回答","steps":[{"id":"retrieve","kind":"retrieve","label":"检索","status":"done"}]}]}}
+
+
+            """, headers: ["Content-Type": "text/event-stream"])
+        }
+        defer { release.signal(); transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let chat = AIChatStore()
+        chat.draft = "问题"
+        chat.send(api: api, options: .init(), profile: InsightsStore())
+        func emit(_ event: String, _ data: String) { chat.receive(.init(event: event, data: data), generation: 1) }
+        emit("step", #"{"id":"retrieve","kind":"retrieve","status":"running","label":"检索"}"#)
+        emit("step", #"{"id":"think","kind":"think","status":"running","label":"思考"}"#)
+        emit("step", #"{"id":"retrieve","kind":"retrieve","status":"done","label":"检索","durationMs":120,"items":[{"ref":"N1","noteId":"a","title":"笔记","excerpt":"段落"}]}"#)
+        emit("citations", #"{"citations":[{"ref":"N1","noteId":"a","excerpt":"段落"}]}"#)
+        emit("status", #"{"stage":"generating","message":"兼容旧提示"}"#)
+        emit("delta", #"{"text":"答"}"#)
+        emit("delta", #"{"text":"案"}"#)
+        emit("reasoning", #"{"text":"第一段"}"#)
+        emit("reasoning", #"{"text":"第二段"}"#)
+        XCTAssertEqual(chat.liveSteps.map(\.id), ["retrieve", "think"])
+        XCTAssertEqual(chat.liveSteps.first?.status, "done")
+        XCTAssertEqual(chat.liveSteps.first?.items?.first?.excerpt, "段落")
+        XCTAssertEqual(chat.liveCitations.map(\.ref), ["N1"])
+        XCTAssertEqual(chat.status, "兼容旧提示")
+        XCTAssertTrue(chat.streamedText.isEmpty)
+        XCTAssertTrue(chat.liveReasoning.isEmpty)
+        try await waitUntil("合帧发布文本") { chat.streamedText == "答案" && chat.liveReasoning == "第一段第二段" }
+        let oversized = try JSONSerialization.data(withJSONObject: ["text": String(repeating: "思", count: 20_100)])
+        emit("reasoning", String(decoding: oversized, as: UTF8.self))
+        chat.flushStreaming()
+        XCTAssertEqual(chat.liveReasoning.count, 20_000)
+
+        emit("delta", #"{"text":"末尾"}"#)
+        emit("done", "{}")
+        XCTAssertEqual(chat.streamedText, "答案末尾", "done flushes buffered text synchronously")
+        XCTAssertTrue(chat.liveSteps.isEmpty)
+        XCTAssertTrue(chat.liveReasoning.isEmpty)
+        XCTAssertTrue(chat.liveCitations.isEmpty)
+        release.signal()
+        try await waitUntil("done 提交会话") { !chat.sending }
+        XCTAssertNil(chat.error)
+        XCTAssertEqual(chat.session?.turns?.last?.steps?.first?.status, "done")
+        XCTAssertTrue(chat.streamedText.isEmpty)
+    }
+
     func testLateSearchAndStreamResponsesDoNotOverwriteNewerState() async throws {
         let store = AppStore(temporary: true, reset: true)
         let latest = Note(id: "new", body: "only newest", createdAt: "2025-02-01T00:00:00.000Z", revision: 1)
@@ -787,6 +1024,7 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertTrue(chat.sending)
         chat.receive(.init(event: "delta", data: #"{"text":"第二轮"}"#), generation: 3)
         chat.receive(.init(event: "delta", data: #"{"text":"迟到的第一轮"}"#), generation: 1)
+        chat.flushStreaming()
         XCTAssertEqual(chat.streamedText, "第二轮")
         chat.stop()
         chat.receive(.init(event: "delta", data: #"{"text":"停止后迟到"}"#), generation: 3)

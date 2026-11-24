@@ -70,10 +70,36 @@ struct Citation: Codable, Sendable {
     var bookTitle: String? = nil
 }
 
+struct ChatStepItem: Codable, Equatable, Identifiable, Sendable {
+    let ref: String
+    let noteId: String
+    let title: String
+    let excerpt: String
+    var id: String { ref + ":" + noteId }
+}
+
+struct ChatStep: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let kind: String
+    let status: String?
+    let label: String
+    let detail: String?
+    let durationMs: Int?
+    let items: [ChatStepItem]?
+}
+
 struct Turn: Codable, Sendable {
     let role: String
     let text: String
-    var citations: [Citation]? = nil
+    let citations: [Citation]?
+    let steps: [ChatStep]?
+
+    init(role: String, text: String, citations: [Citation]? = nil, steps: [ChatStep]? = nil) {
+        self.role = role
+        self.text = text
+        self.citations = citations
+        self.steps = steps
+    }
 }
 
 struct SessionInfo: Decodable, Sendable {
@@ -124,16 +150,69 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     var label: String { self == .codex ? "Codex" : "OpenAI" }
 }
 
-struct ModelOptions: Decodable, Sendable { let models: [String]; let defaultModel: String? }
+struct ModelMeta: Decodable, Equatable, Identifiable, Sendable {
+    let id: String
+    let label: String
+    let vendor: String
+    let thinking: Bool
+    let efforts: [String]
+    let fixedEffort: String?
+    let defaultEffort: String?
+
+    static let supportedEfforts = ["low", "medium", "high", "xhigh"]
+
+    var selectableEfforts: [String] {
+        guard thinking, fixedEffort == nil else { return [] }
+        return Self.supportedEfforts.filter(efforts.contains)
+    }
+
+    static func inferred(from id: String) -> Self {
+        let name = id.lowercased()
+        let vendor: String
+        if name.contains("gemini") { vendor = "gemini" }
+        else if name.contains("claude") { vendor = "claude" }
+        else if name.range(of: #"^(?:gpt|o[1-9]|codex)"#, options: .regularExpression) != nil { vendor = "openai" }
+        else { vendor = "other" }
+
+        let fixed = ["medium", "high", "xhigh"].first { name.hasSuffix("-" + $0) }
+        let efforts: [String]
+        if fixed != nil { efforts = [] }
+        else if name.range(of: #"^gpt-(?:6(?:\.\d+)?|5\.6)(?:-|$)"#, options: .regularExpression) != nil {
+            efforts = supportedEfforts
+        } else if name.range(of: #"^(?:gemini-3(?:\.\d+)?-flash|o[1-9])|thinking"#, options: .regularExpression) != nil {
+            efforts = Array(supportedEfforts.prefix(3))
+        } else { efforts = [] }
+
+        let base = fixed.map { String(id.dropLast($0.count + 1)) } ?? id
+        let label = base.split(separator: "-").map { word in
+            word.lowercased() == "gpt" ? "GPT" : word.prefix(1).uppercased() + word.dropFirst()
+        }.joined(separator: " ").replacingOccurrences(of: "GPT ", with: "GPT-")
+        return Self(id: id, label: label.isEmpty ? id : label, vendor: vendor, thinking: fixed != nil || !efforts.isEmpty,
+                    efforts: efforts, fixedEffort: fixed, defaultEffort: fixed)
+    }
+}
+
+struct ModelOptions: Decodable, Sendable {
+    let models: [String]
+    let defaultModel: String?
+    let modelMeta: [ModelMeta]?
+
+    var resolvedMeta: [ModelMeta] {
+        let metadata = Dictionary((modelMeta ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return models.map { metadata[$0] ?? .inferred(from: $0) }
+    }
+}
 
 struct AIOptions: Sendable {
     var provider: AIProvider = .openai
     var model = ""
     var apiKey = ""
+    var reasoningEffort = ""
 
     var fields: [String: JSONValue] {
         var fields: [String: JSONValue] = ["provider": .string(provider.rawValue), "stream": .bool(true)]
         if !model.isEmpty { fields["model"] = .string(model) }
+        if !reasoningEffort.isEmpty { fields["reasoningEffort"] = .string(reasoningEffort) }
         if provider == .openai { fields["apiKey"] = .string(apiKey) }
         return fields
     }
@@ -234,6 +313,8 @@ struct SemanticStatus: Decodable, Sendable {
     let mode: String?
 }
 
+struct StreamCitations: Decodable, Sendable { let citations: [Citation] }
+struct StreamReasoning: Decodable, Sendable { let text: String }
 struct StreamDelta: Decodable { let text: String }
 struct StreamStatus: Decodable { let message: String? }
 

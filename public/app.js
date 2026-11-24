@@ -1,15 +1,24 @@
 import { parseWeRead, readWeReadFile } from './weread.js';
 import { parseFlomoFile } from './flomo.js';
 import { randomUUID } from './crypto.js';
-import { tagsFor, buildTagTree, tokenizeBody, appendCitedText, renderSafeMarkdown } from './ux-helpers.js';
+import { tagsFor, buildTagTree, tokenizeBody, appendCitedText, renderSafeMarkdown, updateStreamingMarkdown,
+  clearWeijiCacheDB, notesCacheTransaction, publishWeijiAuthEvent, weijiAuthEvent } from './ux-helpers.js';
 
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const excerptsMarker = '\n\nAI 摘录\n';
 const FEED_PAGE_SIZE = 40;
+const pageUserId = document.querySelector('meta[name="weiji-user-id"]')?.content || null;
+function authEventStamp() {
+  try { return localStorage.getItem(weijiAuthEvent); } catch { return null; }
+}
+const pageAuthStamp = authEventStamp();
 const state = {
   notes: new Map(),
-  deletedNotes: new Set(),
+  deletedNotes: new Map(),
+  notesETag: null,
+  syncEpoch: 0,
+  authSuspended: false,
   noteIndex: null,
   filter: 'all',
   tagSort: 'count',
@@ -44,6 +53,9 @@ const state = {
   codexAvailable: false,
   codexMode: null,
   gatewayModels: [],
+  gatewayModelMeta: [],
+  defaultGatewayModel: null,
+  reasoningEffort: '',
   gatewayModel: null,
   apiKey: '',
 };
@@ -127,7 +139,11 @@ function apiHeaders(hasBody) {
 }
 
 function checkRequestContext(epoch, signal) {
-  if (epoch !== accountEpoch || signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+  if (epoch !== state.syncEpoch || signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+  if (pageAuthStamp !== authEventStamp()) {
+    if (!state.authSuspended) void invalidateAccount({ broadcast: false });
+    throw new DOMException('登录状态已变化', 'AbortError');
+  }
 }
 
 async function fetchAPI(path, body, signal, method, accept) {
@@ -152,7 +168,7 @@ async function fetchAPI(path, body, signal, method, accept) {
 async function readAPIJSON(response, epoch, signal) {
   checkRequestContext(epoch, signal);
   if (response.status === 401 || response.status === 403) {
-    resetAccount();
+    void invalidateAccount();
     void response.body?.cancel().catch(() => {});
     throw new ApiError(response.status, null, response.status === 401
       ? '登录状态已过期，请重新登录。' : '登录账号已变化，请重新连接后同步。');
@@ -166,13 +182,13 @@ async function readAPIJSON(response, epoch, signal) {
 }
 
 async function request(path, body, signal, method = body === undefined ? 'GET' : 'POST') {
-  const epoch = accountEpoch;
+  const epoch = state.syncEpoch;
   const response = await fetchAPI(path, body, signal, method, 'application/json');
   return readAPIJSON(response, epoch, signal);
 }
 
 async function requestStream(path, body, { signal, onEvent }) {
-  const epoch = accountEpoch;
+  const epoch = state.syncEpoch;
   const response = await fetchAPI(path, body, signal, 'POST', 'text/event-stream');
   checkRequestContext(epoch, signal);
   if (!response.ok || !response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
@@ -214,13 +230,11 @@ function updateProfile() {
   $('settings-sync-help').textContent = oauth ? '在 iOS 微记里用同一账号登录，即可同步笔记及对话。' : '在 iOS 微记里使用同一 ChatGPT 账号登录，即可同步笔记及对话。';
 }
 
-let accountEpoch = 0;
 let accountLifecycle = new AbortController();
 let pendingProfileSave = null;
 let failedProfileSave = null;
 function resetAccount() {
-  if (state.authMode === 'oauth') { location.replace('/'); return; }
-  accountEpoch++;
+  state.syncEpoch++;
   accountLifecycle.abort();
   accountLifecycle = new AbortController();
   pendingProfileSave = null;
@@ -231,7 +245,12 @@ function resetAccount() {
   ai = emptyAIState();
   closeRandomWalk({ restore: false });
   state.user = null;
+  state.authMode = null;
   state.loaded = false;
+  state.notesETag = null;
+  state.refreshing = false;
+  $('refresh-button').disabled = false;
+  showSyncSkeleton(true);
   state.notes.clear();
   state.deletedNotes.clear();
   state.noteIndex = null;
@@ -249,6 +268,9 @@ function resetAccount() {
   state.codexMode = null;
   gatewayModelsRevision++;
   state.gatewayModels = [];
+  state.gatewayModelMeta = [];
+  state.defaultGatewayModel = null;
+  state.reasoningEffort = '';
   state.gatewayModel = null;
   renderGatewayModels();
   state.composeDraft = null;
@@ -262,25 +284,126 @@ function resetAccount() {
   for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog']) if ($(id).open) $(id).close();
   if ($('note-dialog').open) closeNote(true);
   $('detail-body').replaceChildren();
+  $('detail-meta').replaceChildren();
+  $('dialog-note-title').textContent = '笔记';
+  $('auth-sessions-list').replaceChildren();
+  $('admin-invites-list').replaceChildren();
+  $('admin-invite-created').textContent = '';
+  $('admin-invite-created').hidden = true;
+  state.filter = 'all';
+  state.collapsedTags.clear();
   $('openai-key').value = '';
   $('note-body').disabled = true;
   syncComposerUI();
   rebuildNoteIndex();
   renderFeedList({ reset: true });
   updateProfile();
-  setAuthNotice('登录状态已失效，请使用 ChatGPT 账号登录。', true);
+  setAuthNotice('');
+  $('toast').hidden = true;
 }
 
-async function refresh({ silent = false } = {}) {
-  if (state.refreshing || state.writeCount) return;
+function showSyncSkeleton(show) {
+  $('sync-skeleton').hidden = !show;
+  document.body.classList.toggle('auth-checking', show);
+}
+
+async function invalidateAccount({ reload = false, broadcast = true, notice = true } = {}) {
+  const account = state.user?.id ?? pageUserId;
+  const oauth = state.authMode === 'oauth';
+  state.authSuspended = true;
+  resetAccount();
+  const epoch = state.syncEpoch;
+  if (broadcast) publishWeijiAuthEvent();
+  await clearWeijiCacheDB(account);
+  if (epoch !== state.syncEpoch) return;
+  if (reload) location.replace('/');
+  else if (notice) {
+    showSyncSkeleton(false);
+    if (oauth) $('sign-in').href = '/';
+    setAuthNotice('登录状态已失效，请重新登录。', true);
+    setSync('error', '登录状态已失效');
+  }
+}
+
+function cacheSnapshot() {
+  const userId = state.user?.id;
+  if (!userId || !state.loaded) return Promise.resolve();
+  const epoch = state.syncEpoch;
+  const snapshot = {
+    userId, etag: state.notesETag, notes: [...state.notes.values()], deleted: [...state.deletedNotes.values()], savedAt: Date.now(),
+  };
+  return notesCacheTransaction('readwrite', store => store.put(snapshot), () => epoch === state.syncEpoch && pageAuthStamp === authEventStamp())
+    .catch(() => {});
+}
+
+function finishLocalWrites(changed) {
+  if (!changed) return;
+  state.notesETag = null;
+  void cacheSnapshot();
+}
+
+function applyNotesSnapshot({ notes, deleted, etag }) {
+  const previous = state.notes;
+  const current = new Map(notes.map(note => [note.id, note]));
+  const firstLoad = !state.loaded;
+  const validatorChanged = state.notesETag !== etag;
+  const changed = validatorChanged || previous.size !== current.size ||
+    [...current].some(([id, note]) => previous.get(id)?.revision !== note.revision);
+  const openChanged = state.noteID && (validatorChanged || previous.get(state.noteID)?.revision !== current.get(state.noteID)?.revision);
+  state.notes = current;
+  state.deletedNotes = new Map(deleted.map(item => [item.id, item]));
+  state.notesETag = etag;
+  state.loaded = true;
+  if (firstLoad) void loadGatewayModels();
+  setAuthNotice('');
+  showSyncSkeleton(false);
+  $('note-body').disabled = false;
+  updateComposer();
+  reconcileInlineEditState();
+  if (changed || firstLoad) {
+    rebuildNoteIndex();
+    renderFeedList({ reset: true, preservePage: true });
+  }
+  if (openChanged && $('note-dialog').open) showRemoteDetail();
+}
+
+function fetchNotesSnapshot(account, etag, signal) {
+  const headers = { Accept: 'application/json', 'X-Journal-Account': account };
+  if (etag) headers['If-None-Match'] = etag;
+  return fetch('/api/notes', { credentials: 'same-origin', cache: 'no-store', redirect: 'error', headers, signal });
+}
+
+let activeRefresh;
+function refresh(options) {
+  if (state.authSuspended || state.writeCount) return;
+  if (state.refreshing) return activeRefresh;
+  return activeRefresh = syncNotes(options);
+}
+
+async function syncNotes({ silent = false } = {}) {
   state.refreshing = true;
   $('refresh-button').disabled = true;
-  const epoch = state.writeEpoch;
+  const epoch = state.syncEpoch;
+  const writeEpoch = state.writeEpoch;
+  const signal = accountLifecycle.signal;
+  const isCurrent = () => epoch === state.syncEpoch;
   if (!silent || !state.loaded) setSync('loading', '正在同步');
   try {
+    let notesRequest;
     if (!state.user) {
-      const result = await request('/api/session');
-      if (!result.user) throw new ApiError(401, null, '请先登录。');
+      const diskRead = pageUserId ? notesCacheTransaction('readonly', store => store.get(pageUserId), isCurrent)
+        .then(snapshot => snapshot?.userId === pageUserId ? snapshot : null).catch(() => null) : Promise.resolve(null);
+      // A response may finish first; do not consume or install it until the session is verified.
+      if (pageUserId) notesRequest = diskRead.then(snapshot => {
+        checkRequestContext(epoch, signal);
+        return fetchNotesSnapshot(pageUserId, snapshot?.etag, signal);
+      });
+      notesRequest?.catch(() => {});
+      const result = await request('/api/session', undefined, signal);
+      if (!result.user?.id || (pageUserId && result.user.id !== pageUserId)) {
+        await invalidateAccount({ reload: Boolean(result.user?.id) });
+        return;
+      }
       state.user = result.user;
       state.authMode = result.authMode;
       state.codexAvailable = result.codexAvailable === true;
@@ -288,42 +411,33 @@ async function refresh({ silent = false } = {}) {
       state.chatProvider = state.codexAvailable ? 'codex' : 'openai';
       updateProfile();
       if ($('settings-dialog').open) void loadAuthSettings();
+      const cached = await diskRead;
+      checkRequestContext(epoch, signal);
+      if (cached) applyNotesSnapshot(cached);
     }
-    const result = await request('/api/notes');
-    if (epoch !== state.writeEpoch || state.writeCount) return;
-    const previous = state.notes;
-    const current = new Map((result.notes || []).map((note) => [note.id, note]));
-    const changed = previous.size !== current.size || [...current].some(([id, note]) => previous.get(id)?.revision !== note.revision);
-    const openChanged = state.noteID && previous.get(state.noteID)?.revision !== current.get(state.noteID)?.revision;
-    state.notes = current;
-    state.deletedNotes = new Set((result.deleted || []).map(({ id }) => id));
-    const firstLoad = !state.loaded;
-    state.loaded = true;
-    if (firstLoad) loadGatewayModels();
-    setAuthNotice('');
-    $('note-body').disabled = false;
-    updateComposer();
-    reconcileInlineEditState();
-    if (changed || firstLoad) {
-      rebuildNoteIndex();
-      renderFeedList({ reset: true, preservePage: true });
+    const response = await (notesRequest ?? fetchNotesSnapshot(state.user.id, state.notesETag, signal));
+    checkRequestContext(epoch, signal);
+    if (response.status !== 304) {
+      const result = await readAPIJSON(response, epoch, signal);
+      if (writeEpoch !== state.writeEpoch || state.writeCount) return;
+      applyNotesSnapshot({ ...result, etag: response.headers.get('ETag') });
+      void cacheSnapshot();
     }
-    if (openChanged && $('note-dialog').open) showRemoteDetail();
-    setSync('ok', '已同步');
+    if (writeEpoch === state.writeEpoch && !state.writeCount) setSync('ok', '已同步');
   } catch (error) {
-    if (error.status === 401 || error.status === 403) {
-      if (state.user || state.loaded) resetAccount();
-    } else if (error.name === 'AbortError') {
-      return;
-    } else if (!state.loaded) {
-      state.refreshing = false;
+    if (!isCurrent() || error.name === 'AbortError') return;
+    if (!state.loaded) {
+      showSyncSkeleton(false);
       setAuthNotice(error.message);
+      state.refreshing = false;
       renderFeedList({ reset: true });
     }
     setSync('error', '同步未完成');
   } finally {
-    state.refreshing = false;
-    $('refresh-button').disabled = false;
+    if (isCurrent()) {
+      state.refreshing = false;
+      $('refresh-button').disabled = false;
+    }
   }
 }
 
@@ -348,7 +462,7 @@ function acceptVersion(data) {
   }
   if (data?.deleted) {
     state.notes.delete(data.deleted.id);
-    state.deletedNotes.add(data.deleted.id);
+    state.deletedNotes.set(data.deleted.id, data.deleted);
   }
 }
 
@@ -359,6 +473,7 @@ async function mutate(change) {
   try {
     const data = await request('/api/notes', change);
     acceptVersion(data);
+    finishLocalWrites(true);
     reconcileInlineEditState();
     setSync('ok', '已同步');
     rebuildNoteIndex();
@@ -368,6 +483,7 @@ async function mutate(change) {
   } catch (error) {
     if (error.status === 409) {
       acceptVersion(error.current);
+      finishLocalWrites(Boolean(error.current?.note || error.current?.deleted));
       reconcileInlineEditState();
       rebuildNoteIndex();
       renderFeedList({ reset: true, preservePage: true });
@@ -1498,15 +1614,20 @@ function renderObsidianStatus(status) {
 
 $('admin-obsidian-sync').addEventListener('click', async event => {
   const button = event.currentTarget;
-  const epoch = accountEpoch;
+  const epoch = state.syncEpoch;
   button.disabled = true;
   $('admin-obsidian-status').textContent = '正在同步…';
   try {
     const { stats, status } = await request('/api/admin/obsidian/sync', {});
     renderObsidianStatus(status);
-    if (stats.created || stats.updated) await refresh({ silent: true });
+    if (stats.created || stats.updated) {
+      state.writeEpoch++;
+      finishLocalWrites(true);
+      if (state.refreshing) await activeRefresh;
+      if (epoch === state.syncEpoch) await refresh({ silent: true });
+    }
   } catch (error) {
-    if (epoch === accountEpoch && error.name !== 'AbortError') $('admin-obsidian-status').textContent = error.message;
+    if (epoch === state.syncEpoch && error.name !== 'AbortError') $('admin-obsidian-status').textContent = error.message;
   } finally {
     button.disabled = false;
   }
@@ -1524,9 +1645,9 @@ async function loadAuthSettings() {
     const { sessions } = await request('/api/auth/sessions');
     $('auth-sessions-list').replaceChildren(...sessions.map(session => {
       const row = authRow((session.label || (session.kind === 'ios' ? 'iOS' : '浏览器')) + (session.current ? ' · 当前设备' : ''), '退出', async () => {
+        if (session.current) return logoutAccount();
         await request('/api/auth/sessions/' + encodeURIComponent(session.id), undefined, undefined, 'DELETE');
-        if (session.current) location.replace('/');
-        else await loadAuthSettings();
+        await loadAuthSettings();
       });
       row.dataset.sessionId = session.id;
       return row;
@@ -2033,7 +2154,7 @@ function importMode(items) {
   const button = $('import-submit');
   button.disabled = items?.length === 0;
   button.textContent = items ? '导入 ' + items.length + ' 条' : '预览导入';
-  if (items) $('import-preview').replaceChildren(...items.map((note) => renderCard(note, [], false)));
+  $('import-preview').replaceChildren(...(items ?? []).map(note => renderCard(note, [], false)));
 }
 
 async function importNotes(event) {
@@ -2042,6 +2163,7 @@ async function importNotes(event) {
   setError('import-error', '');
   state.importWorking = true;
   const button = $('import-submit');
+  const epoch = state.syncEpoch;
   button.disabled = true;
   try {
     if (state.importItems === null) {
@@ -2051,6 +2173,7 @@ async function importNotes(event) {
         return;
       }
       const parsed = await parseWeRead(raw);
+      if (epoch !== state.syncEpoch) return;
       const existing = new Set([...state.notes.values()].filter((note) => note.reading).map(importKey));
       const items = [];
       for (const entry of parsed) {
@@ -2081,6 +2204,7 @@ async function importNotes(event) {
           remaining.shift();
           continue;
         }
+        if (epoch !== state.syncEpoch) return;
         importMode(remaining);
         setError('import-error', (imported ? '已导入 ' + imported + ' 条。' : '') + error.message);
         return;
@@ -2104,11 +2228,13 @@ async function importNotes(event) {
 
 async function pickImportFile(event) {
   const file = event.target.files?.[0];
+  const epoch = state.syncEpoch;
   event.target.value = '';
   if (!file) return;
   try {
     if (file.size > 2 * 1024 * 1024) throw new Error('文件超过 2 MB，请拆成几个文本文件再导入。');
     const content = await readWeReadFile(file);
+    if (epoch !== state.syncEpoch) return;
     if (content.length > 350000) throw new Error('文字太多，请拆成几个文本文件再导入。');
     $('import-text').value = content;
     setError('import-error', '');
@@ -2231,6 +2357,7 @@ async function saveBulkNotes(preview, path, statusId) {
   setSync('loading', '正在同步');
   updateBulkProgress(preview, statusId);
   let completed = 0;
+  let changed = false;
   try {
     while (completed < preview.pending.length) {
       if (state.user?.id !== preview.account) throw new Error('账号已变化，请重新打开导入。');
@@ -2249,6 +2376,10 @@ async function saveBulkNotes(preview, path, statusId) {
         throw new Error('服务返回了无法识别的导入结果，可以重试剩余笔记。');
       }
       for (const note of result.notes) acceptVersion({ note });
+      if (result.notes.length) {
+        changed = true;
+        state.notesETag = null;
+      }
       completed += batch.length;
       preview.saved += result.notes.length;
       preview.skippedDuringSave += result.skipped;
@@ -2264,6 +2395,7 @@ async function saveBulkNotes(preview, path, statusId) {
     renderFeedList({ reset: true });
     throw error;
   } finally {
+    if (state.user?.id === preview.account) finishLocalWrites(changed);
     --state.writeCount;
     ++state.writeEpoch;
   }
@@ -2518,7 +2650,7 @@ async function walkNoteAction(action) {
 
 function emptyAIState() {
   return {
-    lifecycle: null, scrollY: 0, session: null, sessions: new Map(), upgradedNoteIds: new Set(),
+    lifecycle: null, scrollY: 0, session: null, sessions: new Map(), sessionCache: new Map(), selectedSessionId: null, upgradedNoteIds: new Set(),
     origin: 'all', nextCursor: null, loadingSessions: false, sessionsLoaded: false,
     source: null, fromWalk: false, insightContext: null, pendingTurn: null, followBottom: true, pins: new Set(),
     sending: null, loadingSession: false, sessionLoadSeq: 0, requestKey: null, atIndex: null,
@@ -2534,7 +2666,127 @@ function hasGatewayModels() {
   return gatewayMode() && state.gatewayModels.length > 0;
 }
 
-const gatewaySelectIds = ['ins-model-select', 'ai-chat-model', 'ins-rerun-model', 'profile-model-select'];
+const gatewaySelectIds = ['ins-model-select', 'ins-rerun-model', 'profile-model-select'];
+const modelVendors = { gemini: 'Gemini', openai: 'OpenAI', claude: 'Claude', other: '其他' };
+const effortLabels = { '': '默认', low: '低', medium: '中', high: '高', xhigh: '极高' };
+const vendorMarks = {
+  gemini: 'M12 2c.8 5.5 4.5 9.2 10 10-5.5.8-9.2 4.5-10 10C11.2 16.5 7.5 12.8 2 12c5.5-.8 9.2-4.5 10-10Z',
+  openai: 'M12 2a5 5 0 0 1 4.3 2.5A5 5 0 0 1 21 10a5 5 0 0 1 0 5A5 5 0 0 1 16.3 20a5 5 0 0 1-8.6 0A5 5 0 0 1 3 15a5 5 0 0 1 0-5 5 5 0 0 1 4.7-5.5A5 5 0 0 1 12 2Zm0 5-4.3 2.5v5L12 17l4.3-2.5v-5L12 7Z',
+  claude: 'M11 2h2l.2 6.2 4.5-4.1 1.4 1.4-4.1 4.5 6.2.2v2l-6.2.2 4.1 4.5-1.4 1.4-4.5-4.1-.2 6.2h-2l-.2-6.2-4.5 4.1-1.4-1.4 4.1-4.5L3 12.2v-2L9.2 10 5.1 5.5l1.4-1.4 4.5 4.1L11 2Z',
+};
+
+function vendorBadge(vendor) {
+  if (!Object.hasOwn(vendorMarks, vendor)) return icon('spark');
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'ai-vendor ai-vendor-' + vendor);
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', vendorMarks[vendor]);
+  svg.append(path);
+  return svg;
+}
+
+function activeModelMeta() {
+  return state.gatewayModelMeta.find(item => item.id === state.gatewayModel);
+}
+
+function setGatewayModel(id) {
+  state.gatewayModel = id;
+  try { localStorage.setItem('weiji.gatewayModel', id); } catch {}
+  renderGatewayModels();
+}
+
+function toggleAIUtilityPicker(kind, open, restoreFocus = false) {
+  const trigger = $('ai-' + kind + '-toggle');
+  const popover = $('ai-' + kind + '-popover');
+  if (open) {
+    toggleAIUtilityPicker(kind === 'model' ? 'effort' : 'model', false);
+    closeNotePicker();
+  }
+  popover.hidden = !open;
+  trigger.setAttribute('aria-expanded', String(open));
+  if (!open) {
+    if (restoreFocus) trigger.focus({ preventScroll: true });
+  } else if (kind === 'model') {
+    $('ai-model-search').value = '';
+    renderModelOptions();
+    $('ai-model-search').focus({ preventScroll: true });
+  } else {
+    (popover.querySelector('[aria-pressed="true"]') ?? popover.querySelector('button'))?.focus();
+  }
+}
+
+function renderModelOptions() {
+  const query = $('ai-model-search').value.trim().toLowerCase();
+  const options = $('ai-model-options');
+  options.replaceChildren();
+  for (const [vendor, label] of Object.entries(modelVendors)) {
+    const models = state.gatewayModelMeta.filter(item => item.vendor === vendor &&
+      (item.label + ' ' + item.id).toLowerCase().includes(query));
+    if (!models.length) continue;
+    const group = el('div', 'ai-model-group');
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', label);
+    group.append(el('div', 'ai-model-group-label', label));
+    for (const item of models) {
+      const option = el('button', 'ai-picker-row');
+      option.type = 'button';
+      const selected = item.id === state.gatewayModel;
+      option.setAttribute('aria-pressed', String(selected));
+      option.append(vendorBadge(vendor), el('span', 'ai-picker-label', item.label));
+      if (item.thinking) option.append(el('span', 'ai-thinking-badge', '思考'));
+      if (item.id === state.defaultGatewayModel) {
+        const star = el('span', 'ai-model-star', '★');
+        star.title = '默认模型';
+        star.setAttribute('aria-label', '默认模型');
+        option.append(star);
+      }
+      if (selected) option.append(icon('check'));
+      option.addEventListener('click', () => {
+        setGatewayModel(item.id);
+        toggleAIUtilityPicker('model', false, true);
+      });
+      group.append(option);
+    }
+    options.append(group);
+  }
+  if (!options.childElementCount) options.append(el('p', 'ai-picker-empty', '未找到模型'));
+}
+
+function renderAIModelPicker() {
+  const item = activeModelMeta();
+  const visible = hasGatewayModels() && item;
+  $('ai-model-picker').hidden = !visible;
+  $('ai-effort-picker').hidden = !visible || !item.thinking;
+  if (!visible) {
+    toggleAIUtilityPicker('model', false);
+    toggleAIUtilityPicker('effort', false);
+    return;
+  }
+  $('ai-model-toggle').replaceChildren(vendorBadge(item.vendor), el('span', 'ai-picker-label', item.label), el('span', 'ai-picker-chevron'));
+  const fixed = $('ai-effort-fixed');
+  const trigger = $('ai-effort-toggle');
+  fixed.hidden = !item.fixedEffort;
+  trigger.hidden = !item.efforts.length;
+  if (!item.efforts.length) toggleAIUtilityPicker('effort', false);
+  fixed.textContent = item.fixedEffort ? effortLabels[item.fixedEffort] + '思考' : '';
+  const effort = item.efforts.includes(state.reasoningEffort) ? state.reasoningEffort : '';
+  trigger.replaceChildren(icon('spark'), el('span', '', effortLabels[effort]), el('span', 'ai-picker-chevron'));
+  $('ai-effort-popover').replaceChildren(...['', ...item.efforts].map(value => {
+    const option = el('button', 'ai-picker-row', effortLabels[value]);
+    option.type = 'button';
+    option.setAttribute('aria-pressed', String(value === effort));
+    if (value === effort) option.append(icon('check'));
+    option.addEventListener('click', () => {
+      state.reasoningEffort = value;
+      try { localStorage.setItem('weiji.reasoningEffort', value); } catch {}
+      renderAIModelPicker();
+      toggleAIUtilityPicker('effort', false, true);
+    });
+    return option;
+  }));
+}
 
 function renderGatewayModels() {
   for (const id of gatewaySelectIds) {
@@ -2545,6 +2797,7 @@ function renderGatewayModels() {
     select.replaceChildren(...state.gatewayModels.map(model => new Option(model, model)));
     select.value = state.gatewayModel ?? '';
   }
+  renderAIModelPicker();
 }
 
 let gatewayModelsRevision = 0;
@@ -2553,11 +2806,16 @@ async function loadGatewayModels(signal = accountLifecycle.signal) {
   if (!gatewayMode()) return;
   const revision = ++gatewayModelsRevision;
   try {
-    const { models, defaultModel } = await request('/api/ai/models', undefined, signal);
+    const { models, defaultModel, modelMeta } = await request('/api/ai/models', undefined, signal);
     if (revision !== gatewayModelsRevision || !gatewayMode() || signal.aborted) return;
     state.gatewayModels = models;
+    state.defaultGatewayModel = defaultModel;
+    state.gatewayModelMeta = modelMeta ?? models.map(id => ({ id, label: id, vendor: 'other', efforts: [] }));
     let remembered;
-    try { remembered = localStorage.getItem('weiji.gatewayModel'); } catch {}
+    try {
+      remembered = localStorage.getItem('weiji.gatewayModel');
+      state.reasoningEffort = localStorage.getItem('weiji.reasoningEffort') || '';
+    } catch {}
     const preferred = state.gatewayModel || remembered;
     state.gatewayModel = models.includes(preferred) ? preferred : defaultModel;
     renderGatewayModels();
@@ -2804,8 +3062,11 @@ function closeAIChat({ restore = true, focus = false } = {}) {
   if (!view.lifecycle) return;
   view.lifecycle.abort();
   ai = emptyAIState();
+  ai.sessionCache = view.sessionCache;
   ai.upgradedNoteIds = view.upgradedNoteIds;
   aiChatView.hidden = true;
+  toggleAIUtilityPicker('model', false);
+  toggleAIUtilityPicker('effort', false);
   $('notes-topbar').hidden = $('main').hidden = false;
   $('ai-note-picker-search').value = '';
   $('ai-note-picker-results').replaceChildren();
@@ -2846,6 +3107,7 @@ function aiNoteTitle(note) {
 function storeAISession(view, session) {
   const { turns, ...summary } = session;
   if ((view.sessions.get(session.id)?.version ?? 0) <= session.version) view.sessions.set(session.id, summary);
+  if (turns && (view.sessionCache.get(session.id)?.version ?? 0) <= session.version) view.sessionCache.set(session.id, session);
   if (session.sourceNoteId) view.upgradedNoteIds.add(session.sourceNoteId);
 }
 
@@ -2890,7 +3152,7 @@ function renderAISessions() {
     select.append(el('span', 'ai-session-title', entry.title), el('span', 'ai-origin-badge', aiOriginLabels[entry.origin]));
     if (entry.legacy) select.dataset.noteId = entry.id;
     else select.dataset.sessionId = entry.id;
-    if ((entry.legacy ? !ai.session && ai.source?.id : ai.session?.id) === entry.id) select.setAttribute('aria-current', 'true');
+    if (ai.selectedSessionId === entry.id) select.setAttribute('aria-current', 'true');
     row.append(select);
     if (!entry.legacy) {
       const remove = actionButton('', 'ai-delete-session', 'ai-session-delete');
@@ -2935,14 +3197,86 @@ function renderStreamingMarkdown(container, text) {
   (end?.matches('p, li, h2, h3, h4, blockquote') ? end : container).append(caret);
 }
 
-function renderAIPendingBubble(bubble, pending) {
-  bubble.classList.toggle('is-streaming', Boolean(pending.streamText));
+function aiSkeleton() {
+  const node = el('div', 'loading-skeleton ai-session-skeleton');
+  node.setAttribute('role', 'status');
+  node.setAttribute('aria-label', '正在读取对话');
+  node.append(el('i'), el('i'), el('i'));
+  return node;
+}
+
+function buildAISteps(steps, pending = false) {
+  const card = el('details', 'ai-steps ai-steps-card');
+  card.open = pending;
+  const duration = steps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0);
+  const matched = steps.find(step => step.kind === 'retrieve')?.detail;
+  const summary = pending ? '处理过程' :
+    [`已完成 ${steps.length} 步`, matched, duration > 0 ? (duration / 1000).toFixed(1) + 's' : null].filter(Boolean).join(' · ');
+  card.append(el('summary', '', summary));
+  const list = el('ol', 'ai-step-list');
+  for (const step of steps) {
+    const item = el('li', 'ai-step');
+    item.dataset.status = step.status;
+    const header = el('div', 'ai-step-heading');
+    header.append(el('span', 'ai-step-dot'), el('strong', '', step.label));
+    if (step.detail) header.append(el('span', 'ai-step-detail', step.detail));
+    if (step.durationMs !== undefined) header.append(el('span', 'ai-step-time', step.durationMs + ' ms'));
+    item.append(header);
+    for (const note of step.items ?? []) {
+      const button = el('button', 'ai-step-note');
+      button.type = 'button';
+      button.dataset.citeNoteId = note.noteId;
+      button.append(el('span', '', '[' + note.ref + '] ' + note.title), el('span', 'ai-step-detail', note.excerpt));
+      item.append(button);
+    }
+    list.append(item);
+  }
+  card.append(list);
+  if (pending) {
+    const reasoning = el('details', 'ai-reasoning');
+    reasoning.hidden = true;
+    reasoning.append(el('summary', '', '实时思考'), el('pre', 'ai-reasoning-text'));
+    card.append(reasoning);
+  }
+  return card;
+}
+
+function renderAIPendingBubble(bubble, pending, finished = false) {
+  let card = bubble.querySelector('.ai-steps');
+  if (pending.steps.size && (!card || pending.stepsDirty)) {
+    const next = buildAISteps([...pending.steps.values()], !finished);
+    if (card) {
+      next.open = !finished && card.open;
+      if (!finished) next.querySelector('.ai-reasoning').replaceWith(card.querySelector('.ai-reasoning'));
+      card.replaceWith(next);
+    } else bubble.prepend(next);
+    card = next;
+    pending.stepsDirty = false;
+  }
+  if (card && pending.reasoning && !finished) {
+    const reasoning = card.querySelector('.ai-reasoning');
+    reasoning.hidden = false;
+    const text = reasoning.querySelector('pre');
+    if (text.textContent !== pending.reasoning) text.textContent = pending.reasoning;
+  }
+  const body = bubble.querySelector('.ai-pending-text');
+  bubble.classList.toggle('is-streaming', !finished && Boolean(pending.streamText));
   if (pending.streamText) {
-    renderStreamingMarkdown(bubble, pending.streamText);
+    const tail = updateStreamingMarkdown(body, pending.streamText, pending.citations);
+    const caret = bubble.querySelector('.ai-stream-caret');
+    if (finished) caret?.remove();
+    else {
+      const cursor = caret ?? el('span', 'ai-stream-caret');
+      cursor.setAttribute('aria-hidden', 'true');
+      if (cursor.parentNode !== tail) tail.append(cursor);
+    }
   } else {
-    const thinking = el('span', 'ai-thinking');
-    thinking.append(el('i'), el('i'), el('i'), el('span', '', pending.status || '正在思考…'));
-    bubble.replaceChildren(thinking);
+    let thinking = body.querySelector('.ai-thinking');
+    if (!thinking || thinking.lastElementChild.textContent !== pending.status) {
+      thinking = el('span', 'ai-thinking');
+      thinking.append(el('i'), el('i'), el('i'), el('span', '', pending.status));
+      body.replaceChildren(thinking);
+    }
   }
 }
 
@@ -2975,6 +3309,12 @@ function renderAIThread(walkPinsOpen = false) {
   const turns = ai.session?.turns ?? ai.source?.turns ?? [];
   $('ai-chat-title').textContent = ai.session?.title || ai.insightContext?.title || (ai.source && aiNoteTitle(ai.source)) || 'AI 对话';
   const thread = $('ai-chat-thread');
+  if (ai.loadingSession) {
+    $('ai-chat-title').textContent = ai.sessions.get(ai.selectedSessionId)?.title || 'AI 对话';
+    thread.replaceChildren(aiSkeleton());
+    syncAIScrollButton();
+    return;
+  }
   const prevTop = thread.scrollTop;
   const shouldFollow = ai.followBottom;
   const nodes = [];
@@ -3037,7 +3377,10 @@ function renderAIThread(walkPinsOpen = false) {
       nodes.push(buildAIUserMessage(turn.text, turn.citations));
     } else {
       const message = el('div', 'ai-msg ai-msg-' + turn.role);
-      renderSafeMarkdown(message, turn.text, turn.citations ?? []);
+      const body = el('div', 'ai-reply-text');
+      renderSafeMarkdown(body, turn.text, turn.citations ?? []);
+      if (turn.steps?.length) message.append(buildAISteps(turn.steps));
+      message.append(body);
       nodes.push(message);
     }
   }
@@ -3045,6 +3388,7 @@ function renderAIThread(walkPinsOpen = false) {
     nodes.push(buildAIUserMessage(ai.pendingTurn.userText));
     const reply = el('div', 'ai-msg ai-msg-assistant ai-msg-pending');
     reply.id = 'ai-pending-reply';
+    reply.append(el('div', 'ai-pending-text'));
     renderAIPendingBubble(reply, ai.pendingTurn);
     nodes.push(reply);
   }
@@ -3106,6 +3450,8 @@ function renderNotePicker() {
 }
 
 function openNotePicker(query = '', atIndex = null) {
+  toggleAIUtilityPicker('model', false);
+  toggleAIUtilityPicker('effort', false);
   if (ai.pins.size >= 10) { setError('ai-chat-error', '最多引用 10 条笔记。'); return; }
   ai.atIndex = atIndex;
   $('ai-note-picker').hidden = false;
@@ -3140,6 +3486,7 @@ function newAISession(source = null, session = null, { extraPinIds = [], fromWal
   ai.sessionLoadSeq++;
   ai.loadingSession = false;
   ai.session = session;
+  ai.selectedSessionId = session?.id ?? source?.id ?? null;
   ai.source = source;
   ai.fromWalk = fromWalk;
   ai.insightContext = null;
@@ -3159,19 +3506,31 @@ function newAISession(source = null, session = null, { extraPinIds = [], fromWal
   return true;
 }
 
-async function selectAISession(path, source = null, { preserveDraft = false } = {}) {
+async function selectAISession(path, source = null, { preserveDraft = false, id = null } = {}) {
   const view = ai;
   if (view.sending) return false;
+  const cached = id ? view.sessionCache.get(id) : null;
+  if (cached) newAISession(state.notes.get(cached.sourceNoteId), cached);
   const seq = ++view.sessionLoadSeq;
   const isCurrent = () => ai === view && seq === view.sessionLoadSeq;
-  view.loadingSession = true;
-  syncAIControls();
+  view.selectedSessionId = id ?? source?.id ?? null;
+  view.loadingSession = !cached;
+  setAISessionRail(false);
+  if (!cached) {
+    setError('ai-chat-error', '');
+    renderAISessions();
+    renderAIThread();
+    syncAIControls();
+  }
   try {
     const { session } = await request(path, undefined, view.lifecycle.signal);
     if (!isCurrent()) return false;
     if (session) storeAISession(view, session);
-    if (preserveDraft) {
+    view.loadingSession = false;
+    if (cached && (!session || session.version <= (view.session?.version ?? 0) || view.sending)) return true;
+    if (preserveDraft || cached) {
       view.session = session;
+      view.selectedSessionId = session?.id ?? source?.id ?? null;
       renderAIThread();
       renderAISessions();
     } else {
@@ -3181,7 +3540,18 @@ async function selectAISession(path, source = null, { preserveDraft = false } = 
     }
     return true;
   } catch (error) {
-    if (isCurrent() && error.name !== 'AbortError') setError('ai-chat-error', error.message);
+    if (isCurrent() && cached && error.status === 404) {
+      view.sessionCache.delete(id);
+      view.sessions.delete(id);
+      if (!view.sending) newAISession();
+    }
+    if (isCurrent() && error.name !== 'AbortError' && !cached) {
+      view.loadingSession = false;
+      view.selectedSessionId = view.session?.id ?? view.source?.id ?? null;
+      renderAIThread();
+      renderAISessions();
+      setError('ai-chat-error', error.message);
+    }
     return false;
   } finally {
     if (isCurrent()) {
@@ -3204,6 +3574,7 @@ async function deleteAISession(id) {
     await request('/api/ai/sessions/' + id, undefined, signal, 'DELETE');
     if (ai !== view) return;
     view.sessions.delete(id);
+    view.sessionCache.delete(id);
     if (view.session?.id === id) newAISession();
     else renderAISessions();
     if (source) {
@@ -3243,6 +3614,8 @@ async function sendAIChat(event) {
   const body = {
     ...settings, message: payloadMessage, referencedNoteIds: [...view.pins],
     useAllNotes: true,
+    ...(gatewayMode() && activeModelMeta()?.efforts.includes(state.reasoningEffort)
+      ? { reasoningEffort: state.reasoningEffort } : {}),
     ...(view.session ? { sessionId: view.session.id, expectedVersion: view.session.version } : {}),
     ...(!view.session && view.source ? { sourceNoteId: view.source.id } : {}),
   };
@@ -3252,7 +3625,18 @@ async function sendAIChat(event) {
   view.sending = controller;
   const signal = AbortSignal.any([view.lifecycle.signal, controller.signal]);
   view.followBottom = true;
-  view.pendingTurn = { userText: payloadMessage, status: '正在检索相关笔记…', streamText: '' };
+  const pending = view.pendingTurn = {
+    userText: payloadMessage, status: '正在检索相关笔记…', streamText: '', citations: [], reasoning: '', steps: new Map(),
+  };
+  let frame;
+  const paintPending = () => {
+    frame = undefined;
+    if (ai !== view || view.pendingTurn !== pending || signal.aborted) return;
+    const bubble = $('ai-pending-reply');
+    if (bubble) renderAIPendingBubble(bubble, pending);
+    if (view.followBottom) $('ai-chat-thread').scrollTop = $('ai-chat-thread').scrollHeight;
+    syncAIScrollButton();
+  };
   input.value = '';
   syncAIControls();
   setError('ai-chat-error', '');
@@ -3270,31 +3654,41 @@ async function sendAIChat(event) {
       signal,
       onEvent(name, data) {
         if (ai !== view || signal.aborted) return;
-        if (name === 'status' && view.pendingTurn) {
-          view.pendingTurn.status = data.message || '正在思考…';
-          const bubble = $('ai-pending-reply');
-          if (bubble && !view.pendingTurn.streamText) renderAIPendingBubble(bubble, view.pendingTurn);
-        } else if (name === 'delta' && view.pendingTurn && typeof data.text === 'string') {
-          view.pendingTurn.streamText += data.text;
-          const bubble = $('ai-pending-reply');
-          if (bubble) {
-            renderAIPendingBubble(bubble, view.pendingTurn);
-            if (view.followBottom) $('ai-chat-thread').scrollTop = $('ai-chat-thread').scrollHeight;
-            syncAIScrollButton();
-          }
-        } else if (name === 'done' && data?.session) {
+        if (name === 'status') pending.status = data.message || '正在思考…';
+        else if (name === 'step') {
+          pending.steps.set(data.id, data);
+          pending.stepsDirty = true;
+        } else if (name === 'citations') pending.citations = data.citations;
+        else if (name === 'reasoning' && typeof data.text === 'string') pending.reasoning += data.text;
+        else if (name === 'delta' && typeof data.text === 'string') pending.streamText += data.text;
+        else if (name === 'done' && data?.session) {
           completed = true;
+          const previousTurns = view.session?.turns ?? view.source?.turns ?? [];
+          const finalTurn = data.session.turns.at(-1);
+          const bubble = $('ai-pending-reply');
+          const keepReply = !data.deduplicated && bubble && pending.streamText.trim() === finalTurn?.text &&
+            data.session.turns.length === previousTurns.length + 2;
           view.session = data.session;
+          view.selectedSessionId = view.session.id;
           view.insightContext = null;
           view.pendingTurn = null;
           storeAISession(view, view.session);
           view.requestKey = null;
           syncAIComposerPlaceholder();
-          renderAIThread();
+          if (keepReply) {
+            pending.steps = new Map((finalTurn.steps ?? []).map(step => [step.id, step]));
+            pending.stepsDirty = true;
+            renderAIPendingBubble(bubble, pending, true);
+            bubble.classList.remove('ai-msg-pending');
+            bubble.removeAttribute('id');
+            $('ai-chat-title').textContent = view.session.title;
+            if (view.followBottom) scrollAIThreadToBottom();
+          } else renderAIThread();
           renderAISessions();
         } else if (name === 'error') {
           streamError = new Error(data?.error || '暂时无法回复，请稍后重试。');
         }
+        if (!completed && frame === undefined) frame = requestAnimationFrame(paintPending);
       },
     });
     if (streamError) throw streamError;
@@ -3309,13 +3703,17 @@ async function sendAIChat(event) {
       return;
     }
     if (error.status === 409) {
-      if (error.current) view.session = error.current;
+      if (error.current) {
+        view.session = error.current;
+        storeAISession(view, view.session);
+      }
       else if (error.deleted) view.session = null;
       view.requestKey = null;
       renderAIThread();
     }
     setError('ai-chat-error', error.message);
   } finally {
+    if (frame !== undefined) cancelAnimationFrame(frame);
     if (ai === view && view.sending === controller) {
       view.sending = null;
       if (!completed && view.pendingTurn) {
@@ -3814,10 +4212,33 @@ $('insight-lens-dialog').addEventListener('close', () => {
   $('ins-lens-form').querySelector('button[type="submit"]').disabled = false;
 });
 for (const id of gatewaySelectIds) $(id).addEventListener('change', event => {
-  state.gatewayModel = event.target.value;
-  try { localStorage.setItem('weiji.gatewayModel', state.gatewayModel); } catch {}
-  renderGatewayModels();
+  setGatewayModel(event.target.value);
 });
+for (const kind of ['model', 'effort']) {
+  const popover = $('ai-' + kind + '-popover');
+  const picker = $('ai-' + kind + '-picker');
+  $('ai-' + kind + '-toggle').addEventListener('click', () => toggleAIUtilityPicker(kind, popover.hidden));
+  document.addEventListener('pointerdown', event => {
+    if (!popover.hidden && !picker.contains(event.target)) toggleAIUtilityPicker(kind, false);
+  });
+  picker.addEventListener('keydown', event => {
+    if (popover.hidden || event.isComposing) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleAIUtilityPicker(kind, false, true);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || (event.key === 'Enter' && event.target.id === 'ai-model-search')) {
+      const options = [...popover.querySelectorAll('button')];
+      if (!options.length) return;
+      event.preventDefault();
+      const index = options.indexOf(event.target);
+      if (event.key === 'Enter') (options.find(option => option.getAttribute('aria-pressed') === 'true') ?? options[0]).click();
+      else if (event.key === 'ArrowDown') options[(index + 1) % options.length].focus();
+      else options[index <= 0 ? options.length - 1 : index - 1].focus();
+    }
+  });
+}
+$('ai-model-search').addEventListener('input', renderModelOptions);
 $('ins-range-select').addEventListener('change', event => {
   ins.range = event.target.value;
   previewInsScope();
@@ -3840,16 +4261,33 @@ $('ai-chat-input').addEventListener('input', event => {
   const index = input.selectionStart - 1;
   if (!event.isComposing && event.data === '@' && input.value[index] === '@') openNotePicker('', index);
 });
-$('sign-out').addEventListener('click', async event => {
-  if (state.authMode !== 'oauth') { resetAccount(); return; }
-  event.preventDefault();
+async function logoutAccount() {
+  const oauth = state.authMode === 'oauth';
+  const account = state.user?.id;
+  if (!account || state.authSuspended) return;
+  await invalidateAccount({ notice: false });
+  if (!oauth) {
+    window.top.location.href = $('sign-out').getAttribute('href');
+    return;
+  }
   try {
-    await request('/api/auth/logout', {});
+    const response = await fetch('/api/auth/logout', {
+      method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json', 'X-Journal-Account': account },
+    });
+    if (!response.ok && response.status !== 401) throw new Error('退出未完成，请重新打开页面后重试。');
     location.replace('/');
   } catch (error) {
-    if (error.name !== 'AbortError') notify(error.message);
+    showSyncSkeleton(false);
+    setAuthNotice(error.message);
   }
-});
+}
+function onLogoutClick(event) {
+  event.preventDefault();
+  void logoutAccount();
+}
+$('sign-out').addEventListener('click', onLogoutClick);
+$('sign-out').addEventListener('auxclick', event => { if (event.button === 1) onLogoutClick(event); });
+$('sign-out').addEventListener('contextmenu', event => event.preventDefault());
 
 const actions = {
   'open-ai-insights': openInsights,
@@ -3924,7 +4362,7 @@ const actions = {
   'note-ai-starter': button => openNoteAIChat(state.notes.get(state.noteID), button.dataset.prompt),
   'ai-select-legacy-note': button => openNoteAIChat(state.notes.get(button.dataset.noteId)),
   'ai-new-session': () => { if (newAISession()) $('ai-chat-input').focus({ preventScroll: true }); },
-  'ai-select-session': (button) => selectAISession('/api/ai/sessions/' + button.dataset.sessionId),
+  'ai-select-session': (button) => selectAISession('/api/ai/sessions/' + button.dataset.sessionId, null, { id: button.dataset.sessionId }),
   'ai-delete-session': (button) => deleteAISession(button.dataset.sessionId),
   'open-ai-profile': openProfile,
   'profile-close': () => closeProfile(),
@@ -4305,7 +4743,27 @@ if (/Mac|iPhone|iPad/.test(navigator.platform)) {
   $('search-shortcut').textContent = '⌘ K';
 }
 window.addEventListener('focus', () => refresh({ silent: true }));
-window.addEventListener('pagehide', () => { $('weread-key').value = ''; state.wereadImport?.controller?.abort(); state.wereadImport?.batchController?.abort(); });
+let pageHidden = false;
+window.addEventListener('storage', event => {
+  if (event.key === weijiAuthEvent && event.newValue) {
+    pageHidden = false;
+    void invalidateAccount({ broadcast: false });
+  }
+});
+window.addEventListener('pagehide', () => {
+  pageHidden = !state.authSuspended;
+  state.authSuspended = true;
+  resetAccount();
+});
+window.addEventListener('pageshow', event => {
+  if (!event.persisted || !pageHidden) return;
+  if (pageAuthStamp !== authEventStamp()) {
+    void invalidateAccount({ broadcast: false });
+    return;
+  }
+  state.authSuspended = false;
+  void refresh();
+});
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh({ silent: true }); });
 setInterval(() => { if (!document.hidden) refresh({ silent: true }); }, 15000);
 refresh();

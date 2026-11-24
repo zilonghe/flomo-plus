@@ -10,6 +10,7 @@ struct ChatSignature: Equatable {
     var model: String
     var provider: AIProvider
     var useProfile: Bool
+    var reasoningEffort = ""
 }
 
 struct ChatRequestID {
@@ -35,6 +36,9 @@ final class AIChatStore {
     private(set) var session: ChatSession?
     private(set) var insight: InsightReport?
     private(set) var streamedText = ""
+    private(set) var liveSteps: [ChatStep] = []
+    private(set) var liveReasoning = ""
+    private(set) var liveCitations: [Citation] = []
     private(set) var pendingQuestion = ""
     private(set) var status: String?
     private(set) var error: String?
@@ -47,6 +51,10 @@ final class AIChatStore {
     @ObservationIgnored private var requestID = ChatRequestID()
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var listGeneration = 0
+    @ObservationIgnored private var pendingDelta = ""
+    @ObservationIgnored private var pendingReasoning = ""
+    @ObservationIgnored private var reasoningLength = 0
+    @ObservationIgnored private var streamingTask: Task<Void, Never>?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var sessionTask: Task<Void, Never>?
     @ObservationIgnored private var listTask: Task<Void, Never>?
@@ -85,9 +93,9 @@ final class AIChatStore {
         sessionTask?.cancel()
         loadingSession = false
         sending = false
+        finishStreaming()
         streamedText = ""
         pendingQuestion = ""
-        status = nil
         requestID.clear()
     }
 
@@ -164,10 +172,10 @@ final class AIChatStore {
         task = Task {
             defer {
                 if stamp == generation {
+                    finishStreaming()
                     sending = false
                     pendingQuestion = ""
                     streamedText = ""
-                    status = nil
                 }
             }
             do {
@@ -178,7 +186,7 @@ final class AIChatStore {
                 let signature = ChatSignature(sessionId: session?.id, expectedVersion: session?.version,
                                               sourceNoteId: session?.sourceNoteId ?? source, message: message,
                                               referencedNoteIds: pins, model: options.model, provider: options.provider,
-                                              useProfile: useProfile)
+                                              useProfile: useProfile, reasoningEffort: options.reasoningEffort)
                 var fields = options.fields
                 fields["message"] = .string(message)
                 fields["referencedNoteIds"] = .strings(signature.referencedNoteIds)
@@ -214,11 +222,62 @@ final class AIChatStore {
 
     func receive(_ frame: SSEParser.Frame, generation stamp: Int) {
         guard stamp == generation, sending else { return }
-        if frame.event == "delta", let delta = try? JSONDecoder().decode(StreamDelta.self, from: Data(frame.data.utf8)) {
-            streamedText += delta.text
-        } else if frame.event == "status" {
-            status = (try? JSONDecoder().decode(StreamStatus.self, from: Data(frame.data.utf8)))?.message
+        let data = Data(frame.data.utf8)
+        let decoder = JSONDecoder()
+        switch frame.event {
+        case "step":
+            guard let step = try? decoder.decode(ChatStep.self, from: data) else { return }
+            if let index = liveSteps.firstIndex(where: { $0.id == step.id }) { liveSteps[index] = step }
+            else { liveSteps.append(step) }
+        case "citations":
+            if let frame = try? decoder.decode(StreamCitations.self, from: data) { liveCitations = frame.citations }
+        case "reasoning":
+            let remaining = 20_000 - reasoningLength
+            guard remaining > 0, let frame = try? decoder.decode(StreamReasoning.self, from: data) else { return }
+            let chunk = frame.text.prefix(remaining)
+            pendingReasoning += chunk
+            reasoningLength += chunk.count
+            scheduleFlush()
+        case "delta":
+            guard let delta = try? decoder.decode(StreamDelta.self, from: data) else { return }
+            pendingDelta += delta.text
+            scheduleFlush()
+        case "status":
+            status = (try? decoder.decode(StreamStatus.self, from: data))?.message
+        case "done":
+            finishStreaming()
+        default: break
         }
+    }
+
+    private func scheduleFlush() {
+        guard streamingTask == nil else { return }
+        streamingTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(40)) } catch { return }
+            self?.flushStreaming()
+        }
+    }
+
+    func flushStreaming() {
+        streamingTask?.cancel()
+        streamingTask = nil
+        if !pendingDelta.isEmpty {
+            streamedText += pendingDelta
+            pendingDelta = ""
+        }
+        if !pendingReasoning.isEmpty {
+            liveReasoning += pendingReasoning
+            pendingReasoning = ""
+        }
+    }
+
+    private func finishStreaming() {
+        flushStreaming()
+        liveSteps = []
+        liveReasoning = ""
+        reasoningLength = 0
+        liveCitations = []
+        status = nil
     }
 
     static func message(_ typed: String, insight: InsightReport?) -> String {
