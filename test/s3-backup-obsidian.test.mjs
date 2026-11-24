@@ -333,7 +333,6 @@ test("Obsidian sync preserves identities, turns, tombstones and user edits acros
 
   const userId = obsidianNoteId(permanent, "whole");
   const userBody = { ...readNote(database, userId).note, body: "用户在下载期间修改的正文" };
-  const originalETag = database.prepare("SELECT etag FROM obsidian_sync_objects WHERE account = 'admin' AND object_key = ?").get(permanent).etag;
   vault.put(permanent, "从 COS 修改的正文");
   vault.beforeGet(key => {
     if (key === permanent) setPayload.run(JSON.stringify(userBody), 2, userId);
@@ -343,7 +342,7 @@ test("Obsidian sync preserves identities, turns, tombstones and user edits acros
   for (let retry = 0; retry < 2; retry++) {
     assert.equal((await sync.sync()).conflicts, 2);
     assert.deepEqual(readNote(database, userId), { revision: 2, note: userBody });
-    assert.equal(database.prepare("SELECT etag FROM obsidian_sync_objects WHERE account = 'admin' AND object_key = ?").get(permanent).etag, originalETag);
+    assert.equal(database.prepare("SELECT etag FROM obsidian_sync_objects WHERE account = 'admin' AND object_key = ?").get(permanent), undefined);
     assert.equal(database.prepare("SELECT synced_revision FROM obsidian_sync_notes WHERE account = 'admin' AND note_id = ?").get(userId).synced_revision, 1);
   }
 
@@ -352,6 +351,28 @@ test("Obsidian sync preserves identities, turns, tombstones and user edits acros
   assert.equal(history(database, daily).length, 3);
   assert.match(readNote(database, a).note.body, /^A\n/);
   assert.deepEqual(readNote(database, b), { revision: 2, note: null });
+
+  // Partial conflict then source reverts to original ETag: clean entry B must still revert while user-edited A stays protected.
+  const partialKey = "memo/2026-02-01.md";
+  vault.put(partialKey, "- 10:00 A1\n- 11:00 B1");
+  assert.equal((await sync.sync()).created, 2);
+  const partialA = obsidianNoteId(partialKey, "time=10:00");
+  const partialB = obsidianNoteId(partialKey, "time=11:00");
+  const editedA = { ...readNote(database, partialA).note, body: "用户保留的 A 正文" };
+  setPayload.run(JSON.stringify(editedA), 2, partialA);
+  vault.put(partialKey, "- 10:00 A2\n- 11:00 B2");
+  const partialStats = await sync.sync();
+  assert.equal(partialStats.updated, 1);
+  assert.equal(partialStats.conflicts, 5);
+  assert.match(readNote(database, partialB).note.body, /^B2\n/);
+  assert.deepEqual(readNote(database, partialA), { revision: 2, note: editedA });
+  assert.equal(database.prepare("SELECT etag FROM obsidian_sync_objects WHERE account = 'admin' AND object_key = ?").get(partialKey), undefined);
+  vault.put(partialKey, "- 10:00 A1\n- 11:00 B1");
+  const revertedSync = createObsidianSync({ database, semantic, config: syncConfig, s3Client: vault.s3Client });
+  const revertStats = await revertedSync.sync();
+  assert.equal(revertStats.updated, 1);
+  assert.match(readNote(database, partialB).note.body, /^B1\n/);
+  assert.deepEqual(readNote(database, partialA), { revision: 2, note: editedA });
   await semantic.waitIdle();
 });
 
@@ -416,6 +437,13 @@ test("an unchanged ETag still allows semantic recovery after the 60s backoff", a
   assert.equal(disabled.getStatus("admin").ftsReady, true);
   assert.equal(disabled.getStatus("admin").indexed, 0);
   assert.equal(disabledSync.getStatus("admin").lastRun.indexWarning, null);
+  assert.deepEqual(vault.gets, []);
+
+  // Disabled embeddings with a broken FTS index must report indexWarning without triggering vector rebuild.
+  disabled.recordError("admin", new Error("controlled FTS failure"));
+  await disabledSync.sync();
+  assert.equal(disabled.getStatus("admin").ftsReady, false);
+  assert.ok(disabledSync.getStatus("admin").lastRun.indexWarning);
   assert.deepEqual(vault.gets, []);
 });
 

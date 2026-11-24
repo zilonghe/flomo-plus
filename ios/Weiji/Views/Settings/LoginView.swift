@@ -11,9 +11,15 @@ struct LoginView: View {
     @State private var loginBusy = false
     @State private var oauth = OAuthSessionCoordinator()
 
+    private var origin: String? {
+        try? ServerConfiguration(address: draft.address, token: "").origin
+    }
+
     init(store: AppStore) {
         self.store = store
-        _draft = State(initialValue: ConnectionSettingsDraft(configuration: store.configuration))
+        var draft = ConnectionSettingsDraft(configuration: store.configuration)
+        draft.setAddress(draft.address, savedToken: store.savedConnectionToken(for:))
+        _draft = State(initialValue: draft)
     }
 
     var body: some View {
@@ -57,7 +63,7 @@ struct LoginView: View {
                            center: .init(x: 0.27, y: 0.29), startRadius: 0, endRadius: 420)
                 .ignoresSafeArea()
         }
-        .task(id: retry) { await discoverProviders() }
+        .task(id: "\(origin ?? "")|\(retry)") { await discoverProviders() }
     }
 
     @ViewBuilder private var providerButtons: some View {
@@ -83,15 +89,23 @@ struct LoginView: View {
                 InlineError(message: providerError)
                 Button("重试") { retry += 1 }.buttonStyle(.bordered)
             }
-        } else {
+        } else if origin != nil {
             ProgressView().accessibilityLabel("正在载入登录方式")
         }
     }
 
     private func discoverProviders() async {
+        providers = nil
         providerError = nil
+        guard let target = origin else {
+            providerError = "请输入有效的服务器地址。"
+            return
+        }
         do {
-            let config = try ServerConfiguration(address: ServerConfiguration.defaultOrigin, token: "")
+            if target != ServerConfiguration.defaultOrigin {
+                try await Task.sleep(for: .milliseconds(300))
+            }
+            let config = try ServerConfiguration(address: target, token: "")
             let client = WeijiAPIClient(configuration: config)
             defer { Task { await client.cancel() } }
             let result = try await client.authProviders()
@@ -99,21 +113,26 @@ struct LoginView: View {
             if result.authMode == "oauth", result.publicOrigin != config.origin {
                 throw WeijiAPIError(status: 0, message: "登录服务地址不一致。")
             }
-            providers = result
+            if self.origin == target { providers = result }
         } catch is CancellationError {
-        } catch { providerError = error.localizedDescription }
+        } catch {
+            if self.origin == target { providerError = error.localizedDescription }
+        }
     }
 
     private func login(_ provider: String) {
+        guard let target = origin else {
+            error = "请输入有效的服务器地址。"
+            return
+        }
         error = nil
         loginBusy = true
         Task {
             defer { loginBusy = false }
             do {
-                let origin = ServerConfiguration.defaultOrigin
                 let pkce = try OAuthPKCE.generate()
-                let callback = try await oauth.authenticate(pkce.startURL(origin: origin, provider: provider))
-                try await store.finishOAuth(origin: origin, callback: callback, pkce: pkce, deviceLabel: UIDevice.current.model)
+                let callback = try await oauth.authenticate(pkce.startURL(origin: target, provider: provider))
+                try await store.finishOAuth(origin: target, callback: callback, pkce: pkce, deviceLabel: UIDevice.current.model)
             } catch is CancellationError {
             } catch { self.error = error.localizedDescription }
         }

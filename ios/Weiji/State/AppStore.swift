@@ -45,6 +45,7 @@ final class AppStore {
     @ObservationIgnored private let initial: ServerConfiguration?
     @ObservationIgnored private let credentials: KeychainStore
     @ObservationIgnored private let makeTransport: () -> URLSession?
+    @ObservationIgnored private let runSearch: @Sendable (NoteIndex, String, NoteFilter) -> [Note]
     @ObservationIgnored private var accountKey: NoteCacheStore.Key?
     @ObservationIgnored private var rejectedChatDraft: (key: NoteCacheStore.Key, text: String)?
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
@@ -60,11 +61,15 @@ final class AppStore {
 
     init(initial: ServerConfiguration? = nil, temporary: Bool = false, reset: Bool = false,
          cache: NoteCacheStore? = nil, credentials: KeychainStore? = nil,
-         makeTransport: @escaping () -> URLSession? = { nil }) {
+         makeTransport: @escaping () -> URLSession? = { nil },
+         runSearch: @escaping @Sendable (NoteIndex, String, NoteFilter) -> [Note] = { index, query, filter in
+             index.search(query, filter: filter)
+         }) {
         self.initial = initial
         self.temporary = temporary
         self.credentials = credentials ?? .live
         self.makeTransport = makeTransport
+        self.runSearch = runSearch
         self.cache = cache ?? (reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore())
     }
 
@@ -99,10 +104,12 @@ final class AppStore {
             }
             do {
                 if let previousKey, previous?.origin != config.origin { try? await cache.invalidate(previousKey) }
-                if canPreload, let cached = try? await cache.loadOffline(config) {
+                var preloadedKey: NoteCacheStore.Key?
+                if canPreload, let entry = try? await cache.loadOfflineEntry(config) {
                     guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                    preloadedKey = entry.key
                     isOffline = true
-                    await replace(with: cached, persist: false)
+                    await replace(with: entry.notes, persist: false)
                 }
                 guard stamp == connectionGeneration, !Task.isCancelled else { return }
                 let session: SessionInfo = try await probe.get("/api/session")
@@ -110,6 +117,10 @@ final class AppStore {
                 guard stamp == connectionGeneration else { return }
                 let key = NoteCacheStore.Key(origin: config.origin, userId: session.user.id)
                 if let previousKey, previousKey != key { try? await cache.invalidate(previousKey) }
+                if let preloadedKey, preloadedKey != key {
+                    clearLoadedState()
+                    try? await cache.invalidate(preloadedKey)
+                }
                 try Task.checkCancellation()
                 guard stamp == connectionGeneration else { return }
                 if save && !temporary {
@@ -254,6 +265,7 @@ final class AppStore {
         if let accountKey, !chat.draft.isEmpty { rejectedChatDraft = (accountKey, chat.draft) }
         resetConnection(to: config)
         showSettings = false
+        error = failure.localizedDescription
         let stamp = connectionGeneration
         try? await cache.revoke(config)
         guard stamp == connectionGeneration else { return }
@@ -342,8 +354,9 @@ final class AppStore {
         let index = self.index
         let query = self.query
         let filter = self.filter
+        let execute = self.runSearch
         searchTask = Task {
-            let job = Task.detached(priority: .userInitiated) { index.search(query, filter: filter) }
+            let job = Task.detached(priority: .userInitiated) { execute(index, query, filter) }
             let found = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
             guard !Task.isCancelled else { return }
             applySearch(found, generation: stamp)

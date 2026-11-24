@@ -401,12 +401,26 @@ final class StoreLogicTests: XCTestCase {
                 StubProtocol.remove(config)
                 try? FileManager.default.removeItem(at: directory)
             }
+            let searchEntered = OSAllocatedUnfairLock(initialState: false)
+            let searchRelease = DispatchSemaphore(value: 0)
+            let searchDone = OSAllocatedUnfairLock(initialState: false)
             let cache = NoteCacheStore(directory: directory)
             let key = NoteCacheStore.Key(origin: config.origin, userId: "account")
             try await cache.save([cachedNote], for: key)
             try await cache.bind(config, userId: key.userId)
             let store = AppStore(initial: config, temporary: true, cache: NoteCacheStore(directory: directory),
-                                 makeTransport: StubProtocol.transport)
+                                 makeTransport: StubProtocol.transport,
+                                 runSearch: { index, query, filter in
+                                     if status == 500 && query == "预载" {
+                                         searchEntered.withLock { $0 = true }
+                                         _ = searchRelease.wait(timeout: .now() + 8)
+                                         let found = index.search(query, filter: filter)
+                                         searchDone.withLock { $0 = true }
+                                         return found
+                                     }
+                                     return index.search(query, filter: filter)
+                                 })
+            defer { searchRelease.signal() }
             XCTAssertEqual(store.authScreenState, .needsLogin)
             store.start()
             XCTAssertEqual(store.authScreenState, .restoring)
@@ -420,7 +434,12 @@ final class StoreLogicTests: XCTestCase {
             XCTAssertNil(store.identity)
             XCTAssertEqual(store.notesById[cachedNote.id]?.body, cachedNote.body)
 
-            if status != 200 { store.query = "预载" }
+            if status == 500 {
+                store.query = "预载"
+                try await waitUntil("旧搜索必须进入在途态") { searchEntered.withLock { $0 } }
+            } else if status != 200 {
+                store.query = "预载"
+            }
             release.signal()
             try await waitUntil("会话完成 HTTP \(status)") { !store.syncing }
 
@@ -436,17 +455,54 @@ final class StoreLogicTests: XCTestCase {
                 XCTAssertTrue(store.results.isEmpty)
                 XCTAssertTrue(store.notesById.isEmpty)
                 if status == 500 {
-                    // Let detached search callbacks return; a prior result must never reappear.
-                    for _ in 0..<20 {
+                    // Release the in-flight stale search strictly AFTER 500 cleared state; it must never refill results.
+                    searchRelease.signal()
+                    try await waitUntil("旧搜索应完成返回") { searchDone.withLock { $0 } }
+                    for _ in 0..<10 {
+                        await Task.yield()
                         try await Task.sleep(for: .milliseconds(10))
-                        XCTAssertTrue(store.results.isEmpty)
-                        XCTAssertTrue(store.notesById.isEmpty)
                     }
+                    XCTAssertTrue(store.results.isEmpty, "晚到旧搜索不得回填 results")
+                    XCTAssertTrue(store.notesById.isEmpty)
                 }
                 let bound = try await cache.loadOffline(config)
                 XCTAssertEqual(bound?.map(\.id), status == 500 ? [cachedNote.id] : nil)
             }
         }
+    }
+
+    func testOnlineTransitionClearsPreloadedCacheWhenServerReturnsDifferentUser() async throws {
+        let cachedNote = Note(id: "old-user-note", body: "旧用户私密笔记", createdAt: "2026-11-23T00:00:00Z", reading: nil, turns: [], revision: 1)
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session":
+                return .init(status: 200, body: #"{"user":{"id":"new-user","name":"新用户"},"codexAvailable":false,"authMode":"oauth"}"#)
+            case "/api/notes":
+                return .init(status: 500, body: "notes fetch failed")
+            default:
+                return .init(status: 404, body: "")
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer {
+            transport.invalidateAndCancel()
+            StubProtocol.remove(config)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let cache = NoteCacheStore(directory: directory)
+        let oldKey = NoteCacheStore.Key(origin: config.origin, userId: "old-user")
+        try await cache.save([cachedNote], for: oldKey)
+        try await cache.bind(config, userId: oldKey.userId)
+        let store = AppStore(initial: config, temporary: true, cache: NoteCacheStore(directory: directory),
+                             makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("切换用户连接完成") { !store.syncing }
+        XCTAssertEqual(store.authScreenState, .online)
+        XCTAssertEqual(store.identity?.user.id, "new-user")
+        XCTAssertTrue(store.notesById.isEmpty, "不同用户的预载笔记必须立即清空")
+        XCTAssertTrue(store.results.isEmpty)
+        let invalidated = try await cache.load(oldKey)
+        XCTAssertNil(invalidated, "旧用户缓存应被失效")
     }
 
     func testInsightReportDeleteRemovesOnSuccessAndPreservesOnFailure() async throws {

@@ -126,9 +126,15 @@ actor NoteCacheStore {
                   to: bindingURL(configuration.origin))
     }
 
-    func loadOffline(_ configuration: ServerConfiguration) throws -> [Note]? {
+    func loadOfflineEntry(_ configuration: ServerConfiguration) throws -> (key: Key, notes: [Note])? {
         guard let binding = try matchingBinding(configuration) else { return nil }
-        return try load(Key(origin: configuration.origin, userId: binding.userId))
+        let key = Key(origin: configuration.origin, userId: binding.userId)
+        guard let notes = try load(key) else { return nil }
+        return (key, notes)
+    }
+
+    func loadOffline(_ configuration: ServerConfiguration) throws -> [Note]? {
+        try loadOfflineEntry(configuration)?.notes
     }
 
     func revoke(_ configuration: ServerConfiguration) throws {

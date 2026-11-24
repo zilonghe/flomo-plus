@@ -88,6 +88,7 @@ export function createObsidianSync({ database, semantic, config, s3Client = crea
   const saveObject = prepare(`INSERT INTO obsidian_sync_objects (account, object_key, etag, last_modified, synced_at)
     VALUES (?, ?, ?, ?, ?) ON CONFLICT (account, object_key) DO UPDATE SET
     etag = excluded.etag, last_modified = excluded.last_modified, synced_at = excluded.synced_at`);
+  const deleteObject = prepare("DELETE FROM obsidian_sync_objects WHERE account = ? AND object_key = ?");
   const groupState = prepare(`SELECT entry_key, note_id, synced_body_sha256 FROM obsidian_sync_notes
     WHERE account = ? AND object_key = ? AND (entry_key = ? OR entry_key LIKE ?)`);
   const noteState = prepare("SELECT revision, payload FROM journal_notes WHERE account = ? AND id = ?");
@@ -177,6 +178,7 @@ export function createObsidianSync({ database, semantic, config, s3Client = crea
         }
       }
       if (stats.conflicts === initialConflicts) saveObject.run(account, key, etag, lastModified ?? null, new Date(now()).toISOString());
+      else deleteObject.run(account, key);
     });
     return upserts;
   }
@@ -186,10 +188,15 @@ export function createObsidianSync({ database, semantic, config, s3Client = crea
       indexAccount = account;
       indexBackoffObservedAt = null;
     }
-    const unhealthy = st => st && st.provider !== "disabled" &&
-      (Boolean(st.lastError) || !st.ftsReady || (st.indexed < st.total && st.pending === 0 && !st.indexing));
+    const disabledBroken = st => Boolean(st && st.provider === "disabled" && (!st.ftsReady || Boolean(st.lastError)));
+    const needsRebuild = st => Boolean(st && st.provider !== "disabled" &&
+      (Boolean(st.lastError) || !st.ftsReady || (st.indexed < st.total && st.pending === 0 && !st.indexing)));
     let status = await semantic?.getStatus?.(account);
-    if (unhealthy(status)) {
+    if (disabledBroken(status)) {
+      indexBackoffObservedAt = null;
+      return "全文索引暂未就绪，请检查索引状态。";
+    }
+    if (needsRebuild(status)) {
       if (indexBackoffObservedAt === null) indexBackoffObservedAt = now();
       else if (now() - indexBackoffObservedAt >= (config.indexRecoveryCooldownMs ?? 60_000)) {
         await semantic.syncAccount(account);
@@ -197,7 +204,7 @@ export function createObsidianSync({ database, semantic, config, s3Client = crea
         status = await semantic.getStatus(account);
       }
     }
-    if (!unhealthy(status)) {
+    if (!needsRebuild(status)) {
       indexBackoffObservedAt = null;
       return null;
     }
