@@ -142,6 +142,7 @@ struct InsightsTabView: View {
                                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                             }.noteCard()
                         }.buttonStyle(.plain)
+                            .accessibilityIdentifier("insight-report-row-\(report.id)")
                     }
                 }
             }.padding(16)

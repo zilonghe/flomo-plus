@@ -95,11 +95,13 @@ actor NoteCacheStore {
         let userId: String
 
         var filename: String {
-            let data = Data((origin + "|" + userId).utf8)
-            var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-            data.withUnsafeBytes { _ = CC_SHA256($0.baseAddress, CC_LONG($0.count), &digest) }
-            return digest.map { String(format: "%02x", $0) }.joined() + ".json"
+            NoteCacheStore.digest(origin + "|" + userId) + ".json"
         }
+    }
+
+    private struct Binding: Codable {
+        let tokenDigest: String
+        let userId: String
     }
 
     private let directory: URL
@@ -115,9 +117,46 @@ actor NoteCacheStore {
 
     func save(_ notes: [Note], for key: Key) throws {
         try Task.checkCancellation()
+        try write(notes, to: directory.appending(path: key.filename))
+    }
+
+    func bind(_ configuration: ServerConfiguration, userId: String) throws {
+        try Task.checkCancellation()
+        try write(Binding(tokenDigest: Self.digest(configuration.token), userId: userId),
+                  to: bindingURL(configuration.origin))
+    }
+
+    func loadOffline(_ configuration: ServerConfiguration) throws -> [Note]? {
+        guard let binding = try matchingBinding(configuration) else { return nil }
+        return try load(Key(origin: configuration.origin, userId: binding.userId))
+    }
+
+    func revoke(_ configuration: ServerConfiguration) throws {
+        guard try matchingBinding(configuration) != nil else { return }
+        try FileManager.default.removeItem(at: bindingURL(configuration.origin))
+    }
+
+    private func matchingBinding(_ configuration: ServerConfiguration) throws -> Binding? {
+        let url = bindingURL(configuration.origin)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let binding = try JSONDecoder().decode(Binding.self, from: Data(contentsOf: url))
+        return binding.tokenDigest == Self.digest(configuration.token) ? binding : nil
+    }
+
+    private func bindingURL(_ origin: String) -> URL {
+        directory.appending(path: "auth-" + Self.digest(origin) + ".json")
+    }
+
+    private static func digest(_ value: String) -> String {
+        let data = Data(value.utf8)
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { _ = CC_SHA256($0.baseAddress, CC_LONG($0.count), &digest) }
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func write(_ value: some Encodable, to url: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(notes).write(to: directory.appending(path: key.filename),
-                                              options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try JSONEncoder().encode(value).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     func invalidate(_ key: Key) throws {

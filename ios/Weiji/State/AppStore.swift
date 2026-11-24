@@ -23,6 +23,7 @@ final class AppStore {
     private(set) var api: WeijiAPIClient?
     private(set) var configuration: ServerConfiguration?
     private(set) var syncing = false
+    private(set) var isOffline = false
     var options = AIOptions()
     var gatewayModels: [String] = []
     var gatewayDefault: String?
@@ -31,6 +32,7 @@ final class AppStore {
     @ObservationIgnored private let cache: NoteCacheStore
     @ObservationIgnored private let temporary: Bool
     @ObservationIgnored private let initial: ServerConfiguration?
+    @ObservationIgnored private let makeTransport: () -> URLSession?
     @ObservationIgnored private var accountKey: NoteCacheStore.Key?
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -41,11 +43,14 @@ final class AppStore {
     @ObservationIgnored private var dataGeneration = 0
     @ObservationIgnored private var workingNotes: [String: Note] = [:]
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var offlineFallbackAllowed = true
 
-    init(initial: ServerConfiguration? = nil, temporary: Bool = false, reset: Bool = false) {
+    init(initial: ServerConfiguration? = nil, temporary: Bool = false, reset: Bool = false,
+         cache: NoteCacheStore? = nil, makeTransport: @escaping () -> URLSession? = { nil }) {
         self.initial = initial
         self.temporary = temporary
-        cache = reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore()
+        self.makeTransport = makeTransport
+        self.cache = cache ?? (reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore())
     }
 
     func start() {
@@ -63,19 +68,90 @@ final class AppStore {
 
     func connect(_ config: ServerConfiguration, save: Bool) {
         let previousKey = accountKey
-        let oldClient = api
-        let previousOrigin = configuration?.origin
+        let previous = configuration
+        if let previous, previous != config { offlineFallbackAllowed = false }
+        resetConnection(to: config)
+        let stamp = connectionGeneration
+        syncing = true
+
+        connectionTask = Task { [self] in
+            let probe = WeijiAPIClient(configuration: config, transport: makeTransport())
+            defer {
+                if stamp == connectionGeneration { syncing = false }
+                Task { await probe.cancel() }
+            }
+            do {
+                if let previousKey, previous?.origin != config.origin { try? await cache.invalidate(previousKey) }
+                let session: SessionInfo = try await probe.get("/api/session")
+                try Task.checkCancellation()
+                guard stamp == connectionGeneration else { return }
+                let key = NoteCacheStore.Key(origin: config.origin, userId: session.user.id)
+                if let previousKey, previousKey != key { try? await cache.invalidate(previousKey) }
+                try Task.checkCancellation()
+                guard stamp == connectionGeneration else { return }
+                if save && !temporary {
+                    try KeychainStore.write(config.token, origin: config.origin)
+                    UserDefaults.standard.set(config.origin, forKey: "weiji.origin")
+                }
+                try? await cache.bind(config, userId: session.user.id)
+                guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                offlineFallbackAllowed = true
+                accountKey = key
+                identity = session
+                options.provider = session.defaultProvider
+                options.model = session.defaultProvider == .openai ? "gpt-4.1-mini" : ""
+                if !temporary { options.apiKey = KeychainStore.read(origin: config.origin, kind: "openai") ?? "" }
+                let client = WeijiAPIClient(configuration: config, account: session.user.id, transport: makeTransport()) { [weak self] failure in
+                    await self?.rejectConnection(config, failure: failure, generation: stamp)
+                }
+                api = client
+                showSettings = false
+                if let cached = try? await cache.load(key), stamp == connectionGeneration, workingNotes.isEmpty {
+                    await replace(with: cached, persist: false)
+                }
+                guard stamp == connectionGeneration else { return }
+                await fetchNotes()
+                guard stamp == connectionGeneration else { return }
+                if session.codexMode == "gateway" {
+                    let models: ModelOptions? = try? await client.get("/api/ai/models")
+                    if stamp == connectionGeneration {
+                        gatewayModels = models?.models ?? []
+                        gatewayDefault = models?.defaultModel
+                    }
+                }
+            } catch is CancellationError {
+            } catch {
+                guard stamp == connectionGeneration else { return }
+                if let failure = error as? WeijiAPIError, failure.rejectsAuthentication {
+                    await rejectConnection(config, failure: failure, generation: stamp)
+                } else if offlineFallbackAllowed, Self.isNetworkUnavailable(error),
+                          let cached = try? await cache.loadOffline(config) {
+                    guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                    await replace(with: cached, persist: false)
+                    guard stamp == connectionGeneration else { return }
+                    isOffline = true
+                    showSettings = false
+                } else if stamp == connectionGeneration {
+                    self.error = error.localizedDescription
+                    showSettings = true
+                }
+            }
+        }
+    }
+
+    private func resetConnection(to config: ServerConfiguration) {
         connectionTask?.cancel()
         refreshTask?.cancel()
         searchTask?.cancel()
+        if let api { Task { await api.cancel() } }
         connectionGeneration += 1
         searchGeneration += 1
         dataGeneration += 1
-        let stamp = connectionGeneration
         detail = nil
         tab = .notes
         identity = nil
         api = nil
+        isOffline = false
         accountKey = nil
         workingNotes = [:]
         configuration = config
@@ -91,52 +167,28 @@ final class AppStore {
         walk.reset()
         chat.reset()
         insights.reset()
-        syncing = true
+    }
 
-        connectionTask = Task {
-            if let oldClient { await oldClient.cancel() }
-            if let previousKey, previousOrigin != config.origin { try? await cache.invalidate(previousKey) }
-            let probe = WeijiAPIClient(configuration: config)
-            defer {
-                if stamp == connectionGeneration { syncing = false }
-                Task { await probe.cancel() }
-            }
-            do {
-                let session: SessionInfo = try await probe.get("/api/session")
-                try Task.checkCancellation()
-                guard stamp == connectionGeneration else { return }
-                let key = NoteCacheStore.Key(origin: config.origin, userId: session.user.id)
-                if let previousKey, previousKey != key { try? await cache.invalidate(previousKey) }
-                try Task.checkCancellation()
-                guard stamp == connectionGeneration else { return }
-                if save && !temporary {
-                    try KeychainStore.write(config.token, origin: config.origin)
-                    UserDefaults.standard.set(config.origin, forKey: "weiji.origin")
-                }
-                accountKey = key
-                identity = session
-                options.provider = session.defaultProvider
-                options.model = session.defaultProvider == .openai ? "gpt-4.1-mini" : ""
-                if !temporary { options.apiKey = KeychainStore.read(origin: config.origin, kind: "openai") ?? "" }
-                let client = WeijiAPIClient(configuration: config, account: session.user.id)
-                api = client
-                showSettings = false
-                if let cached = try? await cache.load(key), stamp == connectionGeneration, workingNotes.isEmpty {
-                    await replace(with: cached, persist: false)
-                }
-                guard stamp == connectionGeneration else { return }
-                refresh()
-                if session.codexMode == "gateway" {
-                    let models: ModelOptions? = try? await client.get("/api/ai/models")
-                    if stamp == connectionGeneration {
-                        gatewayModels = models?.models ?? []
-                        gatewayDefault = models?.defaultModel
-                    }
-                }
-            } catch is CancellationError {
-            } catch {
-                if stamp == connectionGeneration { self.error = error.localizedDescription; showSettings = true }
-            }
+    private func rejectConnection(_ config: ServerConfiguration, failure: WeijiAPIError, generation: Int) async {
+        guard generation == connectionGeneration else { return }
+        offlineFallbackAllowed = false
+        resetConnection(to: config)
+        let stamp = connectionGeneration
+        try? await cache.revoke(config)
+        guard stamp == connectionGeneration else { return }
+        syncing = false
+        error = failure.localizedDescription
+        showSettings = true
+    }
+
+    private static func isNetworkUnavailable(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        switch error.code {
+        case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost, .cannotConnectToHost,
+             .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff:
+            return true
+        default:
+            return false
         }
     }
 
@@ -146,14 +198,23 @@ final class AppStore {
         options.model = provider == .openai ? "gpt-4.1-mini" : ""
     }
 
+    func savedConnectionToken(for origin: String) -> String? {
+        KeychainStore.read(origin: origin)
+    }
+
     func setAPIKey(_ key: String) throws {
         if let origin = configuration?.origin, !temporary { try KeychainStore.write(key, origin: origin, kind: "openai") }
         options.apiKey = key
     }
 
     func refresh() {
+        if isOffline, !syncing, let configuration {
+            connect(configuration, save: false)
+            return
+        }
         guard api != nil else { return }
         refreshTask?.cancel()
+        syncing = true
         refreshTask = Task { await fetchNotes() }
     }
 

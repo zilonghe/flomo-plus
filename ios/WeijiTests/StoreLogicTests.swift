@@ -1,63 +1,357 @@
 import XCTest
+import os
 @testable import Weiji
 
 @MainActor
 final class StoreLogicTests: XCTestCase {
     func test409ConflictPreservesDraftWithoutOverwritingServer() async throws {
-        let initial = Note(id: "note", body: "原始版本", createdAt: "2025-02-01T00:00:00.000Z", revision: 2)
-        let payload = #"{"error":"云端版本已更新","current":{"note":{"id":"note","body":"云端版本","createdAt":"2025-02-01T00:00:00.000Z","turns":[],"revision":3}}}"#
+        let conflicts = OSAllocatedUnfairLock(initialState: 0)
         let (config, transport) = try StubProtocol.make { request in
+            if request.url?.path == "/api/session" { return .init(status: 200, body: sessionFixture) }
+            XCTAssertEqual(request.url?.path, "/api/notes")
+            if request.httpMethod == "GET" { return .init(status: 200, body: notesFixture) }
             XCTAssertEqual(request.httpMethod, "POST")
+            let body = jsonBody(request)
+            let attempt = conflicts.withLock { $0 += 1; return $0 }
+            XCTAssertEqual(body?["id"] as? String, "note")
+            XCTAssertEqual(body?["expectedRevision"] as? Int, attempt + 1)
+            XCTAssertEqual((body?["note"] as? [String: Any])?["body"] as? String, "我的未保存草稿")
+            let payload = attempt == 1
+                ? #"{"error":"云端版本已更新","current":{"note":{"id":"note","body":"云端版本","createdAt":"2025-02-01T00:00:00.000Z","turns":[],"revision":3}}}"#
+                : #"{"error":"这条笔记已被删除","current":null}"#
             return .init(status: 409, body: payload)
         }
-        defer { StubProtocol.remove(config) }
-        let client = WeijiAPIClient(configuration: config, transport: transport)
-        let store = AppStore(temporary: true, reset: true)
-        await store.applyRecord(.init(note: initial, deleted: nil), id: initial.id)
-        var draft = NoteDraft(note: initial)
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let store = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("同步原始笔记") { !store.syncing }
+        var draft = NoteDraft(note: try XCTUnwrap(store.notesById["note"]))
         draft.body = "我的未保存草稿"
+
         do {
-            let _: NoteRecord = try await client.post("/api/notes", NoteMutation(id: initial.id, expectedRevision: draft.base.revision,
-                                                                                 note: initial.writePayload))
-            XCTFail("Expected conflict")
+            try await store.update(draft.base, body: draft.body)
+            XCTFail("Expected an updated-record conflict")
         } catch let error as WeijiAPIError {
-            await store.applyRecord(error.current(NoteRecord.self), id: initial.id)
+            XCTAssertEqual(error.status, 409)
             draft.failed(error)
         }
-        XCTAssertEqual(store.notesById[initial.id]?.body, "云端版本")
-        XCTAssertEqual(store.notesById[initial.id]?.revision, 3)
+        XCTAssertEqual(store.notesById["note"]?.body, "云端版本")
+        XCTAssertEqual(store.notesById["note"]?.revision, 3)
         XCTAssertTrue(draft.conflict)
         XCTAssertEqual(draft.body, "我的未保存草稿")
         XCTAssertEqual(draft.base.revision, 2)
-        draft.review(try XCTUnwrap(store.notesById[initial.id]))
+        draft.review(try XCTUnwrap(store.notesById["note"]))
         XCTAssertFalse(draft.conflict)
         XCTAssertEqual(draft.base.revision, 3)
         XCTAssertEqual(draft.body, "我的未保存草稿")
+
+        do {
+            try await store.update(draft.base, body: draft.body)
+            XCTFail("Expected a deleted-record conflict")
+        } catch let error as WeijiAPIError {
+            XCTAssertEqual(error.status, 409)
+            XCTAssertNil(error.current(NoteRecord.self))
+            draft.failed(error)
+        }
+        XCTAssertNil(store.notesById["note"])
+        XCTAssertTrue(draft.conflict)
+        XCTAssertEqual(draft.body, "我的未保存草稿")
+        XCTAssertEqual(conflicts.withLock { $0 }, 2)
     }
 
-    func testClientRequestIdReusesOnRetryAndChangesOnVersionOrFieldEdit() {
-        let base = ChatSignature(sessionId: "session", expectedVersion: 1, sourceNoteId: "note", message: "问题",
-                                 referencedNoteIds: ["ref"], model: "model", provider: .codex, useProfile: true)
-        var ids = ChatRequestID()
-        let first = ids.resolve(base)
-        XCTAssertNotNil(UUID(uuidString: first))
-        XCTAssertEqual(first, ids.resolve(base))
-        let changes: [(inout ChatSignature) -> Void] = [
-            { $0.sessionId = nil }, { $0.expectedVersion = 2 }, { $0.sourceNoteId = nil },
-            { $0.message += "?" }, { $0.referencedNoteIds.append("second") }, { $0.model = "new" },
-            { $0.provider = .openai }, { $0.useProfile = false },
-        ]
-        for edit in changes {
-            var changed = base
-            let oldID = ids.resolve(base)
-            edit(&changed)
-            let fresh = ids.resolve(changed)
-            XCTAssertNotEqual(fresh, oldID)
-            XCTAssertEqual(fresh, ids.resolve(changed))
+    func testClientRequestIdReusesOnRetryAndChangesOnVersionOrFieldEdit() async throws {
+        struct Sent {
+            let id: String
+            let version: Int
+            let message: String
+            let pins: [String]
         }
-        let last = ids.resolve(base)
-        ids.clear()
-        XCTAssertNotEqual(ids.resolve(base), last)
+        let wire = OSAllocatedUnfairLock(initialState: [Sent]())
+        let persisted = OSAllocatedUnfairLock(initialState: [String]())
+        let (config, transport) = try StubProtocol.make { request in
+            func session(version: Int) -> String {
+                let turns = persisted.withLock { messages in
+                    messages.flatMap { [["role": "user", "text": $0], ["role": "assistant", "text": "回复"]] }
+                }
+                let data = try! JSONSerialization.data(withJSONObject: turns)
+                return """
+                {"id":"session","title":"会话","version":\(version),"updatedAt":"2025-02-01T00:00:00Z","origin":"chat","turns":\(String(decoding: data, as: UTF8.self))}
+                """
+            }
+            if request.url?.path == "/api/ai/sessions/session", request.httpMethod == "GET" {
+                let version = persisted.withLock { $0.isEmpty ? 1 : 2 }
+                return .init(status: 200, body: "{\"session\":\(session(version: version))}")
+            }
+            XCTAssertEqual(request.url?.path, "/api/ai/chat")
+            XCTAssertEqual(request.httpMethod, "POST")
+            guard let body = jsonBody(request),
+                  let id = body["clientRequestId"] as? String,
+                  let version = body["expectedVersion"] as? Int,
+                  let message = body["message"] as? String,
+                  let pins = body["referencedNoteIds"] as? [String] else {
+                XCTFail("Missing fields in the chat POST")
+                return .init(status: 500, body: "{}")
+            }
+            XCTAssertEqual(body["sessionId"] as? String, "session")
+            let (attempt, duplicate) = wire.withLock { sent in
+                let duplicate = sent.contains { $0.id == id }
+                sent.append(Sent(id: id, version: version, message: message, pins: pins))
+                return (sent.count, duplicate)
+            }
+            if attempt <= 2, !duplicate { persisted.withLock { $0.append(message) } }
+            let headers = ["Content-Type": "text/event-stream"]
+            if attempt == 2 {
+                return .init(status: 200, body: "event: done\ndata: {\"session\":\(session(version: 2))}\n\n", headers: headers)
+            }
+            if attempt == 5 {
+                return .init(status: 409, body: "{\"error\":\"版本已更新\",\"current\":\(session(version: 3))}")
+            }
+            return .init(status: 200, body: "event: delta\ndata: {\"text\":\"部分回复\"}\n\n", headers: headers)
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let client = WeijiAPIClient(configuration: config, transport: transport)
+        let chat = AIChatStore()
+        let profile = InsightsStore()
+        chat.select("session", api: client)
+        try await waitUntil("读取会话") { !chat.loadingSession }
+        XCTAssertEqual(chat.session?.version, 1)
+        chat.togglePin("ref")
+        chat.draft = "原始问题"
+
+        func send() async throws {
+            chat.send(api: client, options: AIOptions(provider: .codex), profile: profile)
+            XCTAssertTrue(chat.sending)
+            try await waitUntil("聊天请求完成") { !chat.sending }
+        }
+        try await send()
+        XCTAssertEqual(chat.error, WeijiAPIError.interrupted.message)
+        XCTAssertEqual(chat.draft, "原始问题")
+        try await send()
+        XCTAssertNil(chat.error)
+        XCTAssertEqual(chat.draft, "")
+        XCTAssertEqual(chat.session?.turns?.map(\.role), ["user", "assistant"])
+        let reloaded: ChatResponse = try await client.get("/api/ai/sessions/session")
+        XCTAssertEqual(reloaded.session?.turns?.map(\.text), ["原始问题", "回复"])
+
+        chat.draft = "下一问"
+        try await send()
+        chat.draft = "修改后的问题"
+        try await send()
+        chat.togglePin("second")
+        try await send()
+        XCTAssertEqual(chat.session?.version, 3)
+        try await send()
+
+        let requests = wire.withLock { $0 }
+        XCTAssertEqual(requests.map(\.version), [1, 1, 2, 2, 2, 3])
+        XCTAssertEqual(requests.map(\.message), ["原始问题", "原始问题", "下一问", "修改后的问题", "修改后的问题", "修改后的问题"])
+        XCTAssertEqual(requests.map(\.pins), [["ref"], ["ref"], ["ref"], ["ref"], ["ref", "second"], ["ref", "second"]])
+        guard requests.count == 6 else { return }
+        XCTAssertTrue(requests.allSatisfy { UUID(uuidString: $0.id) != nil })
+        XCTAssertEqual(requests[0].id, requests[1].id)
+        XCTAssertEqual(Set(requests.dropFirst().map(\.id)).count, 5)
+    }
+
+    func testOfflineColdStartLoadsCachedNotesAndIsolatesChangedCredentials() async throws {
+        // 0 = online, -1 = offline, otherwise an HTTP status.
+        let mode = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            let state = mode.withLock { $0 }
+            if state == -1 { return .init(status: 0, body: "", failure: .notConnectedToInternet) }
+            if state != 0 { return .init(status: state, body: "Session rejected") }
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes":
+                XCTAssertEqual(request.value(forHTTPHeaderField: "X-Journal-Account"), "account")
+                return .init(status: 200, body: notesFixture)
+            default:
+                XCTFail("Unexpected endpoint")
+                return .init(status: 404, body: "")
+            }
+        }
+        let (otherOrigin, otherTransport) = try StubProtocol.make { request in
+            XCTAssertEqual(request.url?.path, "/api/session")
+            return .init(status: 0, body: "", failure: .timedOut)
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer {
+            transport.invalidateAndCancel(); StubProtocol.remove(config)
+            otherTransport.invalidateAndCancel(); StubProtocol.remove(otherOrigin)
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        func launch(_ config: ServerConfiguration) async throws -> AppStore {
+            let store = AppStore(initial: config, temporary: true, cache: NoteCacheStore(directory: directory),
+                                 makeTransport: StubProtocol.transport)
+            store.start()
+            try await waitUntil("连接结束") { !store.syncing }
+            return store
+        }
+        var online = try await launch(config)
+        XCTAssertEqual(online.identity?.user.id, "account")
+        XCTAssertEqual(online.notesById["note"]?.body, "原始版本")
+
+        mode.withLock { $0 = -1 }
+        let normalized = try ServerConfiguration(address: config.origin.uppercased() + "/", token: " \(config.token) ")
+        let offline = try await launch(normalized)
+        XCTAssertTrue(offline.isOffline)
+        XCTAssertFalse(offline.showSettings)
+        XCTAssertNil(offline.api)
+        XCTAssertNil(offline.identity)
+        XCTAssertEqual(offline.notesById["note"]?.body, "原始版本")
+        try await waitUntil("离线列表可浏览") { offline.results.map(\.id) == ["note"] }
+
+        let changed = try ServerConfiguration(address: config.origin, token: "different-token")
+        func assertIsolated(_ store: AppStore) {
+            XCTAssertTrue(store.showSettings)
+            XCTAssertFalse(store.isOffline)
+            XCTAssertNil(store.identity)
+            XCTAssertNil(store.api)
+            XCTAssertTrue(store.notesById.isEmpty)
+            XCTAssertTrue(store.results.isEmpty)
+        }
+        assertIsolated(try await launch(changed))
+        let switched = try ServerConfiguration(address: otherOrigin.origin, token: config.token)
+        assertIsolated(try await launch(switched))
+        offline.connect(changed, save: false)
+        try await waitUntil("更换凭据后离线缓存不可见") { !offline.syncing }
+        assertIsolated(offline)
+        offline.connect(config, save: false)
+        try await waitUntil("切回旧凭据仍需重新认证") { !offline.syncing }
+        assertIsolated(offline)
+
+        mode.withLock { $0 = 500 }
+        assertIsolated(try await launch(config))
+        for status in [401, 403] {
+            mode.withLock { $0 = status }
+            assertIsolated(try await launch(config))
+            mode.withLock { $0 = -1 }
+            assertIsolated(try await launch(config))
+            mode.withLock { $0 = 0 }
+            online = try await launch(config)
+        }
+        // Rejection after successful authentication must also drop the currently visible notes.
+        mode.withLock { $0 = 403 }
+        online.refresh()
+        try await waitUntil("同步拒绝后清除账号") { !online.syncing }
+        assertIsolated(online)
+        mode.withLock { $0 = -1 }
+        assertIsolated(try await launch(config))
+    }
+
+    func testInsightReportDeleteRemovesOnSuccessAndPreservesOnFailure() async throws {
+        let deletes = OSAllocatedUnfairLock(initialState: 0)
+        let row = #"{"id":"report","title":"历史洞察","lensName":"回顾","content":"报告正文","createdAt":"2025-02-01T00:00:00Z"}"#
+        let (config, transport) = try StubProtocol.make { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/insights/lenses"): return .init(status: 200, body: #"{"lenses":[]}"#)
+            case ("GET", "/api/insights/reports"):
+                let gone = deletes.withLock { $0 == 2 }
+                return .init(status: 200, body: "{\"reports\":[\(gone ? "" : row)]}")
+            case ("GET", "/api/insights/reports/report"): return .init(status: 200, body: "{\"report\":\(row)}")
+            case ("DELETE", "/api/insights/reports/report"):
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token-123")
+                var origin = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+                origin?.path = ""
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), origin?.string)
+                return deletes.withLock { attempts in
+                    attempts += 1
+                    if attempts == 1 { return .init(status: 500, body: #"{"error":"删除失败"}"#) }
+                    return .init(status: 200, body: #"{"deleted":"report"}"#)
+                }
+            default:
+                XCTFail("Unexpected report request")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let store = InsightsStore()
+        await store.loadLibrary(api: api)
+        let report = try XCTUnwrap(store.reports.first)
+        store.openReport(report, api: api)
+        try await waitUntil("读取报告详情") { !store.running }
+
+        await store.deleteReport(report.id, api: api)
+        XCTAssertEqual(store.reports.map(\.id), [report.id])
+        XCTAssertTrue(store.showReport)
+        XCTAssertEqual(store.reportText, "报告正文")
+        XCTAssertEqual(store.reportError, "删除失败")
+
+        await store.deleteReport(report.id, api: api)
+        XCTAssertTrue(store.reports.isEmpty)
+        XCTAssertFalse(store.showReport)
+        XCTAssertNil(store.report)
+        XCTAssertNil(store.reportError)
+        let reloaded: ReportList = try await api.get("/api/insights/reports")
+        XCTAssertTrue(reloaded.reports.isEmpty)
+        XCTAssertEqual(deletes.withLock { $0 }, 2)
+    }
+
+    func testCustomLensEditPreservesSuggestedRange() async throws {
+        let lens = #"{"id":"lens","name":"旧名称","description":"描述","prompt":"分析笔记","category":"自定义","builtin":false,"suggestedRange":"week"}"#
+        let (config, transport) = try StubProtocol.make { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/insights/lenses"): return .init(status: 200, body: "{\"lenses\":[\(lens)]}")
+            case ("GET", "/api/insights/reports"): return .init(status: 200, body: #"{"reports":[]}"#)
+            case ("POST", "/api/insights/lenses"):
+                let body = jsonBody(request)
+                XCTAssertEqual(body?["id"] as? String, "lens")
+                XCTAssertEqual(body?["name"] as? String, "新名称")
+                XCTAssertEqual(body?["suggestedRange"] as? String, "week")
+                return .init(status: 200, body: "{\"lens\":\(lens.replacingOccurrences(of: "旧名称", with: "新名称"))}")
+            default:
+                XCTFail("Unexpected lens request")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let insights = InsightsStore()
+        await insights.loadLibrary(api: api)
+        var input = LensEdit(lens: try XCTUnwrap(insights.lenses.first))
+        input.name = "新名称"
+        try await insights.saveLens(input, api: api)
+        XCTAssertEqual(insights.selectedLens?.name, "新名称")
+        XCTAssertEqual(insights.selectedLens?.suggestedRange, "week")
+    }
+
+    func testOriginSwitchDoesNotLeakPreviousTokenInSettings() async throws {
+        let a = try ServerConfiguration(address: "https://origin-a.example", token: "origin-a-token")
+        let seen = OSAllocatedUnfairLock(initialState: [String?]())
+        let (b, transport) = try StubProtocol.make { request in
+            XCTAssertEqual(request.url?.path, "/api/session")
+            seen.withLock { $0.append(request.value(forHTTPHeaderField: "Authorization")) }
+            return .init(status: 401, body: "Unauthorized")
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(b) }
+        let store = AppStore(temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        var form = ConnectionSettingsDraft(configuration: a)
+        var savedTokens = [a.origin: a.token]
+        func savedToken(for origin: String) -> String? { savedTokens[origin] }
+        form.setAddress("HTTPS://ORIGIN-A.EXAMPLE:443/", savedToken: savedToken(for:))
+        XCTAssertEqual(try form.configuration().token, a.token)
+
+        form.setAddress(b.origin, savedToken: savedToken(for:))
+        XCTAssertEqual(form.token, "")
+        store.connect(try form.configuration(), save: true)
+        try await waitUntil("新服务器未收到旧令牌") { !store.syncing }
+        XCTAssertEqual(seen.withLock { $0 }, [nil])
+
+        savedTokens[b.origin] = "origin-b-token"
+        form.setAddress(a.origin, savedToken: savedToken(for:))
+        form.setAddress(b.origin, savedToken: savedToken(for:))
+        XCTAssertEqual(form.token, "origin-b-token")
+        store.connect(try form.configuration(), save: true)
+        try await waitUntil("新服务器收到自己的令牌") { !store.syncing }
+        XCTAssertEqual(seen.withLock { $0 }, [nil, "Bearer origin-b-token"])
+    }
+
+    private func waitUntil(_ reason: String, _ ready: () -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(3)
+        while !ready(), clock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(ready(), reason)
     }
 
     func testProfileSaveFailureBlocksChatSendAndPreservesDraft() async throws {
@@ -112,4 +406,29 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(chat.streamedText, "")
         XCTAssertEqual(chat.draft, "第二个问题")
     }
+}
+
+private let sessionFixture = #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":false}"#
+private let notesFixture = #"{"notes":[{"id":"note","body":"原始版本","createdAt":"2025-02-01T00:00:00.000Z","turns":[],"revision":2}],"deleted":[]}"#
+
+private func jsonBody(_ request: URLRequest) -> [String: Any]? {
+    let data: Data
+    if let body = request.httpBody {
+        data = body
+    } else if let stream = request.httpBodyStream {
+        stream.open()
+        defer { stream.close() }
+        var buffer = [UInt8](repeating: 0, count: 2_048)
+        var body = Data()
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count >= 0 else { return nil }
+            if count == 0 { break }
+            body.append(contentsOf: buffer.prefix(count))
+        }
+        data = body
+    } else {
+        return nil
+    }
+    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
 }

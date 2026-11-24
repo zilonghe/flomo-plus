@@ -89,3 +89,18 @@ open ios/Weiji.xcodeproj
 选择 `Weiji` scheme，在模拟器运行。首次打开时，在「连接设置」填写自托管服务的完整地址和 `PREVIEW_AUTH_TOKEN`，点「测试并连接」。模拟器与服务器在同一台 Mac 时可填 `http://127.0.0.1:5173`；跨网络使用 HTTPS 或受信任的 VPN。笔记缓存按服务器和账号隔离。服务凭据与可选的 OpenAI API Key 保存在系统钥匙串；服务配置了 Codex 或兼容网关时，App 默认使用它。
 
 单元测试在 Xcode 中选择 Product → Test。生成的 Xcode 工程和构建产物无需提交。
+
+真机安装前，用 USB 连接并解锁 iPhone，信任这台 Mac，打开「开发者模式」，并在 Xcode 的 Accounts 中登录有 Team `GU3H6N2XND` 的 Apple 账号。从仓库根目录运行：
+
+```sh
+xcodegen generate --spec ios/project.yml --project ios
+xcodebuild -project ios/Weiji.xcodeproj -scheme Weiji -showdestinations
+WEIJI_DEVICE_ID='<上一步显示的 iPhone id>'
+xcodebuild -project ios/Weiji.xcodeproj -scheme Weiji -configuration Debug \
+  -destination "platform=iOS,id=$WEIJI_DEVICE_ID" -derivedDataPath ios/DerivedData \
+  -allowProvisioningUpdates -allowProvisioningDeviceRegistration DEVELOPMENT_TEAM=GU3H6N2XND build
+xcrun devicectl device install app --device "$WEIJI_DEVICE_ID" ios/DerivedData/Build/Products/Debug-iphoneos/Weiji.app
+xcrun devicectl device process launch --device "$WEIJI_DEVICE_ID" com.zilonghe.weiji
+```
+
+首次启动如提示不受信任，在 iPhone「设置 → 通用 → VPN 与设备管理」信任开发者，再启动 App。在连接设置中填写 iPhone 能访问的服务地址与访问令牌。

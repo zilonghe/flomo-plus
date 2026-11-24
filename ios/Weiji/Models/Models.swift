@@ -159,6 +159,7 @@ struct InsightLens: Decodable, Identifiable, Sendable {
     let prompt: String
     let category: String
     let builtin: Bool
+    let suggestedRange: String?
 }
 struct LensEdit: Encodable, Sendable {
     var id: String?
@@ -166,6 +167,17 @@ struct LensEdit: Encodable, Sendable {
     var description = ""
     var prompt = ""
     var category = "自定义"
+    var suggestedRange: String?
+
+    init(lens: InsightLens? = nil) {
+        guard let lens else { return }
+        id = lens.id
+        name = lens.name
+        description = lens.description
+        prompt = lens.prompt
+        category = lens.category
+        suggestedRange = lens.suggestedRange
+    }
 }
 struct LensList: Decodable, Sendable { let lenses: [InsightLens] }
 struct LensResponse: Decodable, Sendable { let lens: InsightLens }

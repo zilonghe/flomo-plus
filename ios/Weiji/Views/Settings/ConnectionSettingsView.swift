@@ -1,21 +1,53 @@
 import SwiftUI
 
+struct ConnectionSettingsDraft {
+    private(set) var address: String
+    var token: String
+    private var tokenOrigin: String?
+
+    init(configuration: ServerConfiguration?) {
+        address = configuration?.origin ?? "http://10.199.197.116:5173"
+        token = configuration?.token ?? ""
+        tokenOrigin = configuration?.origin
+    }
+
+    mutating func setAddress(_ address: String, savedToken: (String) -> String?) {
+        self.address = address
+        let origin = try? ServerConfiguration(address: address, token: "").origin
+        guard origin != tokenOrigin else { return }
+        tokenOrigin = origin
+        token = origin.flatMap(savedToken) ?? ""
+    }
+
+    func configuration() throws -> ServerConfiguration {
+        try ServerConfiguration(address: address, token: token)
+    }
+}
+
 struct ConnectionSettingsView: View {
     let store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var address = "http://10.199.197.116:5173"
-    @State private var token = ""
+    @State private var draft: ConnectionSettingsDraft
     @State private var error: String?
     @State private var semantic: SemanticStatus?
     @State private var indexing = false
+
+    init(store: AppStore) {
+        self.store = store
+        var draft = ConnectionSettingsDraft(configuration: store.configuration)
+        draft.setAddress(draft.address, savedToken: store.savedConnectionToken(for:))
+        _draft = State(initialValue: draft)
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("自托管服务") {
-                    TextField("服务器地址", text: $address)
+                    TextField("服务器地址", text: Binding(get: { draft.address }, set: {
+                        draft.setAddress($0, savedToken: store.savedConnectionToken(for:))
+                    }))
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("访问令牌", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    SecureField("访问令牌", text: $draft.token).textInputAutocapitalization(.never).autocorrectionDisabled()
                     Button("测试并连接", action: connect).disabled(store.syncing)
                     if store.syncing { ProgressView("正在连接") }
                     if let user = store.identity?.user { LabeledContent("账户", value: user.name) }
@@ -38,7 +70,6 @@ struct ConnectionSettingsView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
             }
             .onAppear {
-                if let config = store.configuration { address = config.origin; token = config.token }
                 if store.api != nil { updateIndex(rebuild: false) }
             }
         }
@@ -46,7 +77,7 @@ struct ConnectionSettingsView: View {
 
     private func connect() {
         error = nil
-        do { store.connect(try ServerConfiguration(address: address, token: token), save: true) }
+        do { store.connect(try draft.configuration(), save: true) }
         catch { self.error = error.localizedDescription }
     }
 

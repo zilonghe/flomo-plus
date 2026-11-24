@@ -1,6 +1,6 @@
 import Foundation
 
-struct ServerConfiguration: Sendable {
+struct ServerConfiguration: Equatable, Sendable {
     let origin: String
     let token: String
 
@@ -27,6 +27,7 @@ struct WeijiAPIError: LocalizedError {
     let message: String
     var body: Data? = nil
     var errorDescription: String? { message }
+    var rejectsAuthentication: Bool { status == 401 || status == 403 }
     static let interrupted = Self(status: 0, message: "连接中断，未收到完整回复。")
 
     private struct Envelope: Decodable { let error: String; let status: Int? }
@@ -62,10 +63,13 @@ actor WeijiAPIClient {
     nonisolated let configuration: ServerConfiguration
     private let session: URLSession
     private let account: String?
+    private let onAuthenticationRejected: (@Sendable (WeijiAPIError) async -> Void)?
 
-    init(configuration: ServerConfiguration, account: String? = nil, transport: URLSession? = nil) {
+    init(configuration: ServerConfiguration, account: String? = nil, transport: URLSession? = nil,
+         onAuthenticationRejected: (@Sendable (WeijiAPIError) async -> Void)? = nil) {
         self.configuration = configuration
         self.account = account
+        self.onAuthenticationRejected = onAuthenticationRejected
         if let transport {
             session = transport
         } else {
@@ -83,9 +87,11 @@ actor WeijiAPIClient {
         guard path.hasPrefix("/api/"), let url = URL(string: configuration.origin + path) else {
             throw WeijiAPIError(status: 0, message: "无效的服务路径。")
         }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.httpMethod = method
-        request.setValue("Bearer " + configuration.token, forHTTPHeaderField: "Authorization")
+        if !configuration.token.isEmpty {
+            request.setValue("Bearer " + configuration.token, forHTTPHeaderField: "Authorization")
+        }
         request.setValue(account, forHTTPHeaderField: "X-Journal-Account")
         request.setValue(stream ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
         if method == "POST" || method == "DELETE" {
@@ -115,7 +121,7 @@ actor WeijiAPIClient {
             let (data, response) = try await session.data(for: request)
             try Task.checkCancellation()
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard (200..<300).contains(code) else { throw WeijiAPIError.response(code, data) }
+            guard (200..<300).contains(code) else { throw await responseError(code, data) }
             return try JSONDecoder().decode(Result.self, from: data)
         } catch {
             if Task.isCancelled { throw CancellationError() }
@@ -135,7 +141,8 @@ actor WeijiAPIClient {
                     data.append(byte)
                     if data.count >= 1_048_576 { break }
                 }
-                throw WeijiAPIError.response(code, data)
+                try Task.checkCancellation()
+                throw await responseError(code, data)
             }
             return try await Self.readStream(bytes, onFrame: onFrame)
         } catch {
@@ -143,6 +150,12 @@ actor WeijiAPIClient {
             if error is URLError { throw WeijiAPIError.interrupted }
             throw error
         }
+    }
+
+    private func responseError(_ status: Int, _ data: Data) async -> WeijiAPIError {
+        let failure = WeijiAPIError.response(status, data)
+        if failure.rejectsAuthentication { await onAuthenticationRejected?(failure) }
+        return failure
     }
 
     static func readStream<Bytes: AsyncSequence, Result: Decodable>(

@@ -12,6 +12,7 @@ struct NoteDetailSheet: View {
     @FocusState private var editing: Bool
 
     private var current: Note { store.notesById[note.id] ?? note }
+    private var conflictServerNote: Note? { store.notesById[note.id] }
 
     var body: some View {
         NavigationStack {
@@ -24,10 +25,12 @@ struct NoteDetailSheet: View {
                             .lineLimit(5...).focused($editing)
                             .accessibilityIdentifier("detail-body-editor")
                         if draft?.conflict == true {
-                            Text("云端版本已更新，以下是最新正文。你的草稿仍保留在上方。")
-                                .font(.footnote).foregroundStyle(.red)
-                            if let latest = store.notesById[note.id] {
-                                Text(latest.body).noteCard()
+                            if let latest = conflictServerNote {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("云端版本已更新").font(.footnote.weight(.semibold)).foregroundStyle(.red)
+                                    Text(latest.body).font(.subheadline)
+                                        .accessibilityIdentifier("detail-conflict-server-body")
+                                }.noteCard()
                                 Button("保留草稿，使用云端版本继续编辑") {
                                     draft?.review(latest)
                                     error = nil
@@ -46,9 +49,10 @@ struct NoteDetailSheet: View {
                             Label("与 AI 聊这条", systemImage: "bubble.left")
                         }
                         .accessibilityIdentifier("detail-ask-ai-button")
+                        .disabled(store.api == nil)
                         Button("删除笔记", role: .destructive) { confirmingDelete = true }
                             .accessibilityIdentifier("detail-delete-button")
-                            .disabled(saving || store.notesById[note.id] == nil)
+                            .disabled(saving || store.api == nil || store.notesById[note.id] == nil)
                     }
                     InlineError(message: error)
                 }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
@@ -71,7 +75,7 @@ struct NoteDetailSheet: View {
                             error = nil
                             editing = true
                         }
-                        .disabled(saving || store.notesById[note.id] == nil)
+                        .disabled(saving || store.api == nil || store.notesById[note.id] == nil)
                         .accessibilityIdentifier("detail-edit-button")
                     }
                 }

@@ -20,9 +20,16 @@ struct NotesTabView: View {
                     if !showSearch { store.query = "" }
                 }
                 IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
-                    .disabled(store.api == nil || store.syncing)
+                    .disabled((store.api == nil && !store.isOffline) || store.syncing)
             }
             .screenHeader()
+            if store.isOffline {
+                Label("离线 · 仅可浏览已同步笔记", systemImage: "wifi.slash")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.line.opacity(0.6), in: .rect(cornerRadius: 8))
+                    .padding(.horizontal, 16)
+            }
             if showSearch {
                 TextField("搜索笔记、书名、作者", text: $store.query)
                     .focused($searching)
@@ -49,7 +56,7 @@ struct NotesTabView: View {
             ScrollView {
                 LazyVStack(spacing: 9) {
                     if store.results.isEmpty && !store.syncing {
-                        if store.api == nil {
+                        if store.api == nil && !store.isOffline {
                             Button("连接微记服务") { store.showSettings = true }.padding(.top, 36)
                         } else {
                             Text("暂无笔记").foregroundStyle(.secondary).padding(.top, 36)

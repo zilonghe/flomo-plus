@@ -13,6 +13,7 @@ final class InsightsStore {
     private(set) var reportText = ""
     var showReport = false
     private(set) var running = false
+    private(set) var deletingReport = false
     private(set) var error: String?
     private(set) var reportError: String?
 
@@ -27,6 +28,7 @@ final class InsightsStore {
     @ObservationIgnored private var profileGeneration = 0
     @ObservationIgnored private var reportTask: Task<Void, Never>?
     @ObservationIgnored private var reportGeneration = 0
+    @ObservationIgnored private var reportsGeneration = 0
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var previewGeneration = 0
     @ObservationIgnored private var contextGeneration = 0
@@ -48,6 +50,7 @@ final class InsightsStore {
         profileText = ""
         profileError = nil
         stopReport()
+        deletingReport = false
         showReport = false
         report = nil
         reportText = ""
@@ -63,6 +66,7 @@ final class InsightsStore {
 
     func loadLibrary(api: WeijiAPIClient) async {
         let stamp = contextGeneration
+        let reportsStamp = reportsGeneration
         do {
             async let available: LensList = api.get("/api/insights/lenses")
             async let recent: ReportList = api.get("/api/insights/reports")
@@ -70,7 +74,7 @@ final class InsightsStore {
             guard stamp == contextGeneration, !Task.isCancelled else { return }
             self.lenses = lenses.lenses
             if !lenses.lenses.contains(where: { $0.id == lensId }) { lensId = lenses.lenses.first?.id ?? "builtin:default" }
-            self.reports = reports.reports
+            if reportsStamp == reportsGeneration { self.reports = reports.reports }
         } catch is CancellationError {
         } catch {
             if stamp == contextGeneration { self.error = error.localizedDescription }
@@ -142,6 +146,7 @@ final class InsightsStore {
                 guard stamp == reportGeneration, !Task.isCancelled else { return }
                 report = result.report
                 reportText = result.report.content ?? ""
+                reportsGeneration += 1
                 reports.removeAll { $0.id == result.report.id }
                 reports.insert(result.report, at: 0)
             } catch is CancellationError {
@@ -176,6 +181,29 @@ final class InsightsStore {
             } catch {
                 if stamp == reportGeneration { reportError = error.localizedDescription }
             }
+        }
+    }
+
+    func deleteReport(_ id: String, api: WeijiAPIClient) async {
+        guard !deletingReport else { return }
+        let context = contextGeneration
+        let stamp = reportGeneration
+        deletingReport = true
+        reportError = nil
+        defer { if context == contextGeneration { deletingReport = false } }
+        do {
+            let _: DeletedResponse = try await api.delete("/api/insights/reports/\(id)")
+            guard context == contextGeneration, !Task.isCancelled else { return }
+            reportsGeneration += 1
+            reports.removeAll { $0.id == id }
+            if stamp == reportGeneration, report?.id == id {
+                showReport = false
+                report = nil
+                reportText = ""
+            }
+        } catch is CancellationError {
+        } catch {
+            if stamp == reportGeneration { reportError = error.localizedDescription }
         }
     }
 

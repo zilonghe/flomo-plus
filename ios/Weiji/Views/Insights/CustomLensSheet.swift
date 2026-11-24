@@ -10,8 +10,7 @@ struct CustomLensSheet: View {
 
     init(store: AppStore, lens: InsightLens?) {
         self.store = store
-        _input = State(initialValue: lens.map { LensEdit(id: $0.id, name: $0.name, description: $0.description,
-                                                         prompt: $0.prompt, category: $0.category) } ?? LensEdit())
+        _input = State(initialValue: LensEdit(lens: lens))
     }
 
     var body: some View {

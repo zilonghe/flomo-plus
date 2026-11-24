@@ -6,6 +6,8 @@ final class StubProtocol: URLProtocol {
     struct Reply {
         let status: Int
         let body: String
+        var headers: [String: String]? = nil
+        var failure: URLError.Code? = nil
     }
     private static let lock = NSLock()
     private static var handlers: [String: (URLRequest) -> Reply] = [:]
@@ -15,10 +17,14 @@ final class StubProtocol: URLProtocol {
         lock.lock()
         handlers[host] = handler
         lock.unlock()
+        return (try ServerConfiguration(address: "http://" + host + ":5173", token: "test-token-123"),
+                transport())
+    }
+
+    static func transport() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [Self.self]
-        return (try ServerConfiguration(address: "http://" + host + ":5173", token: "test-token-123"),
-                URLSession(configuration: config))
+        return URLSession(configuration: config)
     }
 
     static func remove(_ configuration: ServerConfiguration) {
@@ -37,7 +43,11 @@ final class StubProtocol: URLProtocol {
         let handler = Self.handlers[url.host ?? ""]
         Self.lock.unlock()
         let reply = handler?(request) ?? .init(status: 500, body: "Unexpected request")
-        guard let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
+        if let failure = reply.failure {
+            client?.urlProtocol(self, didFailWithError: URLError(failure))
+            return
+        }
+        guard let response = HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: reply.headers) else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(reply.body.utf8))
         client?.urlProtocolDidFinishLoading(self)
