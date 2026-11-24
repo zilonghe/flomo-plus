@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import { createSemanticEngine } from "../src/semantic.js";
 
 import { applyMigrations, authConfig, createAuth } from "../src/auth.js";
+import { createObsidianSync, obsidianConfig } from "../src/obsidian.js";
 
 const config = authConfig(process.env);
 const host = process.env.HOST || "127.0.0.1";
@@ -35,13 +36,22 @@ if (process.env.SKIP_BUILD !== "1") {
   if (canBuild) await import("./build.mjs");
 }
 const { default: worker } = await import("../dist/server/index.js");
-const auth = config && createAuth(database, config);
 await applyMigrations(database);
 
 const SEMANTIC = createSemanticEngine({
   database,
   env: { ...process.env, EMBEDDING_CACHE_DIR: process.env.EMBEDDING_CACHE_DIR || dirname(dbPath) + "/models" },
 });
+
+const obsConfig = obsidianConfig(process.env);
+const obsidian = obsConfig ? createObsidianSync({ database, semantic: SEMANTIC, config: obsConfig }) : null;
+const auth = config && createAuth(database, config, { obsidian });
+if (obsidian && obsConfig.intervalMs > 0) {
+  setInterval(async () => {
+    try { await obsidian.sync({ trigger: "timer" }); }
+    catch { console.error("Scheduled Obsidian sync failed"); }
+  }, obsConfig.intervalMs).unref();
+}
 
 const DB = {
   prepare(sql) {

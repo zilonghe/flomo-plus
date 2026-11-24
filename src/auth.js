@@ -128,11 +128,29 @@ function json(data, status = 200, headers) {
   for (const [key, value] of Object.entries(privateHeaders)) result.set(key, value);
   return Response.json(data, { status, headers: result });
 }
-function page(title, content, status = 200) {
+const providerIcons = {
+  github: '<svg aria-hidden="true" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.86c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.99 1.03-2.69-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.03A9.6 9.6 0 0 1 12 6.82c.85 0 1.7.11 2.5.34 1.91-1.3 2.75-1.03 2.75-1.03.55 1.38.2 2.4.1 2.65.64.7 1.03 1.6 1.03 2.69 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.75c0 .26.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>',
+  google: '<svg aria-hidden="true" viewBox="0 0 24 24"><g stroke="none"><path fill="#4285f4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.06H12v3.9h5.38a4.6 4.6 0 0 1-1.99 3.02v2.51h3.22c1.89-1.74 2.99-4.31 2.99-7.37Z"/><path fill="#34a853" d="M12 22c2.7 0 4.96-.9 6.61-2.4l-3.22-2.51c-.9.6-2.04.96-3.39.96-2.6 0-4.8-1.76-5.59-4.12H3.1v2.59A10 10 0 0 0 12 22Z"/><path fill="#fbbc05" d="M6.41 13.93a6 6 0 0 1 0-3.86V7.48H3.1a10 10 0 0 0 0 9.04Z"/><path fill="#ea4335" d="M12 5.95c1.48 0 2.8.51 3.85 1.51l2.88-2.88A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.9 5.48l3.31 2.59C7.2 7.71 9.4 5.95 12 5.95Z"/></g></svg>',
+};
+const legalPages = {
+  "/privacy": ["隐私政策", `<p>微记是由站点管理员运营的个人自托管笔记服务。启用 GitHub 或 Google 登录时，微记接收并保存登录提供商及其用户 ID，以及提供商返回的显示名称、邮箱地址和头像 URL。使用 GitHub 时也会保存 GitHub 用户名。</p>
+<h2>数据用途</h2><p>这些登录资料仅用于验证账号、管理登录会话，以及将笔记和其他数据归属到正确的微记账号。微记不出售登录资料，也不将其共享给第三方用于广告或其他用途。管理员启用备份时，账号与笔记数据可能包含在管理员控制的私有备份中。使用 AI 对话等可选功能时，按界面说明将相关笔记内容发送给所选服务。</p>
+<h2>退出、撤销与删除</h2><p>在微记退出当前会话，或在「设置 → 登录设备」撤销其他会话。可在 GitHub 的 Settings → Applications 或 Google 账号的第三方连接设置中撤销 OAuth 授权；撤销授权不会清除微记中已有的数据或会话。</p>
+<p>如需导出或删除账号、笔记和关联数据，请通过给你发放邀请码的渠道联系站点管理员。管理员验证账号归属后处理请求，并说明备份的保留和清理安排。</p>`],
+  "/terms": ["服务条款", `<p>微记是邀请制的自托管笔记服务。请妥善保管你的登录账号和邀请码，只记录、导入或处理你有权使用的内容。</p>
+<h2>账号与数据</h2><p>GitHub 和 Google 登录用于验证账号与归属数据，详见<a href="/privacy">隐私政策</a>。你可以在「设置 → 登录设备」撤销会话，也可以在登录提供商的账号设置中撤销授权。</p>
+<h2>管理与退出</h2><p>服务由站点管理员维护，可能因维护暂停。请自行保留重要笔记的副本。如需导出或删除数据，请通过取得邀请码时的联系渠道联系站点管理员。</p>`],
+};
+
+function page(title, content, status = 200, legal = false) {
   return new Response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title} · 微记</title><link rel="stylesheet" href="/styles.css">
-<main class="auth-page"><h1>${title}</h1>${content}</main></html>`, {
+<title>${title === "微记" ? title : title + " · 微记"}</title><link rel="stylesheet" href="/styles.css">
+<body class="auth-shell"><main class="auth-page ${legal ? "auth-document" : "auth-card"}">
+<a class="auth-brand" href="/" aria-label="微记首页"><span class="auth-mark"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 4h10a2 2 0 0 1 2 2v2M5 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12M7 9h5m-5 5h3m3 3 1-4 5-5 3 3-5 5-4 1Z"/></svg></span>${title === "微记" ? "" : "微记"}</a>
+<h1>${title}</h1>${content}
+<footer class="auth-footer"><a href="/privacy">隐私政策</a><span aria-hidden="true">·</span><a href="/terms">服务条款</a></footer>
+</main></body></html>`, {
     status,
     headers: {
       ...privateHeaders,
@@ -201,7 +219,7 @@ function openClientState(provider, sealed) {
   }
 }
 
-export function createAuth(db, { origin, providers, trustProxy }) {
+export function createAuth(db, { origin, providers, trustProxy }, { obsidian } = {}) {
   const cookie = (name, value, path, ttl) =>
     `${name}=${value}; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=${ttl / 1000}${origin.startsWith("https:") ? "; Secure" : ""}`;
   const inviteCookie = (value, ttl) => cookie("weiji_invite_ticket", value, "/auth", ttl);
@@ -356,7 +374,8 @@ export function createAuth(db, { origin, providers, trustProxy }) {
 
   function invitePage(message = "", status = 200) {
     return page("输入邀请码", `${message ? "<p role=alert>" + message + "</p>" : ""}
-<form method="POST" action="/auth/invite/redeem"><label>邀请码 <input name="code" required maxlength="64" autocomplete="off" autocapitalize="characters"></label>
+<form method="POST" action="/auth/invite/redeem"><label class="sr-only" for="invite-code">邀请码</label>
+<input id="invite-code" name="code" placeholder="WJ-XXXX-XXXX-XXXX" required maxlength="64" autocomplete="off" autocapitalize="characters">
 <button type="submit">继续</button></form>`, status);
   }
   async function redeem(request) {
@@ -419,6 +438,10 @@ export function createAuth(db, { origin, providers, trustProxy }) {
     const { pathname: path, searchParams: query } = url;
     const method = request.method;
     try {
+      if (method === "GET" && Object.hasOwn(legalPages, path)) {
+        const [title, content] = legalPages[path];
+        return page(title, content, 200, true);
+      }
       if (method === "GET" && path === "/api/auth/providers") {
         return json({ authMode: "oauth", inviteRequired: true, publicOrigin: origin,
           providers: Array.from(providers.values(), ({ id, name }) => ({ id, name })) });
@@ -447,8 +470,9 @@ export function createAuth(db, { origin, providers, trustProxy }) {
       if (!current && path.startsWith("/api/")) reject(401, "请先登录。");
       if (!current && path === "/connect" && (method === "GET" || method === "HEAD")) return redirect(`${origin}/`);
       if (!current && (path === "/" || path === "/login")) {
-        return page("登录微记", '<nav>' + Array.from(providers.values(), ({ id, name }) =>
-          `<a href="/auth/${id}/start">用 ${name} 登录</a>`).join("") + "</nav>");
+        return page("微记", '<nav class="auth-providers" aria-label="登录方式">' +
+          Array.from(providers.values(), ({ id, name }) =>
+            `<a href="/auth/${id}/start">${providerIcons[id]}<span>使用 ${name} 登录</span></a>`).join("") + "</nav>");
       }
       if (path.startsWith("/api/auth/") || path.startsWith("/api/admin/")) {
         const expected = request.headers.get("X-Journal-Account");
@@ -471,6 +495,18 @@ export function createAuth(db, { origin, providers, trustProxy }) {
             return redirect(`${origin}/`, [cookie], 303);
           }
           return json({ ok: true }, 200, cookie ? { "Set-Cookie": cookie } : undefined);
+        }
+        if (path === "/api/admin/obsidian/status" && method === "GET") {
+          return json(obsidian?.isTargetAccount(current.id) ? obsidian.getStatus(current.id) : { configured: false });
+        }
+        if (path === "/api/admin/obsidian/sync" && method === "POST") {
+          if (!obsidian) return json({ error: "未配置 Obsidian 同步。", code: "obsidian_not_configured" }, 400);
+          const mismatch = () => json({ error: "当前管理员账号未绑定 Obsidian 同步目标。", code: "obsidian_account_mismatch" }, 409);
+          if (!obsidian.isTargetAccount(current.id)) return mismatch();
+          const stats = await obsidian.sync({ trigger: "manual", accountId: current.id });
+          const status = obsidian.getStatus(current.id);
+          if (!stats || !status.configured) return mismatch();
+          return json({ ok: true, stats, status });
         }
         if (path === "/api/admin/invites" && method === "GET") return json({ invites: listInvites(db) });
         if (path === "/api/admin/invites" && method === "POST") {

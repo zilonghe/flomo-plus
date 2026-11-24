@@ -264,7 +264,8 @@ final class StoreLogicTests: XCTestCase {
             store.chat.draft = draft
             store.chat.send(api: api, options: store.options, profile: store.insights)
             XCTAssertTrue(store.chat.sending)
-            try await waitUntil("认证失效并显示设置") { store.showSettings && !store.syncing }
+            try await waitUntil("认证失效并显示登录页") { store.authScreenState == .needsLogin && !store.syncing }
+            XCTAssertFalse(store.showSettings)
             XCTAssertEqual(store.error, "HTTP \(status)")
             XCTAssertNil(store.api)
             XCTAssertNil(store.identity)
@@ -335,7 +336,8 @@ final class StoreLogicTests: XCTestCase {
 
         let changed = try ServerConfiguration(address: config.origin, token: "different-token")
         func assertIsolated(_ store: AppStore) {
-            XCTAssertTrue(store.showSettings)
+            XCTAssertEqual(store.authScreenState, .needsLogin)
+            XCTAssertFalse(store.showSettings)
             XCTAssertFalse(store.isOffline)
             XCTAssertNil(store.identity)
             XCTAssertNil(store.api)
@@ -369,6 +371,82 @@ final class StoreLogicTests: XCTestCase {
         assertIsolated(online)
         mode.withLock { $0 = -1 }
         assertIsolated(try await launch(config))
+    }
+
+    func testPreloadsBoundCacheWhileSessionRequestIsPending() async throws {
+        let cachedNote = Note(id: "cached", body: "本地预载笔记", createdAt: "2025-02-01T00:00:00Z", revision: 1)
+        for status in [200, 500, 401] {
+            let requested = OSAllocatedUnfairLock(initialState: false)
+            let release = DispatchSemaphore(value: 0)
+            let (config, transport) = try StubProtocol.make { request in
+                switch request.url?.path {
+                case "/api/session":
+                    requested.withLock { $0 = true }
+                    if release.wait(timeout: .now() + 8) == .timedOut {
+                        XCTFail("Session response was never released")
+                    }
+                    return .init(status: status, body: status == 200 ? sessionFixture : "HTTP \(status)")
+                case "/api/notes":
+                    XCTAssertEqual(status, 200)
+                    return .init(status: 200, body: notesFixture)
+                default:
+                    XCTFail("Unexpected endpoint")
+                    return .init(status: 404, body: "")
+                }
+            }
+            let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            defer {
+                release.signal()
+                transport.invalidateAndCancel()
+                StubProtocol.remove(config)
+                try? FileManager.default.removeItem(at: directory)
+            }
+            let cache = NoteCacheStore(directory: directory)
+            let key = NoteCacheStore.Key(origin: config.origin, userId: "account")
+            try await cache.save([cachedNote], for: key)
+            try await cache.bind(config, userId: key.userId)
+            let store = AppStore(initial: config, temporary: true, cache: NoteCacheStore(directory: directory),
+                                 makeTransport: StubProtocol.transport)
+            XCTAssertEqual(store.authScreenState, .needsLogin)
+            store.start()
+            XCTAssertEqual(store.authScreenState, .restoring)
+            try await waitUntil("会话挂起期间展示已绑定缓存") {
+                requested.withLock { $0 } && store.results.map(\.id) == [cachedNote.id]
+            }
+            XCTAssertTrue(store.syncing)
+            XCTAssertTrue(store.isOffline)
+            XCTAssertEqual(store.authScreenState, .offline)
+            XCTAssertNil(store.api)
+            XCTAssertNil(store.identity)
+            XCTAssertEqual(store.notesById[cachedNote.id]?.body, cachedNote.body)
+
+            if status != 200 { store.query = "预载" }
+            release.signal()
+            try await waitUntil("会话完成 HTTP \(status)") { !store.syncing }
+
+            if status == 200 {
+                XCTAssertEqual(store.authScreenState, .online)
+                XCTAssertFalse(store.isOffline)
+                XCTAssertNotNil(store.api)
+                try await waitUntil("认证后同步服务器笔记") { store.results.map(\.id) == ["note"] }
+            } else {
+                XCTAssertEqual(store.authScreenState, .needsLogin)
+                XCTAssertFalse(store.showSettings)
+                XCTAssertNil(store.api)
+                XCTAssertTrue(store.results.isEmpty)
+                XCTAssertTrue(store.notesById.isEmpty)
+                if status == 500 {
+                    // Let detached search callbacks return; a prior result must never reappear.
+                    for _ in 0..<20 {
+                        try await Task.sleep(for: .milliseconds(10))
+                        XCTAssertTrue(store.results.isEmpty)
+                        XCTAssertTrue(store.notesById.isEmpty)
+                    }
+                }
+                let bound = try await cache.loadOffline(config)
+                XCTAssertEqual(bound?.map(\.id), status == 500 ? [cachedNote.id] : nil)
+            }
+        }
     }
 
     func testInsightReportDeleteRemovesOnSuccessAndPreservesOnFailure() async throws {
@@ -449,6 +527,7 @@ final class StoreLogicTests: XCTestCase {
     }
 
     func testOriginSwitchDoesNotLeakPreviousTokenInSettings() async throws {
+        XCTAssertEqual(ConnectionSettingsDraft(configuration: nil).address, ServerConfiguration.defaultOrigin)
         let a = try ServerConfiguration(address: "https://origin-a.example", token: "origin-a-token")
         let seen = OSAllocatedUnfairLock(initialState: [String?]())
         let (b, transport) = try StubProtocol.make { request in
@@ -520,6 +599,8 @@ final class StoreLogicTests: XCTestCase {
         store.chat.draft = "退出后清理草稿"
 
         await store.logout()
+        XCTAssertEqual(store.authScreenState, .needsLogin)
+        XCTAssertFalse(store.showSettings)
         XCTAssertTrue(revoked.withLock { $0 })
         XCTAssertNil(keychain.serverToken(for: config.origin))
         XCTAssertNil(UserDefaults.standard.string(forKey: "weiji.origin"))
@@ -538,7 +619,8 @@ final class StoreLogicTests: XCTestCase {
         try await waitUntil("退出后离线重启") { !restarted.syncing }
         XCTAssertFalse(restarted.isOffline)
         XCTAssertTrue(restarted.notesById.isEmpty)
-        XCTAssertTrue(restarted.showSettings)
+        XCTAssertEqual(restarted.authScreenState, .needsLogin)
+        XCTAssertFalse(restarted.showSettings)
     }
 
     func testOriginSwitchAccountIsolatesPersonalOpenAIKey() async throws {

@@ -3,6 +3,53 @@ import XCTest
 @testable import Weiji
 
 final class LargeLibraryPerformanceTests: XCTestCase {
+    @MainActor
+    func test8221CachedNotesAppearWithin1500msBeforeSessionReturns() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            XCTAssertEqual(request.url?.path, "/api/session")
+            if release.wait(timeout: .now() + 8) == .timedOut { XCTFail("Session response was never released") }
+            return .init(status: 0, body: "", failure: .notConnectedToInternet)
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer {
+            release.signal()
+            transport.invalidateAndCancel()
+            StubProtocol.remove(config)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let notes = (0..<8_221).map { i in
+            Note(id: "cached-\(i)", body: "第 \(i) 条 #工作/执行 " + String(repeating: "笔记正文 ", count: 75),
+                 createdAt: "2026-11-23T11:00:00Z", revision: 1)
+        }
+        let cache = NoteCacheStore(directory: directory)
+        let key = NoteCacheStore.Key(origin: config.origin, userId: "account")
+        try await cache.save(notes, for: key)
+        try await cache.bind(config, userId: key.userId)
+
+        let store = AppStore(initial: config, temporary: true, cache: NoteCacheStore(directory: directory),
+                             makeTransport: StubProtocol.transport)
+        let start = ContinuousClock.now
+        let deadline = start.advanced(by: .milliseconds(1_500))
+        store.start()
+        while store.results.first == nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let elapsed = start.duration(to: .now)
+        XCTAssertNotNil(store.results.first)
+        XCTAssertLessThan(elapsed, .milliseconds(1_500))
+        XCTAssertEqual(store.results.count, notes.count)
+        XCTAssertEqual(store.authScreenState, .offline)
+        XCTAssertTrue(store.syncing)
+        XCTAssertNil(store.api)
+        release.signal()
+        while store.syncing && start.duration(to: .now) < .seconds(3) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertFalse(store.syncing)
+        XCTAssertEqual(store.results.count, notes.count)
+    }
+
     func test8221NotesSortSearchTagsHeatmapAndCacheIsolation() async throws {
         let count = 8_221
         let now = Date(timeIntervalSince1970: 1_750_000_000)

@@ -85,6 +85,39 @@ struct SessionInfo: Decodable, Sendable {
     var defaultProvider: AIProvider { codexAvailable ? .codex : .openai }
 }
 
+struct ObsidianSyncStats: Decodable, Equatable, Sendable {
+    let scanned: Int
+    let fetched: Int
+    let created: Int
+    let updated: Int
+    let skipped: Int
+    let excluded: Int
+    let conflicts: Int
+}
+
+struct ObsidianSyncRun: Decodable, Equatable, Sendable {
+    let at: String
+    let trigger: String
+    let ok: Bool
+    let error: String?
+    let indexWarning: String?
+    let stats: ObsidianSyncStats?
+}
+
+struct ObsidianSyncStatus: Decodable, Equatable, Sendable {
+    let configured: Bool
+    let running: Bool?
+    let intervalMs: Int?
+    let prefixes: [String]?
+    let lastRun: ObsidianSyncRun?
+}
+
+struct ObsidianSyncResponse: Decodable, Equatable, Sendable {
+    let ok: Bool
+    let stats: ObsidianSyncStats
+    let status: ObsidianSyncStatus
+}
+
 enum AIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case codex, openai
     var id: String { rawValue }

@@ -3,6 +3,8 @@ import Foundation
 import Security
 
 struct ServerConfiguration: Equatable, Sendable {
+    static let defaultOrigin = "https://weiji.18818888.xyz"
+
     let origin: String
     let token: String
 
@@ -200,6 +202,14 @@ actor WeijiAPIClient {
 
     func authProviders() async throws -> OAuthProviders {
         try await get("/api/auth/providers")
+    }
+
+    func obsidianStatus() async throws -> ObsidianSyncStatus {
+        try await get("/api/admin/obsidian/status")
+    }
+
+    func triggerObsidianSync() async throws -> ObsidianSyncResponse {
+        try await post("/api/admin/obsidian/sync", [String: String]())
     }
 
     func exchangeOAuthCallback(_ callback: URL, pkce: OAuthPKCE, deviceLabel: String) async throws -> OAuthExchange {

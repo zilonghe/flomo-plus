@@ -1485,11 +1485,39 @@ async function authSettingsAction(button, action) {
   finally { button.disabled = false; }
 }
 
+function renderObsidianStatus(status) {
+  $('admin-obsidian-section').hidden = status.configured !== true;
+  if (!status.configured) return;
+  const run = status.lastRun;
+  const stats = run?.stats;
+  const time = run && new Date(run.at).toLocaleString('zh-CN');
+  $('admin-obsidian-status').textContent = status.running ? '正在同步…' : !run ? '尚未同步' :
+    run.ok ? `${time} · 新增 ${stats.created} · 更新 ${stats.updated}${stats.conflicts ? ' · 冲突 ' + stats.conflicts : ''}${run.indexWarning ? ' · ' + run.indexWarning : ''}` :
+    `${time} · ${run.error || '同步失败'}`;
+}
+
+$('admin-obsidian-sync').addEventListener('click', async event => {
+  const button = event.currentTarget;
+  const epoch = accountEpoch;
+  button.disabled = true;
+  $('admin-obsidian-status').textContent = '正在同步…';
+  try {
+    const { stats, status } = await request('/api/admin/obsidian/sync', {});
+    renderObsidianStatus(status);
+    if (stats.created || stats.updated) await refresh({ silent: true });
+  } catch (error) {
+    if (epoch === accountEpoch && error.name !== 'AbortError') $('admin-obsidian-status').textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
 async function loadAuthSettings() {
   const oauth = state.authMode === 'oauth';
   const admin = oauth && state.user?.role === 'admin';
   $('auth-sessions-section').hidden = !oauth;
   $('admin-invites-section').hidden = !admin;
+  $('admin-obsidian-section').hidden = true;
   if (!oauth) return;
   setError('auth-settings-error', '');
   try {
@@ -1504,7 +1532,11 @@ async function loadAuthSettings() {
       return row;
     }));
     if (!admin) return;
-    const { invites } = await request('/api/admin/invites');
+    const [status, { invites }] = await Promise.all([
+      request('/api/admin/obsidian/status'),
+      request('/api/admin/invites'),
+    ]);
+    renderObsidianStatus(status);
     $('admin-invites-list').replaceChildren(...invites.map(invite => {
       const available = !invite.revokedAt && invite.usedCount < invite.maxUses &&
         (!invite.expiresAt || Date.parse(invite.expiresAt) > Date.now());

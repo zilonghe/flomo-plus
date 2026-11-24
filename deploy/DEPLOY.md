@@ -25,7 +25,7 @@ sudo install -m 0644 deploy/weiji-backup.timer.example /etc/systemd/system/weiji
 sudo systemctl daemon-reload
 ```
 
-按 [env.example](env.example) 的两个区段分别填写 `app.env` 和 `backup.env`。两者使用同一个 `SQLITE_PATH`，R2 凭据只放在 `backup.env`。systemd 在切换到服务用户前读取环境文件。若沿用旧库，在停服时把主库权限设为 `weiji:weiji`、`0640`，确保备份进程也能读取运行时的 WAL/SHM 文件。不要启动仍使用占位凭据的服务。配置 `PUBLIC_ORIGIN=https://你的域名`，不要添加尾斜杠。按需配置一家或两家 OAuth，未使用的提供商留空：
+按 [env.example](env.example) 的两个区段分别填写 `app.env` 和 `backup.env`。两者使用同一个 `SQLITE_PATH`，备份凭据只放在 `backup.env`。systemd 在切换到服务用户前读取环境文件。若沿用旧库，在停服时把主库权限设为 `weiji:weiji`、`0640`，确保备份进程也能读取运行时的 WAL/SHM 文件。不要启动仍使用占位凭据的服务。配置 `PUBLIC_ORIGIN=https://你的域名`，不要添加尾斜杠。按需配置一家或两家 OAuth，未使用的提供商留空：
 
 | 提供商 | 注册的回调 URL |
 | --- | --- |
@@ -88,6 +88,12 @@ api-keys:
 
 运维命令以服务用户运行并明确指定 `SQLITE_PATH`。例如 `node --experimental-sqlite scripts/admin.mjs invite create --max-uses 1 --days 7 --note "测试"`；明文邀请码只在创建时显示。用 `invite list` 查看哈希和尾号，用 `invite revoke <codeOrHash>` 作废。账号停用用 `user disable <userId>`，会吊销该账号的活跃会话。
 
-给备份凭据分配目标 bucket 的 List、Put、Delete 权限，使用微记独立前缀（结尾是 `/`）。在 Web 服务运行时执行 `sudo systemctl start weiji-backup.service`，查看 `journalctl -u weiji-backup.service` 及 R2 对象，再启用 `sudo systemctl enable --now weiji-backup.timer`。默认每日 UTC 03:00，按配置仅清理本前缀的过期 `.db.gz`。备份含私有笔记与账号元数据，限制存储访问。
+给备份凭据分配目标 bucket 的 List、Put、Delete 权限，使用微记独立前缀（结尾是 `/`）。在 Web 服务运行时执行 `sudo systemctl start weiji-backup.service`，查看 `journalctl -u weiji-backup.service` 及对象存储中的备份，再启用 `sudo systemctl enable --now weiji-backup.timer`。默认每日 UTC 03:00，按配置仅清理本前缀的过期 `.db.gz`。备份含私有笔记与账号元数据，限制存储访问。
 
 定期下载一份快照到受限目录并用 `node --experimental-sqlite scripts/backup-r2.mjs --verify snapshot.db.gz` 验证。恢复前停止服务，先保存当前库及 WAL，再把解压的新库安装到单独路径做完整性和数据核对；切换 `SQLITE_PATH` 后重启。恢复旧快照可能恢复当时还活跃而后来被吊销的会话，切换前在恢复库吊销所有旧会话并删除未完成的 OAuth 状态，要求用户重新登录。
+
+使用腾讯云 COS 时，备份端点填区域服务地址（如 `https://cos.ap-tokyo.myqcloud.com`），不要在域名里重复填写桶名。将 `BACKUP_S3_FORCE_PATH_STYLE=false`（也可用 `0`）、`BACKUP_S3_REGION=ap-tokyo`、`BACKUP_S3_BUCKET=<桶名-APPID>`、`BACKUP_S3_PREFIX=_weiji-backup/` 写入 `backup.env`。R2 默认使用路径风格。共用 Obsidian 桶时，确认 Remotely Save 的下划线项目同步关闭，以免客户端下载备份。
+
+用备份服务的环境和权限运行 `node --experimental-sqlite scripts/backup-r2.mjs --verify-remote '<BACKUP_OK 打印的 key>'`，从对象存储回下载并检查 SQLite 完整性及笔记条数。该命令和上传后回验都需要 GetObject 权限。设置 `BACKUP_VERIFY_UPLOADED=1` 或传 `--verify-uploaded`，每次上传后都回验，成功后才清理旧备份。列表分页失败不会删除任何快照。
+
+如需从 Obsidian 单向导入笔记，将 `OBSIDIAN_*` 写入 `app.env`，使用有 ListBucket / GetObject 权限的独立只读凭据。默认使用 COS 虚拟主机风格、每小时拉取 `memo/` 和 `永久笔记/`，只处理支持的日记和永久笔记 Markdown；`OBSIDIAN_SYNC_INTERVAL_MS=0` 仅保留手动同步。建议显式设置 `OBSIDIAN_ACCOUNT_ID` 为目标的启用管理员 ID；留空时仅在恰好有一名启用管理员时同步。重启 Web 服务后可在目标管理员的「设置」里手动触发并查看摘要。Obsidian 不回写对象存储，也不会因源删除而删除微记笔记。

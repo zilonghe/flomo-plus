@@ -1,6 +1,10 @@
 import Foundation
 import Observation
 
+enum AuthScreenState: Equatable {
+    case restoring, needsLogin, online, offline
+}
+
 @Observable @MainActor
 final class AppStore {
     enum Tab: String, CaseIterable { case notes, walk, ai, insights }
@@ -29,6 +33,12 @@ final class AppStore {
     var gatewayModels: [String] = []
     var gatewayDefault: String?
     var notesById: [String: Note] { index.byId }
+    var authScreenState: AuthScreenState {
+        if identity != nil { return .online }
+        if isOffline { return .offline }
+        if syncing && configuration != nil { return .restoring }
+        return .needsLogin
+    }
 
     @ObservationIgnored private let cache: NoteCacheStore
     @ObservationIgnored private let temporary: Bool
@@ -66,8 +76,6 @@ final class AppStore {
            let token = credentials.serverToken(for: origin),
            let config = try? ServerConfiguration(address: origin, token: token) {
             connect(config, save: false)
-        } else {
-            showSettings = true
         }
     }
 
@@ -76,8 +84,10 @@ final class AppStore {
         let previousKey = accountKey
         let previous = configuration
         if let previous, previous != config { offlineFallbackAllowed = false }
+        let canPreload = !save && offlineFallbackAllowed && (previous == nil || previous == config)
         if let rejectedChatDraft, rejectedChatDraft.key.origin != config.origin { self.rejectedChatDraft = nil }
         resetConnection(to: config)
+        showSettings = false
         let stamp = connectionGeneration
         syncing = true
 
@@ -89,6 +99,12 @@ final class AppStore {
             }
             do {
                 if let previousKey, previous?.origin != config.origin { try? await cache.invalidate(previousKey) }
+                if canPreload, let cached = try? await cache.loadOffline(config) {
+                    guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                    isOffline = true
+                    await replace(with: cached, persist: false)
+                }
+                guard stamp == connectionGeneration, !Task.isCancelled else { return }
                 let session: SessionInfo = try await probe.get("/api/session")
                 try Task.checkCancellation()
                 guard stamp == connectionGeneration else { return }
@@ -103,6 +119,7 @@ final class AppStore {
                 try? await cache.bind(config, userId: session.user.id)
                 guard stamp == connectionGeneration, !Task.isCancelled else { return }
                 offlineFallbackAllowed = true
+                isOffline = false
                 accountKey = key
                 identity = session
                 options.provider = session.defaultProvider
@@ -117,7 +134,8 @@ final class AppStore {
                 if let rejectedChatDraft, rejectedChatDraft.key == key { chat.draft = rejectedChatDraft.text }
                 rejectedChatDraft = nil
                 showSettings = false
-                if let cached = try? await cache.load(key), stamp == connectionGeneration, workingNotes.isEmpty {
+                if workingNotes.isEmpty, let cached = try? await cache.load(key),
+                   stamp == connectionGeneration, !Task.isCancelled, workingNotes.isEmpty {
                     await replace(with: cached, persist: false)
                 }
                 guard stamp == connectionGeneration else { return }
@@ -132,49 +150,56 @@ final class AppStore {
                 }
             } catch is CancellationError {
             } catch {
-                guard stamp == connectionGeneration else { return }
+                guard stamp == connectionGeneration, !Task.isCancelled else { return }
                 if let failure = error as? WeijiAPIError, failure.rejectsAuthentication {
                     await rejectConnection(config, failure: failure, generation: stamp)
-                } else if offlineFallbackAllowed, Self.isNetworkUnavailable(error),
-                          let cached = try? await cache.loadOffline(config) {
-                    guard stamp == connectionGeneration, !Task.isCancelled else { return }
-                    await replace(with: cached, persist: false)
-                    guard stamp == connectionGeneration else { return }
-                    isOffline = true
-                    showSettings = false
-                } else if stamp == connectionGeneration {
-                    self.error = error.localizedDescription
-                    showSettings = true
+                    return
                 }
+                if offlineFallbackAllowed, Self.isNetworkUnavailable(error) {
+                    if !isOffline, let cached = try? await cache.loadOffline(config) {
+                        guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                        isOffline = true
+                        await replace(with: cached, persist: false)
+                    }
+                    guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                    if isOffline { return }
+                }
+                clearLoadedState()
+                self.error = error.localizedDescription
+                showSettings = false
             }
         }
     }
 
     private func resetConnection(to config: ServerConfiguration?) {
         connectionTask?.cancel()
-        refreshTask?.cancel()
-        searchTask?.cancel()
         if let api { Task { await api.cancel() } }
         connectionGeneration += 1
-        searchGeneration += 1
-        dataGeneration += 1
-        detail = nil
         tab = .notes
         identity = nil
         api = nil
-        isOffline = false
         accountKey = nil
-        workingNotes = [:]
         configuration = config
-        index = NoteIndex()
         query = ""
         filter = NoteFilter()
-        results = []
-        pageSize = 50
+        clearLoadedState()
         error = nil
         gatewayModels = []
         gatewayDefault = nil
         options = AIOptions()
+    }
+
+    private func clearLoadedState() {
+        refreshTask?.cancel()
+        searchTask?.cancel()
+        searchGeneration += 1
+        dataGeneration += 1
+        detail = nil
+        isOffline = false
+        workingNotes = [:]
+        index = NoteIndex()
+        results = []
+        pageSize = 50
         walk.reset()
         chat.reset()
         insights.reset()
@@ -201,7 +226,7 @@ final class AppStore {
         rejectedChatDraft = nil
         resetConnection(to: nil)
         syncing = false
-        showSettings = true
+        showSettings = false
         var failure: String?
         if !temporary {
             if UserDefaults.standard.string(forKey: "weiji.origin") == config.origin {
@@ -228,12 +253,12 @@ final class AppStore {
         offlineFallbackAllowed = false
         if let accountKey, !chat.draft.isEmpty { rejectedChatDraft = (accountKey, chat.draft) }
         resetConnection(to: config)
+        showSettings = false
         let stamp = connectionGeneration
         try? await cache.revoke(config)
         guard stamp == connectionGeneration else { return }
         syncing = false
         error = failure.localizedDescription
-        showSettings = true
     }
 
     private static func isNetworkUnavailable(_ error: Error) -> Bool {

@@ -7,7 +7,7 @@ struct ConnectionSettingsDraft {
     private var tokenOrigin: String?
 
     init(configuration: ServerConfiguration?) {
-        address = configuration?.origin ?? ""
+        address = configuration?.origin ?? ServerConfiguration.defaultOrigin
         token = configuration?.token ?? ""
         tokenOrigin = configuration?.origin
     }
@@ -35,6 +35,9 @@ struct ConnectionSettingsView: View {
     @State private var oauth = OAuthSessionCoordinator()
     @State private var providers: OAuthProviders?
     @State private var loginBusy = false
+    @State private var obsidian: ObsidianSyncStatus?
+    @State private var obsidianBusy = false
+    @State private var obsidianError: String?
 
     private var origin: String? {
         try? ServerConfiguration(address: draft.address, token: "").origin
@@ -86,6 +89,25 @@ struct ConnectionSettingsView: View {
                         if indexing { ProgressView() }
                     }
                 }
+                if store.identity?.user.role == "admin", let obsidian, obsidian.configured {
+                    Section("Obsidian 同步") {
+                        if let run = obsidian.lastRun {
+                            if let at = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(run.at) {
+                                LabeledContent("上次同步", value: at.formatted(date: .abbreviated, time: .shortened))
+                            } else {
+                                LabeledContent("上次同步", value: run.at)
+                            }
+                            if let stats = run.stats {
+                                Text("新增 \(stats.created) · 更新 \(stats.updated) · 冲突 \(stats.conflicts)")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            InlineError(message: run.ok ? run.indexWarning : (run.error ?? "同步失败"))
+                        }
+                        Button("立即同步 Obsidian", action: syncObsidian).disabled(obsidianBusy)
+                        if obsidianBusy || obsidian.running == true { ProgressView().accessibilityLabel("正在同步 Obsidian") }
+                        InlineError(message: obsidianError)
+                    }
+                }
             }
             .navigationTitle("连接设置")
             .navigationBarTitleDisplayMode(.inline)
@@ -93,6 +115,13 @@ struct ConnectionSettingsView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
             }
             .task(id: origin) { await discoverProviders() }
+            .task(id: store.api.map(ObjectIdentifier.init)) {
+                obsidian = nil
+                obsidianError = nil
+                guard store.identity?.user.role == "admin", let api = store.api else { return }
+                let status = try? await api.obsidianStatus()
+                if !Task.isCancelled, store.api === api { obsidian = status }
+            }
             .onAppear {
                 if store.api != nil { updateIndex(rebuild: false) }
             }
@@ -147,6 +176,23 @@ struct ConnectionSettingsView: View {
                 if store.api === api { semantic = status }
             } catch is CancellationError {
             } catch { if store.api === api { self.error = error.localizedDescription } }
+        }
+    }
+
+    private func syncObsidian() {
+        guard !obsidianBusy, obsidian?.configured == true,
+              store.identity?.user.role == "admin", let api = store.api else { return }
+        obsidianBusy = true
+        obsidianError = nil
+        Task {
+            defer { obsidianBusy = false }
+            do {
+                let result = try await api.triggerObsidianSync()
+                guard store.api === api else { return }
+                obsidian = result.status
+                if result.stats.created > 0 || result.stats.updated > 0 { store.refresh() }
+            } catch is CancellationError {
+            } catch { if store.api === api { obsidianError = error.localizedDescription } }
         }
     }
 }

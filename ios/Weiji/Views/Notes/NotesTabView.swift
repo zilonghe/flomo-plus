@@ -3,24 +3,15 @@ import SwiftUI
 struct NotesTabView: View {
     @Bindable var store: AppStore
     @State private var showSearch = false
-    @State private var sidebar = false
+    @Binding var sidebar: Bool
     @State private var composer = false
     @FocusState private var searching: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 2) {
-                IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") { sidebar = true }
-                Text("微记").font(.title2.bold())
-                Spacer()
-                if store.syncing { ProgressView().controlSize(.small).accessibilityLabel("正在同步") }
-                IconAction(symbol: "magnifyingglass", label: "搜索", id: "notes-search-button") {
-                    showSearch.toggle()
-                    searching = showSearch
-                    if !showSearch { store.query = "" }
-                }
-                IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
-                    .disabled((store.api == nil && !store.isOffline) || store.syncing)
+            Group {
+                if #available(iOS 26.0, *) { GlassEffectContainer(spacing: 8) { header } }
+                else { header }
             }
             .screenHeader()
             if store.isOffline {
@@ -38,8 +29,9 @@ struct NotesTabView: View {
                     .onChange(of: store.query) { previous, current in
                         if !previous.isEmpty && current.isEmpty { searching = false }
                     }
-                    .padding(11)
-                    .background(Theme.paper, in: .rect(cornerRadius: 10))
+                    .padding(.vertical, 11)
+                    .padding(.horizontal, 16)
+                    .weijiGlassCapsule(interactive: false)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
                     .accessibilityIdentifier("notes-search-field")
@@ -56,11 +48,7 @@ struct NotesTabView: View {
             ScrollView {
                 LazyVStack(spacing: 9) {
                     if store.results.isEmpty && !store.syncing {
-                        if store.api == nil && !store.isOffline {
-                            Button("连接微记服务") { store.showSettings = true }.padding(.top, 36)
-                        } else {
-                            Text("暂无笔记").foregroundStyle(.secondary).padding(.top, 36)
-                        }
+                        Text("暂无笔记").foregroundStyle(.secondary).padding(.top, 36)
                     }
                     ForEach(store.results.prefix(store.pageSize)) { note in
                         Button {
@@ -93,10 +81,9 @@ struct NotesTabView: View {
                         composer = true
                     } label: {
                         Image(systemName: "plus").font(.system(size: 25, weight: .medium))
-                            .foregroundStyle(Color(red: 0.03, green: 0.19, blue: 0.13))
+                            .foregroundStyle(Theme.ink)
                             .frame(width: 54, height: 54)
-                            .background(Theme.green, in: Circle())
-                            .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+                            .weijiGlassCircle(tint: Theme.green.opacity(0.55))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("快速记")
@@ -105,13 +92,71 @@ struct NotesTabView: View {
                 }
             }
         }
-        .sheet(isPresented: $sidebar, onDismiss: {
-            if connectAfterSidebar { connectAfterSidebar = false; store.showSettings = true }
-        }) {
-            SidebarSheetView(store: store) { connectAfterSidebar = true; sidebar = false }
-        }
+        .onChange(of: sidebar) { _, open in if open { searching = false } }
         .sheet(isPresented: $composer) { QuickComposerSheet(store: store) }
     }
 
-    @State private var connectAfterSidebar = false
+    private var header: some View {
+        HStack(spacing: 10) {
+            IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") { sidebar = true }
+                .weijiGlassCircle()
+            Text("微记").font(.title2.bold())
+            Spacer()
+            if store.syncing { ProgressView().controlSize(.small).accessibilityLabel("正在同步") }
+            HStack(spacing: 0) {
+                IconAction(symbol: "magnifyingglass", label: "搜索", id: "notes-search-button") {
+                    showSearch.toggle()
+                    searching = showSearch
+                    if !showSearch { store.query = "" }
+                }
+                IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
+                    .disabled(store.syncing)
+            }
+            .weijiGlassCapsule()
+        }
+    }
+}
+
+struct NotesDrawer: ViewModifier {
+    let store: AppStore
+    @Binding var isOpen: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityHidden(isOpen)
+            .allowsHitTesting(!isOpen)
+            .simultaneousGesture(DragGesture().onEnded { value in
+                let dx = value.translation.width
+                guard store.tab == .notes, value.startLocation.x <= 28,
+                      dx > 60, dx > abs(value.translation.height) else { return }
+                isOpen = true
+            })
+            .overlay {
+                if isOpen {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Color.black.opacity(0.28)
+                                .ignoresSafeArea()
+                                .onTapGesture { isOpen = false }
+                                .accessibilityHidden(true)
+                                .transition(.opacity)
+                            SidebarSheetView(store: store, onClose: { isOpen = false })
+                                .frame(width: min(310, geo.size.width * 0.82))
+                                .frame(maxHeight: .infinity)
+                                .weijiGlassSurface(in: UnevenRoundedRectangle(bottomTrailingRadius: 26, topTrailingRadius: 26))
+                                .shadow(color: .black.opacity(0.18), radius: 14, x: 5)
+                                .accessibilityAddTraits(.isModal)
+                                .accessibilityAction(.escape) { isOpen = false }
+                                .transition(.move(edge: .leading))
+                        }
+                        .simultaneousGesture(DragGesture().onEnded { value in
+                            let dx = value.translation.width
+                            if dx < -60, -dx > abs(value.translation.height) { isOpen = false }
+                        })
+                    }
+                }
+            }
+            .animation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.86), value: isOpen)
+    }
 }

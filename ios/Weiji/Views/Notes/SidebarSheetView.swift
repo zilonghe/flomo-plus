@@ -2,18 +2,24 @@ import SwiftUI
 
 struct SidebarSheetView: View {
     @Bindable var store: AppStore
-    let openSettings: () -> Void
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            HStack {
+                Text("笔记").font(.headline)
+                Spacer()
+                IconAction(symbol: "xmark", label: "关闭菜单", id: "notes-menu-close", action: onClose)
+                    .weijiGlassCircle()
+            }
+            .screenHeader()
             List {
                 Section {
                     LazyHGrid(rows: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 4) {
                         ForEach(store.index.heatmap) { day in
                             Button {
                                 store.filter.day = store.filter.day == day.id ? nil : day.id
-                                dismiss()
+                                onClose()
                             } label: {
                                 RoundedRectangle(cornerRadius: 3)
                                     .fill(day.count == 0 ? Theme.line : Theme.green.opacity(min(1, 0.24 + Double(day.count) * 0.13)))
@@ -29,24 +35,28 @@ struct SidebarSheetView: View {
                     Picker("类型", selection: $store.filter.kind) {
                         ForEach(NoteFilter.Kind.allCases) { kind in Text(kind.rawValue).tag(kind) }
                     }
-                    Button("清除筛选") { store.filter = NoteFilter(); dismiss() }
+                    Button("清除筛选") { store.filter = NoteFilter(); onClose() }
                 }
                 Section("标签") {
                     ForEach(store.index.tags) { node in TagBranch(node: node, filter: applyTag) }
                 }
                 Section {
-                    Button(action: openSettings) { Label("连接设置", systemImage: "gearshape") }
+                    Button {
+                        onClose()
+                        store.showSettings = true
+                    } label: {
+                        Label("连接设置", systemImage: "gearshape")
+                    }
                 }
             }
-            .navigationTitle("笔记")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
         }
     }
 
     private func applyTag(_ tag: String) {
         store.filter.tag = tag
-        dismiss()
+        onClose()
     }
 }
 

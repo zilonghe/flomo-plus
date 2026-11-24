@@ -3,6 +3,7 @@ import UIKit
 
 enum Theme {
     static let green = Color(red: 16 / 255, green: 185 / 255, blue: 129 / 255)
+    static let deepGreen = Color(red: 0.02, green: 0.36, blue: 0.27)
     static let active = adaptive(light: 0x047857, dark: 0x6EE7B7)
     static let canvas = adaptive(light: 0xFAFAFA, dark: 0x171717)
     static let paper = adaptive(light: 0xFFFFFF, dark: 0x262626)
@@ -19,10 +20,48 @@ enum Theme {
 }
 
 extension View {
+    func weijiGlassCard(cornerRadius: CGFloat = 16) -> some View {
+        weijiGlassSurface(in: RoundedRectangle(cornerRadius: cornerRadius))
+    }
+
+    @ViewBuilder
+    func weijiGlassSurface<S: Shape>(in shape: S) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular, in: shape)
+        } else {
+            background(.ultraThinMaterial, in: shape)
+                .overlay { shape.stroke(Theme.line.opacity(0.75)).allowsHitTesting(false) }
+        }
+    }
+
+    @ViewBuilder
+    func weijiGlassCapsule(interactive: Bool = true) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(interactive ? .regular.interactive() : .regular, in: .capsule)
+        } else {
+            background(.ultraThinMaterial, in: .capsule)
+                .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
+        }
+    }
+
+    @ViewBuilder
+    func weijiGlassCircle(tint: Color? = nil, interactive: Bool = true) -> some View {
+        if #available(iOS 26.0, *) {
+            let glass = tint.map { Glass.regular.tint($0) } ?? .regular
+            glassEffect(interactive ? glass.interactive() : glass, in: .circle)
+        } else {
+            background {
+                Circle().fill(.ultraThinMaterial)
+                    .overlay { Circle().fill(tint?.opacity(0.28) ?? .clear) }
+            }
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        }
+    }
+
     func noteCard() -> some View {
         padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.paper, in: .rect(cornerRadius: 14))
+            .background(Theme.paper.opacity(0.94), in: .rect(cornerRadius: 14))
             .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.line, lineWidth: 1).allowsHitTesting(false) }
             .contentShape(Rectangle())
     }

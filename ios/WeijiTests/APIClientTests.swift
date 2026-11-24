@@ -58,6 +58,45 @@ final class StubProtocol: URLProtocol {
 }
 
 final class APIClientTests: XCTestCase {
+    func testObsidianStatusAndManualSyncUseAdminRoutes() async throws {
+        XCTAssertEqual(ServerConfiguration.defaultOrigin, "https://weiji.18818888.xyz")
+        let stats = #"{"scanned":12,"fetched":5,"created":2,"updated":1,"skipped":7,"excluded":1,"conflicts":1}"#
+        let status = #"{"configured":true,"running":false,"intervalMs":3600000,"prefixes":["memo/","永久笔记/"],"lastRun":{"at":"2026-11-24T00:00:00.000Z","trigger":"manual","ok":true,"error":null,"indexWarning":"Index pending","stats":\#(stats)}}"#
+        let statusRequests = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Journal-Account"), "admin")
+            switch request.url?.path {
+            case "/api/admin/obsidian/status":
+                XCTAssertEqual(request.httpMethod, "GET")
+                let configured = statusRequests.withLock { $0 += 1; return $0 > 1 }
+                return .init(status: 200, body: configured ? status : #"{"configured":false}"#)
+            case "/api/admin/obsidian/sync":
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+                XCTAssertEqual(jsonBody(request)?.isEmpty, true)
+                return .init(status: 200, body: #"{"ok":true,"stats":\#(stats),"status":\#(status)}"#)
+            default:
+                XCTFail("Unexpected endpoint")
+                return .init(status: 404, body: "")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let client = WeijiAPIClient(configuration: config, account: "admin", transport: transport)
+        let unavailable = try await client.obsidianStatus()
+        XCTAssertEqual(unavailable, .init(configured: false, running: nil, intervalMs: nil, prefixes: nil, lastRun: nil))
+        let available = try await client.obsidianStatus()
+        XCTAssertTrue(available.configured)
+        XCTAssertEqual(available.running, false)
+        XCTAssertEqual(available.intervalMs, 3_600_000)
+        XCTAssertEqual(available.prefixes, ["memo/", "永久笔记/"])
+        let sync = try await client.triggerObsidianSync()
+        XCTAssertTrue(sync.ok)
+        XCTAssertEqual(sync.stats, .init(scanned: 12, fetched: 5, created: 2, updated: 1, skipped: 7, excluded: 1, conflicts: 1))
+        XCTAssertEqual(available.lastRun, .init(at: "2026-11-24T00:00:00.000Z", trigger: "manual", ok: true,
+                                                error: nil, indexWarning: "Index pending", stats: sync.stats))
+        XCTAssertEqual(sync.status, available)
+    }
+
     func testSetsBearerAndExactOriginAndDefaultsCodexProvider() async throws {
         let config = try ServerConfiguration(address: "HTTP://EXAMPLE.COM:5173/", token: "test-token-123")
         let client = WeijiAPIClient(configuration: config, account: "tester")
