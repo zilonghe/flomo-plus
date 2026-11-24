@@ -272,12 +272,17 @@ export async function notesCacheTransaction(mode, operation, isCurrent = () => t
 
 export function clearWeijiCacheDB(userId, win = globalThis) {
   return notesCacheTransaction('readwrite', store => userId ? store.delete(userId) : store.clear(), undefined, win)
-    .catch(() => {});
+    .then(() => true)
+    .catch(() => false);
 }
 
 export const weijiAuthEvent = 'weiji_auth_event';
-export function publishWeijiAuthEvent(win = globalThis.window) {
-  try { win.localStorage.setItem(weijiAuthEvent, JSON.stringify({ type: 'logout', at: Date.now() })); } catch {}
+let authEventNonce = 0;
+export function publishWeijiAuthEvent(win = globalThis.window, payload = { type: 'logout' }) {
+  const data = typeof payload === 'string'
+    ? { type: payload, at: Date.now(), nonce: ++authEventNonce }
+    : { type: payload?.type || 'logout', ...(payload?.userId ? { userId: payload.userId } : {}), at: Date.now(), nonce: ++authEventNonce };
+  try { win.localStorage.setItem(weijiAuthEvent, JSON.stringify(data)); } catch {}
 }
 
 export function bindConnectLogout(doc = globalThis.document, win = globalThis.window) {
@@ -287,14 +292,18 @@ export function bindConnectLogout(doc = globalThis.document, win = globalThis.wi
   const oauth = control.dataset.connectLogout === 'oauth';
   const button = oauth ? control.querySelector('button[type="submit"]') : null;
   const signoutHref = control.dataset.signoutHref;
+  const userId = control.dataset?.userId || doc.querySelector?.('meta[name="weiji-user-id"]')?.content?.trim() || null;
   let pending = false;
   const logout = async event => {
     event.preventDefault();
     if (pending) return;
     pending = true;
     if (button) button.disabled = true;
-    publishWeijiAuthEvent(win);
-    await clearWeijiCacheDB(undefined, win);
+    publishWeijiAuthEvent(win, { type: 'logout', ...(userId ? { userId } : {}) });
+    const cleared = await clearWeijiCacheDB(userId || undefined, win);
+    if (!cleared) {
+      try { win.console?.warn?.('未能清理本地笔记缓存。'); } catch {}
+    }
     if (oauth) control.submit();
     else (win.top ?? win).location.href = signoutHref;
   };

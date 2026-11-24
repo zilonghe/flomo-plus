@@ -502,6 +502,37 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(requests.withLock { $0 }, [tag, nil, nil, nil, tag, nil, tag, nil])
     }
 
+    func testEmptyValidSnapshotStillReusesETagFor304() async throws {
+        let suppliedTags = OSAllocatedUnfairLock(initialState: [String?]())
+        let emptyTag = #""empty-snapshot-v1""#
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes":
+                let tag = request.value(forHTTPHeaderField: "If-None-Match")
+                suppliedTags.withLock { $0.append(tag) }
+                if tag == emptyTag { return .init(status: 304, body: "", headers: ["ETag": emptyTag]) }
+                return .init(status: 200, body: #"{"notes":[],"deleted":[]}"#, headers: ["ETag": emptyTag])
+            default: return .init(status: 404, body: "")
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let cache = NoteCacheStore(directory: directory)
+        let key = NoteCacheStore.Key(origin: config.origin, userId: "account")
+        defer {
+            transport.invalidateAndCancel(); StubProtocol.remove(config)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try await cache.save([], etag: emptyTag, for: key)
+        try await cache.bind(config, userId: key.userId)
+        let store = AppStore(initial: config, temporary: true, cache: cache, makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("空快照复用 ETag 命中 304") { !store.syncing && store.identity != nil }
+        XCTAssertNil(store.error)
+        XCTAssertTrue(store.notesById.isEmpty)
+        XCTAssertEqual(suppliedTags.withLock { $0 }, [emptyTag])
+    }
+
     func testPreloadsBoundCacheWhileSessionRequestIsPending() async throws {
         let cachedNote = Note(id: "cached", body: "本地预载笔记", createdAt: "2025-02-01T00:00:00Z", revision: 1)
         for status in [200, 500, 401] {
@@ -917,6 +948,9 @@ final class StoreLogicTests: XCTestCase {
         restarted.setModel("gpt-4.1-mini")
         XCTAssertFalse(restarted.selectedGatewayModel?.thinking == true)
         XCTAssertEqual(restarted.options.reasoningEffort, "")
+        let unknownThinking = ModelMeta.inferred(from: "custom-thinking-preview")
+        XCTAssertFalse(unknownThinking.thinking)
+        XCTAssertTrue(unknownThinking.efforts.isEmpty)
     }
 
     private func waitUntil(_ reason: String, _ ready: () -> Bool) async throws {

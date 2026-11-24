@@ -12,7 +12,7 @@ const pageUserId = document.querySelector('meta[name="weiji-user-id"]')?.content
 function authEventStamp() {
   try { return localStorage.getItem(weijiAuthEvent); } catch { return null; }
 }
-const pageAuthStamp = authEventStamp();
+let pageAuthStamp = authEventStamp();
 const state = {
   notes: new Map(),
   deletedNotes: new Map(),
@@ -310,10 +310,14 @@ function showSyncSkeleton(show) {
 async function invalidateAccount({ reload = false, broadcast = true, notice = true } = {}) {
   const account = state.user?.id ?? pageUserId;
   const oauth = state.authMode === 'oauth';
+  suspendedComposeDraft = null;
   state.authSuspended = true;
   resetAccount();
   const epoch = state.syncEpoch;
-  if (broadcast) publishWeijiAuthEvent();
+  if (broadcast) {
+    publishWeijiAuthEvent(window, { type: 'logout', ...(account ? { userId: account } : {}) });
+    pageAuthStamp = authEventStamp();
+  }
   await clearWeijiCacheDB(account);
   if (epoch !== state.syncEpoch) return;
   if (reload) location.replace('/');
@@ -409,7 +413,16 @@ async function syncNotes({ silent = false } = {}) {
       state.codexAvailable = result.codexAvailable === true;
       state.codexMode = result.codexMode;
       state.chatProvider = state.codexAvailable ? 'codex' : 'openai';
+      publishWeijiAuthEvent(window, { type: 'session', userId: result.user.id });
+      pageAuthStamp = authEventStamp();
       updateProfile();
+      if (suspendedComposeDraft) {
+        if (suspendedComposeDraft.userId === result.user.id && !$('note-body').value) {
+          $('note-body').value = suspendedComposeDraft.text;
+          syncComposerUI();
+        }
+        suspendedComposeDraft = null;
+      }
       if ($('settings-dialog').open) void loadAuthSettings();
       const cached = await diskRead;
       checkRequestContext(epoch, signal);
@@ -4744,22 +4757,45 @@ if (/Mac|iPhone|iPad/.test(navigator.platform)) {
 }
 window.addEventListener('focus', () => refresh({ silent: true }));
 let pageHidden = false;
+let suspendedComposeDraft = null;
 window.addEventListener('storage', event => {
-  if (event.key === weijiAuthEvent && event.newValue) {
-    pageHidden = false;
-    void invalidateAccount({ broadcast: false });
+  if (event.key !== weijiAuthEvent || !event.newValue) return;
+  let payload = null;
+  try { payload = JSON.parse(event.newValue); } catch {}
+  if (payload?.type === 'session') {
+    const activeUser = state.user?.id ?? pageUserId;
+    if (!activeUser) return;
+    if (payload.userId === activeUser) {
+      pageAuthStamp = event.newValue;
+      return;
+    }
   }
+  pageHidden = false;
+  suspendedComposeDraft = null;
+  void invalidateAccount({ broadcast: false });
 });
 window.addEventListener('pagehide', () => {
   pageHidden = !state.authSuspended;
+  if (state.user?.id && $('note-body').value) {
+    suspendedComposeDraft = { userId: state.user.id, text: $('note-body').value };
+  }
   state.authSuspended = true;
   resetAccount();
 });
 window.addEventListener('pageshow', event => {
   if (!event.persisted || !pageHidden) return;
-  if (pageAuthStamp !== authEventStamp()) {
-    void invalidateAccount({ broadcast: false });
-    return;
+  const currentStamp = authEventStamp();
+  if (pageAuthStamp !== currentStamp) {
+    let payload = null;
+    try { payload = JSON.parse(currentStamp || ''); } catch {}
+    const expectedUser = pageUserId;
+    if (payload?.type === 'session' && expectedUser && payload.userId === expectedUser) {
+      pageAuthStamp = currentStamp;
+    } else {
+      suspendedComposeDraft = null;
+      void invalidateAccount({ broadcast: false });
+      return;
+    }
   }
   state.authSuspended = false;
   void refresh();

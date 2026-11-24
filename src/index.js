@@ -338,8 +338,8 @@ function describeModel(id) {
     /^(?:gpt|o[1-9]|codex)/i.test(id) ? "openai" : "other";
   const fixedEffort = id.match(/(?:^|-)(xhigh|high|medium)$/i)?.[1].toLowerCase() ?? null;
   const efforts = fixedEffort ? [] :
-    /^(?:gpt-6(?:\.\d+)?|gpt-5\.6)/i.test(id) ? reasoningEfforts :
-    /^(?:gemini-3(?:\.\d+)?-flash|o[1-9])|thinking/i.test(id) ? reasoningEfforts.slice(0, 3) : [];
+    /^(?:gpt-6(?:\.\d+)?|gpt-5\.6)-(?:astra|sol|luna|terra|chat-thinking)$/i.test(id) ? reasoningEfforts :
+    /^(?:gemini-3(?:\.\d+)?-flash(?:-lite|-tiered)?|o[1-9](?:-mini|-pro)?)$/i.test(id) ? reasoningEfforts.slice(0, 3) : [];
   const label = (fixedEffort ? id.slice(0, -(fixedEffort.length + 1)) || id : id)
     .replace(/^(claude-[a-z]+-\d+)-(\d+)(?=-|$)/i, "$1.$2")
     .split("-").map(word => word.replace(/^./, ch => ch.toUpperCase())).join(" ")
@@ -1232,18 +1232,25 @@ async function insightsApi(request, path, env, account) {
   return json({ error: "这个操作不可用。" }, 404);
 }
 
-function connectionPage(connected, authMode) {
+function escapeAttr(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+}
+
+function connectionPage(connected, authMode, userId = null) {
   const oauth = authMode === "oauth";
+  const escapedUserId = connected && userId ? escapeAttr(userId) : "";
+  const userAttr = escapedUserId ? ` data-user-id="${escapedUserId}"` : "";
   const login = oauth ? '<a href="/">前往登录</a>' :
     '<a href="/signin-with-chatgpt?return_to=%2Fconnect" target="_top">用 ChatGPT 账号登录</a>';
-  const logout = oauth ? '<form method="POST" action="/api/auth/logout" data-connect-logout="oauth"><button type="submit" disabled>退出账号</button></form>' :
-    '<a data-connect-logout="chatgpt" data-signout-href="/signout-with-chatgpt?return_to=%2Fconnect" aria-disabled="true" tabindex="-1" target="_top">退出账号</a>';
+  const logout = oauth ? `<form method="POST" action="/api/auth/logout" data-connect-logout="oauth"${userAttr}><button type="submit" disabled>退出账号</button></form>` :
+    `<a data-connect-logout="chatgpt"${userAttr} data-signout-href="/signout-with-chatgpt?return_to=%2Fconnect" aria-disabled="true" tabindex="-1" target="_top">退出账号</a>`;
   const response = html(`<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 ${connected ? '<meta name="journal-connection" content="authenticated">' : ""}
+${escapedUserId ? `<meta name="weiji-user-id" content="${escapedUserId}">` : ""}
 <title>连接微记</title>
 <style>
 :root{color-scheme:light dark;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:#f7f7f7;color:#333}
@@ -1339,7 +1346,7 @@ export default {
     }
     const user = currentUser(request);
     if (url.pathname === "/connect" || (url.pathname === "/" && !user)) {
-      const response = connectionPage(Boolean(user), request.headers.get("oai-authenticated-auth-mode"));
+      const response = connectionPage(Boolean(user), request.headers.get("oai-authenticated-auth-mode"), user?.id ?? null);
       return request.method === "HEAD" ? new Response(null, response) : response;
     }
     if (url.pathname.startsWith("/relay/") && !currentUser(request)) return html("", 401);
@@ -1347,7 +1354,7 @@ export default {
     if (!asset) return html("<!doctype html><meta charset=utf-8><title>页面未找到</title><a href=/>返回微记</a>", 404);
     let body = request.method === "HEAD" ? null : asset.body;
     if (body && url.pathname === "/" && user) {
-      const escapedUserId = user.id.replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+      const escapedUserId = escapeAttr(user.id);
       body = body.replace("<head>", () => `<head>\n  <meta name="weiji-user-id" content="${escapedUserId}">`);
     }
     return new Response(body, {

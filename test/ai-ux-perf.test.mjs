@@ -97,7 +97,7 @@ test('Notes validators bind the full ordered snapshot and authenticated page ide
 async function upstream(t) {
   const calls = [];
   const models = ['gemini-3-flash', 'gemini-3.5-flash-lite', 'gemini-4-neon-xhigh', 'gpt-6.2-sol', 'gpt-6.2-astra',
-    'claude-opus-5-5-high', 'claude-sonnet-5-5-high', 'gpt-4.1-mini', 'other-model', 'o3'];
+    'claude-opus-5-5-high', 'claude-sonnet-5-5-high', 'gpt-4.1-mini', 'other-model', 'custom-thinking-preview', 'o3'];
   const server = createServer(async (req, res) => {
     if (req.url === '/v1/models') {
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: models.map(id => ({ id })) }));
@@ -165,6 +165,8 @@ test('Model catalog and chat stream honor capacity and preserve only completed s
   assert.equal(meta('claude-sonnet-5-5-high').vendor, 'claude');
   assert.equal(meta('gpt-4.1-mini').thinking, false);
   assert.equal(meta('other-model').vendor, 'other');
+  assert.equal(meta('custom-thinking-preview').thinking, false);
+  assert.deepEqual(meta('custom-thinking-preview').efforts, []);
   assert.deepEqual(meta('o3').efforts, ['low', 'medium', 'high']);
 
   put('A', note('相关的历史资料'));
@@ -215,6 +217,8 @@ test('Model catalog and chat stream honor capacity and preserve only completed s
   for (const [body, options] of [
     [{ model: 'gemini-4-neon-xhigh', reasoningEffort: 'high' }, env],
     [{ model: 'other-model', reasoningEffort: 'high' }, env],
+    [{ model: 'custom-thinking-preview', reasoningEffort: 'high' }, env],
+    [{ model: 'unlisted-thinking-model', reasoningEffort: 'high' }, env],
     [{ model: 'gemini-3-flash', reasoningEffort: 'xhigh' }, env],
     [{ provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-direct-key', reasoningEffort: 'high', useGateway: true }, env],
     [{ provider: 'openai', model: 'gpt-6.2-sol', apiKey: 'test-direct-key', reasoningEffort: 'high', useGateway: true }, env],
@@ -290,25 +294,28 @@ test('Web named imports exist and citation-only code renders clickable reference
   assert.deepEqual(stream.descendants().filter(node => node.tagName === 'code').map(node => node.textContent), ['const a = 1\n']);
 });
 
-test('Connect signout is inert until bound, then broadcasts, clears cache and navigates', async t => {
+test('Connect signout is inert until bound, then broadcasts, deletes only current account cache and navigates', async t => {
   const { call } = await fixture(t);
   for (const mode of ['oauth', 'chatgpt']) {
     const html = await (await call('/connect', { headers: { 'oai-authenticated-auth-mode': mode } })).text();
     assert.match(html, /<script type="module" src="\/ux-helpers.js"><\/script>/);
+    assert.match(html, /<meta name="weiji-user-id" content="A">/);
     const oauth = mode === 'oauth';
-    if (oauth) assert.match(html, /<form method="POST" action="\/api\/auth\/logout" data-connect-logout="oauth"><button type="submit" disabled>/);
+    if (oauth) assert.match(html, /<form method="POST" action="\/api\/auth\/logout" data-connect-logout="oauth" data-user-id="A"><button type="submit" disabled>/);
     else {
       const link = html.match(/<a data-connect-logout="chatgpt"[^>]+>/)[0];
+      assert.match(link, /data-user-id="A"/);
       assert.match(link, /aria-disabled="true" tabindex="-1"/);
       assert.doesNotMatch(link, /\shref=/);
     }
     const events = [];
+    const snapshots = new Map([['A', { userId: 'A' }], ['B', { userId: 'B' }]]);
     const button = { disabled: true };
     let handler;
     let finish;
     const signoutHref = '/signout-with-chatgpt?return_to=%2Fconnect';
     const control = {
-      dataset: { connectLogout: mode, signoutHref },
+      dataset: { connectLogout: mode, signoutHref, userId: 'A' },
       querySelector: () => button,
       addEventListener(name, fn) { if (name === (oauth ? 'submit' : 'click')) handler = fn; },
       removeAttribute(name) { events.push('removed:' + name); },
@@ -317,7 +324,9 @@ test('Connect signout is inert until bound, then broadcasts, clears cache and na
     const win = {
       localStorage: { setItem(key, value) {
         assert.equal(key, 'weiji_auth_event');
-        assert.equal(JSON.parse(value).type, 'logout');
+        const payload = JSON.parse(value);
+        assert.equal(payload.type, 'logout');
+        assert.equal(payload.userId, 'A');
         events.push('broadcast');
       } },
       indexedDB: { open(name) {
@@ -326,11 +335,15 @@ test('Connect signout is inert until bound, then broadcasts, clears cache and na
           transaction(store, mode) {
             assert.equal(store, 'accounts');
             assert.equal(mode, 'readwrite');
-            const tx = { objectStore: () => ({ clear() {
-              events.push('clearing');
-              finish = () => { events.push('cleared'); tx.oncomplete(); };
-              return {};
-            } }) };
+            const tx = { objectStore: () => ({
+              delete(key) {
+                assert.equal(key, 'A');
+                events.push('deleting:' + key);
+                finish = () => { snapshots.delete(key); events.push('deleted:' + key); tx.oncomplete(); };
+                return {};
+              },
+              clear() { assert.fail('must delete only the signing-out account, not clear all accounts'); },
+            }) };
             return tx;
           },
           close() {},
@@ -340,7 +353,7 @@ test('Connect signout is inert until bound, then broadcasts, clears cache and na
       } },
       top: { location: { set href(value) { assert.equal(value, signoutHref); events.push('navigated'); } } },
     };
-    ux.bindConnectLogout({ querySelector: () => control }, win);
+    ux.bindConnectLogout({ querySelector: selector => selector === '[data-connect-logout]' ? control : null }, win);
     if (oauth) assert.equal(button.disabled, false);
     else {
       assert.equal(control.href, signoutHref);
@@ -349,11 +362,36 @@ test('Connect signout is inert until bound, then broadcasts, clears cache and na
     const handled = handler({ preventDefault() { events.push('prevented'); } });
     assert.deepEqual(events, ['prevented', 'broadcast']);
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(events, ['prevented', 'broadcast', 'clearing']);
+    assert.deepEqual(events, ['prevented', 'broadcast', 'deleting:A']);
     finish();
     await handled;
-    assert.deepEqual(events, ['prevented', 'broadcast', 'clearing', 'cleared', 'navigated']);
+    assert.deepEqual(events, ['prevented', 'broadcast', 'deleting:A', 'deleted:A', 'navigated']);
+    assert.equal(snapshots.has('A'), false);
+    assert.equal(snapshots.has('B'), true);
   }
+  const warnings = [];
+  const brokenWin = {
+    localStorage: { setItem() {} },
+    console: { warn: msg => warnings.push(msg) },
+    indexedDB: { open() {
+      const req = {};
+      queueMicrotask(() => req.onerror?.());
+      return req;
+    } },
+  };
+  assert.equal(await ux.clearWeijiCacheDB('A', brokenWin), false);
+  let failHandler;
+  let navigated = false;
+  const failControl = {
+    dataset: { connectLogout: 'oauth', userId: 'A' },
+    querySelector: () => ({ disabled: true }),
+    addEventListener(name, fn) { if (name === 'submit') failHandler = fn; },
+    submit() { navigated = true; },
+  };
+  ux.bindConnectLogout({ querySelector: selector => selector === '[data-connect-logout]' ? failControl : null }, brokenWin);
+  await failHandler({ preventDefault() {} });
+  assert.equal(navigated, true);
+  assert.equal(warnings.length, 1);
 });
 
 const chrome = process.env.WEIJI_TEST_CHROME || [
@@ -419,7 +457,8 @@ async function headless(t) {
 }
 
 test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches chat sessions immediately',
-  { skip: chrome ? false : 'Set WEIJI_TEST_CHROME to a Chromium binary', timeout: 30_000 }, async t => {
+  { timeout: 45_000 }, async t => {
+    assert.ok(chrome, 'Chromium binary is required (set WEIJI_TEST_CHROME)');
     const tab = await headless(t);
     const bodyA = 'A-private-note-body-314';
     const bodyB = 'B-private-note-body-271';
@@ -529,17 +568,36 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     await page.evaluate("document.dispatchEvent(new Event('visibilitychange')); true");
     assert.equal(await found(page, bodyA), true);
     (await conditional()).writeHead(304, { ETag: cached.etag }).end();
+    const composeDraft = '未提交的私密草稿-314';
+    await page.evaluate(`(() => {
+      const input = document.getElementById('note-body');
+      input.value = ${JSON.stringify(composeDraft)};
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    })()`);
     await page.evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); true");
     assert.equal(await found(page, bodyA), false);
+    assert.equal(await page.evaluate("document.getElementById('note-body').value"), '');
     assert.equal(await skeleton(page), true);
     await page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); true");
     const backSession = await receive(sessions, 'bfcache revalidation');
     const backNotes = await conditional();
     assert.equal(await found(page, bodyA), false);
+    assert.equal(await page.evaluate("document.getElementById('note-body').value"), '');
     backSession('A');
     await until(() => found(page, bodyA), 'cache rendered while full notes response is still held');
+    assert.equal(await page.evaluate("document.getElementById('note-body').value"), composeDraft);
+    await page.evaluate("document.getElementById('note-body').value = ''; true");
     backNotes.writeHead(304, { ETag: cached.etag }).end();
     assert.deepEqual(await page.evaluate('firstFrameLeaks'), []);
+
+    const sameAccountTab = await tab();
+    await sameAccountTab.navigate(local + '/');
+    (await receive(sessions, 'same-account second tab session'))('A');
+    (await conditional()).writeHead(304, { ETag: cached.etag }).end();
+    await until(() => found(sameAccountTab, bodyA), 'same-account second tab rendered');
+    assert.equal(await found(page, bodyA), true);
+    assert.equal(await page.evaluate("document.getElementById('sign-in').hidden"), true);
+    await page.send('Page.bringToFront');
 
     await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
     await until(() => page.evaluate("document.querySelectorAll('[data-session-id]').length >= 4"), 'history list');
@@ -579,7 +637,20 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     const event = (name, data) => stream.write('event: ' + name + '\ndata: ' + JSON.stringify(data) + '\n\n');
     event('citations', { citations: [citation] });
     event('step', step);
-    event('reasoning', { text: '处理中' });
+    event('reasoning', { text: '第一段推理：' });
+    await until(() => page.evaluate(`(() => {
+      const el = document.querySelector('#ai-pending-reply details.ai-reasoning');
+      return Boolean(el && !el.hidden);
+    })()`), 'live reasoning disclosure visible before first delta');
+    assert.equal(await found(page, '原笔记'), false);
+    await page.evaluate("document.querySelector('#ai-pending-reply details.ai-reasoning summary').click()");
+    event('reasoning', { text: '第二段推理' });
+    await until(() => page.evaluate(`(() => {
+      const el = document.querySelector('#ai-pending-reply details.ai-reasoning');
+      const text = el?.querySelector('.ai-reasoning-text')?.textContent ?? '';
+      return Boolean(el?.open && text.includes('第一段推理：第二段推理'));
+    })()`), 'two live reasoning chunks concatenated and visible before first delta');
+    assert.equal(await found(page, '原笔记'), false);
     event('delta', { text: '原笔记 `[N1]`\n\n' });
     await until(() => page.evaluate("!!document.querySelector('#ai-pending-reply .citation-chip')"), 'early citation rendered');
     const detail = await page.evaluate(`
@@ -601,6 +672,9 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     assert.equal(await page.evaluate("document.querySelector('#ai-chat-thread details.ai-steps').open"), false);
     assert.equal(await page.evaluate("window.frozenReply.isConnected"), true);
 
+    const cachedB = { userId: 'B', etag: '"cached-b"', notes: [{ ...note(bodyB), revision: 1 }], deleted: [], savedAt: 1 };
+    await page.evaluate(`import('/ux-helpers.js').then(({ notesCacheTransaction }) =>
+      notesCacheTransaction('readwrite', store => store.put(${JSON.stringify(cachedB)})))`);
     const latePage = await tab();
     await latePage.navigate(local + '/');
     const lateSession = await receive(sessions, 'late session');
@@ -622,7 +696,29 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     assert.equal(await found(latePage, bodyA), false);
     assert.deepEqual(await page.evaluate('firstFrameLeaks'), []);
     assert.equal(await page.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readonly', s => s.get('A'))).then(Boolean)"), false);
+    assert.equal(await page.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readonly', s => s.get('B'))).then(Boolean)"), true);
     json(logout, { ok: true });
+
+    const hiddenTabA = await seedPage();
+    pageAccount = 'A';
+    await hiddenTabA.navigate(local + '/');
+    (await receive(sessions, 'tabA session'))('A');
+    (await conditional()).writeHead(304, { ETag: cached.etag }).end();
+    await until(() => found(hiddenTabA, bodyA), 'tabA loaded');
+    await hiddenTabA.evaluate("document.getElementById('note-body').value = 'A的未提交草稿'; true");
+    const activeTabB = await tab();
+    pageAccount = 'B';
+    await activeTabB.navigate(local + '/');
+    (await receive(sessions, 'tabB session confirms B without logout'))('B');
+    const tabBNotes = await receive(notes, 'tabB notes');
+    assert.equal(tabBNotes.headers['x-journal-account'], 'B');
+    tabBNotes.res.writeHead(304, { ETag: cachedB.etag }).end();
+    await until(() => found(activeTabB, bodyB), 'tabB rendered B');
+    await until(async () => !await found(hiddenTabA, bodyA), 'tabA immediately revoked A when tabB confirmed B');
+    assert.equal(await hiddenTabA.evaluate("document.getElementById('note-body').value"), '');
+    assert.equal(await hiddenTabA.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readonly', s => s.get('A'))).then(Boolean)"), false);
+    assert.equal(await activeTabB.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readonly', s => s.get('B'))).then(Boolean)"), true);
+    await activeTabB.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readwrite', s => s.delete('B')))");
 
     for (const status of [401, 200]) {
       const stale = await seedPage();

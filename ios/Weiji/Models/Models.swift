@@ -177,9 +177,9 @@ struct ModelMeta: Decodable, Equatable, Identifiable, Sendable {
         let fixed = ["medium", "high", "xhigh"].first { name.hasSuffix("-" + $0) }
         let efforts: [String]
         if fixed != nil { efforts = [] }
-        else if name.range(of: #"^gpt-(?:6(?:\.\d+)?|5\.6)(?:-|$)"#, options: .regularExpression) != nil {
+        else if name.range(of: #"^(?:gpt-6(?:\.\d+)?|gpt-5\.6)-(?:astra|sol|luna|terra|chat-thinking)$"#, options: .regularExpression) != nil {
             efforts = supportedEfforts
-        } else if name.range(of: #"^(?:gemini-3(?:\.\d+)?-flash|o[1-9])|thinking"#, options: .regularExpression) != nil {
+        } else if name.range(of: #"^(?:gemini-3(?:\.\d+)?-flash(?:-lite|-tiered)?|o[1-9](?:-mini|-pro)?)$"#, options: .regularExpression) != nil {
             efforts = Array(supportedEfforts.prefix(3))
         } else { efforts = [] }
 

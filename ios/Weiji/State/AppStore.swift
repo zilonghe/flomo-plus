@@ -389,7 +389,7 @@ final class AppStore {
         syncing = true
         defer { if connection == connectionGeneration && stamp == refreshGeneration { syncing = false } }
         do {
-            let result = try await api.fetchNotes(ifNoneMatch: workingNotes.isEmpty ? nil : notesETag)
+            let result = try await api.fetchNotes(ifNoneMatch: notesETag)
             guard connection == connectionGeneration, stamp == refreshGeneration, !Task.isCancelled else { return }
             if case .updated(let notes, let etag) = result {
                 await replace(with: notes, etag: etag)
