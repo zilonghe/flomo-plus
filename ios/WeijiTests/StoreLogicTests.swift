@@ -768,6 +768,168 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertNil(invalidated, "旧用户缓存应被失效")
     }
 
+    func testWalkPivotUpdatesFocusPreservesHistoryAndPrunesDeletedNotes() async throws {
+        let noteJSON: @Sendable (String) -> String = { id in
+            #"{"id":"\#(id)","body":"正文","createdAt":"2025-02-01","turns":[],"revision":1}"#
+        }
+        let relatedJSON: @Sendable (String, [String]) -> String = { focus, ids in
+            let related = ids.map { id in
+                #"{"id":"\#(id)","score":0.5,"relevancePercent":50,"sharedTags":[],"note":\#(noteJSON(id))}"#
+            }.joined(separator: ",")
+            return #"{"focus":\#(noteJSON(focus)),"mode":"lexical","indexed":0,"total":3,"related":[\#(related)]}"#
+        }
+        let remoteIds = OSAllocatedUnfairLock(initialState: ["a", "b", "c"])
+        let (config, fastTransport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes":
+                let notes = remoteIds.withLock { $0.map(noteJSON).joined(separator: ",") }
+                return .init(status: 200, body: #"{"notes":[\#(notes)],"deleted":[]}"#)
+            case let path? where path.hasSuffix("/related"):
+                XCTAssertEqual(request.url?.query, "limit=10")
+                let id = String(path.split(separator: "/")[2])
+                return .init(status: 200, body: relatedJSON(id, ["a", "b", "c", "stale"].filter { $0 != id }))
+            default:
+                XCTFail("Unexpected Walk request")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        defer { fastTransport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let app = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        app.start()
+        try await waitUntil("完成初始同步") { !app.syncing && app.notesById.count == 3 }
+        let api = try XCTUnwrap(app.api)
+        let walk = app.walk
+        walk.shuffle(notes: [try XCTUnwrap(app.notesById["a"])], api: api)
+        try await waitUntil("漫步聚焦 A") { !walk.loading }
+        XCTAssertEqual(walk.result?.focus.id, "a")
+        XCTAssertEqual(walk.result?.related.map(\.id), ["b", "c"])
+        walk.pivot(to: "b", api: api)
+        try await waitUntil("跃迁至 B") { !walk.loading }
+        XCTAssertEqual(walk.result?.focus.id, "b")
+        XCTAssertEqual(walk.previousFocus?.id, "a")
+        walk.previous()
+        XCTAssertEqual(walk.result?.focus.id, "a")
+
+        for deleteWhileLoading in [false, true] {
+            let transportConfig = URLSessionConfiguration.ephemeral
+            transportConfig.protocolClasses = [DelayedWalkProtocol.self]
+            let transport = URLSession(configuration: transportConfig)
+            defer { transport.invalidateAndCancel(); DelayedWalkProtocol.pending.withLock { $0 = nil } }
+            walk.pivot(to: "b", api: WeijiAPIClient(configuration: config, transport: transport))
+            try await waitUntil("慢 B 请求已在途") { DelayedWalkProtocol.pending.withLock { $0 != nil } }
+            let finish = try XCTUnwrap(DelayedWalkProtocol.pending.withLock { $0 })
+            if deleteWhileLoading {
+                await app.applyRecord(nil, id: "b")
+                XCTAssertNil(app.notesById["b"])
+                XCTAssertEqual(walk.result?.related.map(\.id), ["a"])
+            } else {
+                walk.pivot(to: "c", api: api)
+                try await waitUntil("快 C 先于慢 B 完成") { !walk.loading }
+                XCTAssertEqual(walk.result?.focus.id, "c")
+                XCTAssertEqual(walk.previousFocus?.id, "a")
+            }
+            finish(relatedJSON("b", ["a", "c"]))
+            try await waitUntil("慢 B 已放行且漫步停止加载") { !walk.loading }
+            XCTAssertEqual(walk.result?.focus.id, "c")
+            XCTAssertNil(walk.error)
+        }
+
+        remoteIds.withLock { $0 = ["a"] }
+        app.refresh()
+        try await waitUntil("远端同步删除焦点并回退") { !app.syncing }
+        XCTAssertEqual(Set(app.notesById.keys), ["a"])
+        XCTAssertEqual(walk.result?.focus.id, "a")
+        XCTAssertEqual(walk.result?.related.map(\.id), [])
+        XCTAssertNil(walk.previousFocus)
+        await app.applyRecord(nil, id: "a")
+        XCTAssertNil(walk.result)
+        XCTAssertEqual(WalkRelationKind.classify(focusBook: nil, candidateBook: nil), .memo)
+        XCTAssertEqual(WalkRelationKind.classify(focusBook: "Dune", candidateBook: " \n"), .memo)
+        XCTAssertEqual(WalkRelationKind.classify(focusBook: " dune ", candidateBook: " DUNE "), .sameBook("DUNE"))
+        XCTAssertEqual(WalkRelationKind.classify(focusBook: "Dune", candidateBook: " Silo "), .crossBook("Silo"))
+        XCTAssertEqual(WalkRelationKind.classify(focusBook: nil, candidateBook: "Silo"), .crossBook("Silo"))
+    }
+
+    func testInsightsPrepareRecipeAppliesSuggestedRangeClearsTagsAndFiltersCategories() async throws {
+        let builtin = #"{"id":"builtin:week","name":"复盘","description":"描述","prompt":"分析笔记","category":"复盘整理","builtin":true,"suggestedRange":"week"}"#
+        let custom = #"{"id":"custom","name":"我的配方","description":"描述","prompt":"分析笔记","category":"自定义","builtin":false,"suggestedRange":"invalid"}"#
+        let row = #"{"id":"report","title":"历史洞察","lensName":"复盘","content":"报告正文","createdAt":"2025-02-01"}"#
+        let captured = OSAllocatedUnfairLock(initialState: [(path: String, scope: InsightScope)]())
+        let deletes = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/insights/lenses"): return .init(status: 200, body: #"{"lenses":[\#(builtin),\#(custom)]}"#)
+            case ("GET", "/api/insights/reports"): return .init(status: 200, body: #"{"reports":[]}"#)
+            case ("DELETE", "/api/insights/lenses/custom"): return .init(status: 200, body: #"{"deleted":"custom"}"#)
+            case ("POST", let path?) where ["/api/insights/preview", "/api/insights/run"].contains(path):
+                let body = jsonBody(request)
+                if let scope = body?["scope"], let data = try? JSONSerialization.data(withJSONObject: scope),
+                   let decoded = try? JSONDecoder().decode(InsightScope.self, from: data) {
+                    captured.withLock { $0.append((path, decoded)) }
+                } else {
+                    XCTFail("Missing encoded insight scope")
+                }
+                if path == "/api/insights/preview" {
+                    return .init(status: 200, body: #"{"noteCount":2,"dayCount":1,"tagCount":1}"#)
+                }
+                XCTAssertEqual(body?["lensId"] as? String, "builtin:week")
+                return .init(status: 200, body: "event: done\ndata: {\"report\":\(row)}\n\n",
+                             headers: ["Content-Type": "text/event-stream"])
+            case ("DELETE", "/api/insights/reports/report"):
+                return deletes.withLock {
+                    $0 += 1
+                    return $0 == 1 ? .init(status: 500, body: #"{"error":"删除失败"}"#)
+                                  : .init(status: 200, body: #"{"deleted":"report"}"#)
+                }
+            default:
+                XCTFail("Unexpected insights request")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let insights = InsightsStore()
+        await insights.loadLibrary(api: api)
+        XCTAssertEqual(InsightsStore.filteredLenses(insights.lenses, category: nil).map(\.id), ["builtin:week", "custom"])
+        XCTAssertEqual(InsightsStore.filteredLenses(insights.lenses, category: "复盘整理").map(\.id), ["builtin:week"])
+        XCTAssertEqual(InsightsStore.filteredLenses(insights.lenses, category: "我的").map(\.id), ["custom"])
+        XCTAssertEqual(InsightsStore.resolvedCategory("我的", for: insights.lenses), "我的")
+        insights.prepareRecipe(try XCTUnwrap(insights.lenses.last), api: nil)
+        XCTAssertEqual(insights.scope.range, "7d")
+        try await insights.deleteLens("custom", api: api)
+        XCTAssertNil(InsightsStore.resolvedCategory("我的", for: insights.lenses))
+        XCTAssertEqual(InsightsStore.resolvedCategory("复盘整理", for: insights.lenses), "复盘整理")
+
+        insights.scope = InsightScope(range: "custom", tags: ["old"], startDate: "2025-01-01", endDate: "2025-01-02")
+        insights.prepareRecipe(try XCTUnwrap(insights.lenses.first), api: api)
+        XCTAssertEqual(insights.lensId, "builtin:week")
+        let recipeScope = InsightScope(range: "week")
+        XCTAssertEqual(insights.scope, recipeScope)
+        try await waitUntil("推荐范围预览完成") { insights.stats?.noteCount == 2 }
+        XCTAssertEqual(captured.withLock { $0.map(\.scope) }, [recipeScope])
+
+        insights.scope.tags = ["keep"]
+        let dates = InsightScope(range: "custom", tags: ["keep"], startDate: "2025-02-02", endDate: "2025-02-02")
+        insights.applyCustomDateRange(start: "2025-02-02", end: "2025-02-01", api: api)
+        XCTAssertEqual(insights.scope, dates)
+        try await waitUntil("自定义范围预览完成") { insights.stats?.noteCount == 2 }
+        insights.run(api: api, options: .init())
+        try await waitUntil("洞察生成完成") { !insights.running }
+        XCTAssertNil(insights.reportError)
+        XCTAssertEqual(captured.withLock { $0.map(\.path) }, ["/api/insights/preview", "/api/insights/preview", "/api/insights/run"])
+        XCTAssertEqual(captured.withLock { $0.map(\.scope) }, [recipeScope, dates, dates])
+        let report = try XCTUnwrap(insights.report)
+        await insights.deleteReport(report.id, api: api)
+        XCTAssertTrue(insights.showReport)
+        XCTAssertEqual(insights.reports.map(\.id), [report.id])
+        XCTAssertEqual(insights.reportError, "删除失败")
+        await insights.deleteReport(report.id, api: api)
+        XCTAssertFalse(insights.showReport)
+        XCTAssertTrue(insights.reports.isEmpty)
+        XCTAssertNil(insights.reportError)
+    }
+
     func testInsightReportDeleteRemovesOnSuccessAndPreservesOnFailure() async throws {
         let deletes = OSAllocatedUnfairLock(initialState: 0)
         let row = #"{"id":"report","title":"历史洞察","lensName":"回顾","content":"报告正文","createdAt":"2025-02-01T00:00:00Z"}"#
@@ -1292,6 +1454,31 @@ final class StoreLogicTests: XCTestCase {
 }
 
 private let readerSessionFixture = #"{"session":{"id":"reader-session","title":"会话","version":7,"updatedAt":"2026-11-25T00:00:00Z","origin":"chat"}}"#
+// Hold a response without blocking URLProtocol's shared request queue.
+private final class DelayedWalkProtocol: URLProtocol, @unchecked Sendable {
+    static let pending = OSAllocatedUnfairLock<(@Sendable (String) -> Void)?>(initialState: nil)
+    private let stopped = OSAllocatedUnfairLock(initialState: false)
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        XCTAssertEqual(url.path, "/api/notes/b/related")
+        Self.pending.withLock { pending in
+            pending = { body in
+                guard !self.stopped.withLock({ $0 }),
+                      let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil) else { return }
+                self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                self.client?.urlProtocol(self, didLoad: Data(body.utf8))
+                self.client?.urlProtocolDidFinishLoading(self)
+            }
+        }
+    }
+
+    override func stopLoading() { stopped.withLock { $0 = true } }
+}
+
 private let sessionFixture = #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":false}"#
 private let notesFixture = #"{"notes":[{"id":"note","body":"原始版本","createdAt":"2025-02-01T00:00:00.000Z","turns":[],"revision":2}],"deleted":[]}"#
 

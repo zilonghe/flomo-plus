@@ -3,134 +3,221 @@ import SwiftUI
 struct RandomWalkView: View {
     let store: AppStore
     let noteZoom: Namespace.ID
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .body) private var focusTextSize = 18.0
     private var walk: WalkStore { store.walk }
+    private var focusAnimation: Animation? { reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82) }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("漫步").font(Theme.TypeScale.pageTitle).foregroundStyle(Theme.ink)
-                Spacer()
-                if walk.loading { ProgressView().controlSize(.small) }
-            }.screenHeader()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let result = walk.result {
-                        Button {
-                            Task { await store.openNote(result.focus.id, from: .walk) }
-                        } label: {
-                            focusCard(result.focus)
+            header.screenHeader()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if let result = walk.result {
+                            constellation(result)
+                                .id(result.focus.id)
+                                .transition(.opacity)
+                        } else if !walk.loading && walk.error == nil {
+                            Text("暂无可漫步的笔记").foregroundStyle(Theme.ink3)
+                                .padding(.top, 48)
                         }
-                        .buttonStyle(.plain)
-                        .matchedTransitionSource(id: result.focus.id, in: noteZoom)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("walk-focus-card")
-                        .accessibilityValue(result.focus.id)
-                        if !result.related.isEmpty {
-                            SectionLabel("关联笔记").padding(.top, 10)
-                            VStack(spacing: 8) {
-                                ForEach(result.related) { item in
-                                    Button {
-                                        Task { await store.openNote(item.id, from: .walk) }
-                                    } label: {
-                                        relatedCard(item)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .matchedTransitionSource(id: item.id, in: noteZoom)
-                                    .accessibilityElement(children: .combine)
-                                    .accessibilityIdentifier("walk-related-card-" + item.id)
-                                }
-                            }
-                            .accessibilityElement(children: .contain)
-                            .accessibilityIdentifier("walk-related-list")
-                        }
-                    } else if !walk.loading && walk.error == nil {
-                        Text("暂无可漫步的笔记").foregroundStyle(Theme.ink3)
-                            .frame(maxWidth: .infinity).padding(.top, 48)
+                        InlineError(message: walk.error)
                     }
-                    InlineError(message: walk.error)
+                    .frame(maxWidth: 640)
+                    .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
+                    .frame(maxWidth: .infinity)
+                    .id("walk-canvas")
                 }
-                .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 16)
+                .background {
+                    RadialGradient(colors: [Theme.active.opacity(0.08), .clear], center: .init(x: 0.5, y: 0.38),
+                                   startRadius: 10, endRadius: 290)
+                    .allowsHitTesting(false)
+                }
+                .onChange(of: walk.result?.focus.id) { _, _ in
+                    withAnimation(focusAnimation) { proxy.scrollTo("walk-canvas", anchor: .top) }
+                }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) { actionBar }
+        }
+        .animation(focusAnimation, value: walk.result?.focus.id)
+        .sensoryFeedback(.impact(weight: .light), trigger: walk.result?.focus.id) { old, new in
+            old != nil && new != nil
         }
         .task(id: store.index.entries.isEmpty) {
             if walk.result == nil && !walk.loading { shuffle() }
         }
     }
 
-    private func focusCard(_ note: RelatedNoteSummary) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            Capsule().fill(Theme.green).frame(width: 3).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 6) {
-                    if let book = note.reading?.bookTitle, !book.isEmpty {
-                        Image(systemName: "book.closed.fill").font(.caption2).accessibilityHidden(true)
-                        Text(book).lineLimit(1)
-                    } else {
-                        Image(systemName: "quote.opening").font(.caption2).accessibilityHidden(true)
-                        Text("随记")
-                    }
-                }
-                .font(.caption.weight(.semibold)).foregroundStyle(Theme.active)
-                Text(note.body)
-                    .font(.system(size: 18, design: .serif))
-                    .foregroundStyle(Theme.ink)
-                    .lineSpacing(7).lineLimit(9)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text(String(note.createdAt.prefix(10))).font(.caption.monospacedDigit()).foregroundStyle(Theme.ink3)
-            }
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .noteCard(padding: 18, cornerRadius: 20)
-    }
-
-    private func relatedCard(_ item: RelatedNotes.Item) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(item.note.body).font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
-                    .lineSpacing(3).lineLimit(2).multilineTextAlignment(.leading)
-                if !item.sharedTags.isEmpty {
-                    Text(item.sharedTags.prefix(3).map { "#" + $0 }.joined(separator: "  "))
-                        .font(Theme.TypeScale.meta).foregroundStyle(Theme.ink3).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 0)
-            Text("\(item.relevancePercent)%")
-                .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(Theme.active)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(Theme.accentSoft, in: Capsule())
-        }
-        .noteCard(padding: 14, cornerRadius: 14)
-    }
-
-    private var actionBar: some View {
+    private var header: some View {
         HStack(spacing: 8) {
-            Button("上一条") { walk.previous() }
-                .buttonStyle(.weijiSecondary)
-                .disabled(!walk.hasPrevious)
-                .accessibilityIdentifier("walk-prev-button")
+            Text("漫步").font(Theme.TypeScale.pageTitle).foregroundStyle(Theme.ink)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+            if walk.loading { ProgressView().controlSize(.small).accessibilityLabel("正在寻找关联笔记") }
             Button("换一条", action: shuffle)
                 .buttonStyle(.weijiSecondary)
-                .disabled(store.index.entries.isEmpty || walk.loading)
+                .disabled(store.index.entries.isEmpty || walk.loading || store.api == nil)
                 .accessibilityIdentifier("walk-shuffle-button")
-            Spacer(minLength: 0)
             Button("聊这组") { if let result = walk.result { store.askAbout(result) } }
-            .buttonStyle(.weijiPrimary)
-            .disabled(walk.result == nil || walk.loading)
-            .accessibilityIdentifier("walk-chat-button")
+                .buttonStyle(.weijiSecondary)
+                .disabled(walk.result == nil || walk.loading)
+                .accessibilityIdentifier("walk-chat-button")
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func constellation(_ result: RelatedNotes) -> some View {
+        if let previous = walk.previousFocus {
+            previousCard(previous)
+            connector(hasPrevious: true)
+        }
+        Button {
+            Task { await store.openNote(result.focus.id, from: .walk) }
+        } label: {
+            focusCard(result.focus)
+        }
+        .buttonStyle(.plain)
+        .matchedTransitionSource(id: result.focus.id, in: noteZoom)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("walk-focus-card")
+        .accessibilityValue(result.focus.id)
+
+        if !result.related.isEmpty {
+            connector(hasRightBranch: result.related.count > 1)
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12, alignment: .top), GridItem(.flexible(), alignment: .top)], spacing: 10) {
+                ForEach(Array(result.related.prefix(4).enumerated()), id: \.element.id) { index, item in
+                    relatedNode(item, focus: result.focus, compact: false)
+                        .padding(.top, index.isMultiple(of: 2) ? 0 : 7)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("walk-related-list")
+        }
+        if result.related.count > 4 {
+            VStack(alignment: .leading, spacing: 8) {
+                SectionLabel("更多关联")
+                ForEach(result.related.dropFirst(4)) { item in
+                    relatedNode(item, focus: result.focus, compact: true)
+                }
+            }
+            .padding(.top, 20)
+        }
+    }
+
+    private func connector(hasPrevious: Bool = false, hasRightBranch: Bool = false) -> some View {
+        Canvas { context, size in
+            let center = size.width / 2
+            let left = (size.width - 12) / 4
+            var ends = hasPrevious ? [CGPoint(x: center, y: 24)] : [CGPoint(x: left, y: 30)]
+            if hasRightBranch { ends.append(CGPoint(x: size.width - left, y: 37)) }
+            var path = Path()
+            for end in ends {
+                path.move(to: CGPoint(x: center, y: 0))
+                path.addCurve(to: end, control1: CGPoint(x: center, y: end.y * 0.7),
+                              control2: CGPoint(x: end.x, y: end.y * 0.3))
+            }
+            context.stroke(path, with: .color(Theme.active.opacity(0.42)),
+                           style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: hasPrevious ? [3, 4] : []))
+        }
+        .frame(height: hasPrevious ? 24 : hasRightBranch ? 37 : 30)
+        .padding(.bottom, hasRightBranch ? -7 : 0)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    private func sourceTitle(_ note: RelatedNoteSummary) -> String {
+        let book = note.reading?.bookTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return book.isEmpty ? "随记" : book
+    }
+
+    private func previousCard(_ note: RelatedNoteSummary) -> some View {
+        Button { walk.previous() } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("← 上一跳 · \(sourceTitle(note))")
+                    .font(Theme.TypeScale.meta.weight(.semibold)).foregroundStyle(Theme.active)
+                    .lineLimit(1)
+                Text(note.body).font(Theme.TypeScale.meta).foregroundStyle(Theme.ink2).lineLimit(1)
+            }
+            .multilineTextAlignment(.leading)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .frame(maxWidth: 260, alignment: .leading)
+            .background(Theme.paper, in: .rect(cornerRadius: 13))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13)
+                    .strokeBorder(Theme.active.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .allowsHitTesting(false)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("walk-prev-button")
+    }
+
+    private func focusCard(_ note: RelatedNoteSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(sourceTitle(note), systemImage: "scope")
+                .font(Theme.TypeScale.meta.weight(.semibold)).foregroundStyle(Theme.active).lineLimit(1)
+            Text(note.body)
+                .font(.system(size: focusTextSize, design: .serif))
+                .foregroundStyle(Theme.ink)
+                .lineSpacing(7).lineLimit(7)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Label("轻点精读", systemImage: "arrow.up.right")
+                    .font(Theme.TypeScale.meta.weight(.medium)).foregroundStyle(Theme.active)
+                Spacer(minLength: 4)
+                Text(String(note.createdAt.prefix(10))).font(Theme.TypeScale.meta.monospacedDigit()).foregroundStyle(Theme.ink3)
+            }
+        }
+        .padding(18).padding(.leading, 8)
+        .fixedSize(horizontal: false, vertical: true)
         .background {
-            LinearGradient(stops: [.init(color: Theme.canvas.opacity(0), location: 0),
-                                   .init(color: Theme.canvas, location: 0.35)],
-                           startPoint: .top, endPoint: .bottom)
-                .padding(.top, -16)
-                .allowsHitTesting(false)
+            RoundedRectangle(cornerRadius: 22).fill(Theme.paper)
+                .shadow(color: Theme.active.opacity(0.1), radius: 14, y: 5)
         }
+        .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(Theme.active.opacity(0.32), lineWidth: 1.5) }
+        .overlay(alignment: .leading) {
+            Capsule().fill(Theme.green).frame(width: 3).padding(.leading, 10).padding(.vertical, 18)
+                .accessibilityHidden(true)
+        }
+        .contentShape(.rect(cornerRadius: 22))
+    }
+
+    private func relatedNode(_ item: RelatedNotes.Item, focus: RelatedNoteSummary, compact: Bool) -> some View {
+        let relation = WalkRelationKind.classify(focusBook: focus.reading?.bookTitle, candidateBook: item.note.reading?.bookTitle)
+        let accent: ThemeAccent = switch relation {
+        case .memo: .clay
+        case .sameBook: .graphite
+        case .crossBook: .indigo
+        }
+        return Button {
+            if let api = store.api { walk.pivot(to: item.id, api: api) }
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(relation.badgeText)
+                    .font(Theme.TypeScale.meta.weight(.medium)).foregroundStyle(accent.active).lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 8).padding(.vertical, 4).background(accent.accentSoft, in: Capsule())
+                Text(item.note.body).font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
+                    .lineSpacing(3).lineLimit(compact ? 1 : 3, reservesSpace: !compact)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 4) {
+                    Text("\(item.relevancePercent)%").monospacedDigit().foregroundStyle(Theme.ink2)
+                    Spacer(minLength: 0)
+                    Text("跃迁 →").foregroundStyle(Theme.active)
+                }
+                .font(Theme.TypeScale.meta.weight(.medium))
+            }
+            .noteCard(padding: 12, cornerRadius: 16)
+        }
+        .buttonStyle(.plain)
+        .disabled(store.api == nil)
+        .contextMenu {
+            Button("精读这条", systemImage: "book") {
+                Task { await store.openNote(item.id, from: .walk) }
+            }
+        }
+        .accessibilityIdentifier("walk-related-card-" + item.id)
     }
 
     private func shuffle() {

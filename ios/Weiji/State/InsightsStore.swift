@@ -35,6 +35,37 @@ final class InsightsStore {
 
     var selectedLens: InsightLens? { lenses.first { $0.id == lensId } }
 
+    func prepareRecipe(_ lens: InsightLens, api: WeijiAPIClient?) {
+        lensId = lens.id
+        let suggested = lens.suggestedRange ?? "7d"
+        var next = scope
+        next.range = ["7d", "week", "month", "all"].contains(suggested) ? suggested : "7d"
+        next.startDate = nil
+        next.endDate = nil
+        next.tags = []
+        scope = next
+        if let api { preview(api: api) }
+    }
+
+    func applyCustomDateRange(start: String, end: String, api: WeijiAPIClient?) {
+        var next = scope
+        next.range = "custom"
+        next.startDate = start
+        next.endDate = max(start, end)
+        scope = next
+        if let api { preview(api: api) }
+    }
+
+    static func filteredLenses(_ lenses: [InsightLens], category: String?) -> [InsightLens] {
+        guard let category else { return lenses }
+        return lenses.filter { category == "我的" ? !$0.builtin : $0.category == category }
+    }
+
+    static func resolvedCategory(_ selected: String?, for lenses: [InsightLens]) -> String? {
+        if selected == "我的", !lenses.contains(where: { !$0.builtin }) { return nil }
+        return selected
+    }
+
     func reset() {
         contextGeneration += 1
         previewGeneration += 1

@@ -70,8 +70,7 @@ export function noteMetadata(note) {
 }
 
 function metaScore(a, b, sharedTags) {
-  const sameBook = a.bookTitle && a.bookTitle === b.bookTitle;
-  return Math.min(1, (sameBook ? 0.7 : 0) + sharedTags.length * 0.35);
+  return Math.min(1, sharedTags.length * 0.35);
 }
 
 export function metaOverlapScore(a, b) {
@@ -87,6 +86,33 @@ export function fuseHybridScore({ cosine = 0, ftsNorm = 0, metaOverlap = 0, hasV
 export function tokenOverlap(queryTokens, noteTokens, isQuery) {
   const matches = noteTokens.reduce((count, token) => count + Number(queryTokens.has(token)), 0);
   return matches / (isQuery ? queryTokens.size || 1 : Math.sqrt(queryTokens.size * noteTokens.length) || 1);
+}
+
+const SAME_FOCUS_BOOK_CAP = 1;
+const OTHER_BOOK_CAP = 2;
+
+export function diversifyRelated(ranked, metadata, focusId, limit) {
+  const focusBook = metadata.get(focusId)?.bookTitle || null;
+  const primary = [], sameBookLimited = [], otherOverflow = [], sameBookOverflow = [];
+  const otherBookCounts = new Map();
+  for (const item of ranked) {
+    const bookKey = metadata.get(item.id)?.bookTitle || null;
+    const isSameBook = Boolean(focusBook && bookKey && bookKey === focusBook);
+    if (!bookKey) {
+      primary.push(item);
+    } else if (isSameBook) {
+      (sameBookLimited.length < SAME_FOCUS_BOOK_CAP ? sameBookLimited : sameBookOverflow).push(item);
+    } else {
+      const count = otherBookCounts.get(bookKey) ?? 0;
+      if (count < OTHER_BOOK_CAP) {
+        otherBookCounts.set(bookKey, count + 1);
+        primary.push(item);
+      } else {
+        otherOverflow.push(item);
+      }
+    }
+  }
+  return [...primary, ...sameBookLimited, ...otherOverflow, ...sameBookOverflow].slice(0, limit);
 }
 
 export function rankNoteIds(metadata, { focusId, queryTokens, limit = 10, excludeIds = [], includeIds, vector, vectors, matches }) {
@@ -112,8 +138,8 @@ export function rankNoteIds(metadata, { focusId, queryTokens, limit = 10, exclud
     });
     if (score > 0) ranked.push({ id, score, relevancePercent: Math.round(score * 100), sharedTags });
   }
-  return ranked.sort((a, b) => b.score - a.score || String(metadata.get(b.id).createdAt).localeCompare(String(metadata.get(a.id).createdAt)) || a.id.localeCompare(b.id))
-    .slice(0, limit);
+  ranked.sort((a, b) => b.score - a.score || String(metadata.get(b.id).createdAt).localeCompare(String(metadata.get(a.id).createdAt)) || a.id.localeCompare(b.id));
+  return isQuery ? ranked.slice(0, limit) : diversifyRelated(ranked, metadata, focusId, limit);
 }
 
 function rankLexicalNotes(notes, queryTokens, opts, focus) {

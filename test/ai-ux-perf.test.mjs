@@ -11,6 +11,7 @@ import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { applyMigrations } from '../src/auth.js';
+import { metaOverlapScore, rankNoteIds } from '../src/retrieval.js';
 import worker from '../dist/server/index.js';
 import * as ux from '../public/ux-helpers.js';
 
@@ -19,6 +20,41 @@ const id = '11111111-1111-4111-8111-111111111111';
 const anotherId = '22222222-2222-4222-8222-222222222222';
 const createdAt = '2026-11-24T00:00:00.000Z';
 const note = (body, noteId = id) => ({ id: noteId, body, createdAt, updatedAt: createdAt, attachments: [], turns: [] });
+
+test('Related ranking prioritizes cross-book diversity, caps same-book results, and backfills when needed', () => {
+  const reading = { bookTitle: 'Focus' };
+  assert.equal(metaOverlapScore({ body: '#first', reading }, { body: '#second', reading }), 0);
+
+  const focusId = 'focus';
+  const metadataFor = (bookTitle, entries) => new Map([[focusId, { bookTitle, tags: [] }],
+    ...entries.map(([id, bookTitle]) => [id, { bookTitle, tags: [], createdAt }])]);
+  const matchesFor = (metadata) => new Map([...metadata.keys()].filter(id => id !== 'zero').map(id => [id, ['key']]));
+  const rank = (metadata, options = {}) => rankNoteIds(metadata, {
+    focusId, queryTokens: ['key'], matches: matchesFor(metadata), ...options,
+  }).map(item => item.id);
+
+  const rich = metadataFor('focus', [
+    ['a-same', 'focus'], ['b-same', 'focus'], ['c-one', 'one'], ['d-one', 'one'], ['e-one', 'one'],
+    ['f-memo'], ['g-two', 'two'], ['h-two', 'two'], ['i-memo'],
+  ]);
+  const primary = ['c-one', 'd-one', 'f-memo', 'g-two', 'h-two', 'i-memo'];
+  assert.deepEqual(rank(rich, { limit: 6 }), primary);
+  assert.deepEqual(rank(rich), [...primary, 'a-same', 'e-one', 'b-same']);
+  assert.deepEqual(rank(rich, { focusId: undefined, limit: 3, includeIds: ['c-one', 'd-one', 'e-one', 'i-memo'] }),
+    ['c-one', 'd-one', 'e-one']);
+
+  const sparse = metadataFor('focus', [
+    ...[1, 2, 3, 4, 5].map(i => [`same${i}`, 'focus']), ['other', 'one'], ['zero', 'focus'],
+  ]);
+  assert.deepEqual(rank(sparse, { limit: 4 }), ['other', 'same1', 'same2', 'same3']);
+  assert.deepEqual(rank(sparse), ['other', 'same1', 'same2', 'same3', 'same4', 'same5']);
+
+  const memos = metadataFor(null, [['a-memo', null], ['b-memo', null], ['c-book', 'one'], ['d-memo', null]]);
+  assert.deepEqual(rank(memos), ['a-memo', 'b-memo', 'c-book', 'd-memo']);
+  assert.deepEqual(rank(sparse, { matches: new Map(), vector: [1, 0], vectors: new Map([
+    ['same1', { vector: [1, 0] }], ['other', { vector: [1, 1] }],
+  ]) }), ['other', 'same1']);
+});
 
 async function fixture(t) {
   const db = new DatabaseSync(':memory:');

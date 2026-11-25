@@ -1,28 +1,49 @@
 import SwiftUI
 
 struct InsightsTabView: View {
-    enum Segment: String { case insights, profile }
+    private enum Segment: String { case insights, profile }
     @Bindable var store: AppStore
     @State private var segment: Segment = .insights
+    @State private var selectedCategory: String?
+    @State private var activeRecipe: InsightLens?
+    @State private var pendingRecipeAction: RecipeExitAction?
+    @State private var showHistory = false
+    @State private var pendingHistoryReport: InsightReport?
     @State private var lensEditor: LensEditorRoute?
-    @State private var choosingLens = false
     @State private var pendingReportAction: ReportExitAction?
-    @State private var startDate = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
-    @State private var endDate = Date.now
     @Namespace private var segmentSelection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct LensEditorRoute: Identifiable { let id = UUID(); let lens: InsightLens? }
-    private enum ReportExitAction {
-        case followUp(InsightReport), askNote(Note), openTag(String)
+    private enum RecipeExitAction { case run, edit(InsightLens) }
+    private enum ReportExitAction { case followUp(InsightReport), askNote(Note), openTag(String) }
+
+    private var categories: [String?] {
+        let builtin: [String?] = [nil, "复盘整理", "自我觉察", "思维决策", "大师视角"]
+        return store.insights.lenses.contains { !$0.builtin } ? builtin + ["我的"] : builtin
     }
 
     var body: some View {
         @Bindable var insights = store.insights
         VStack(spacing: 0) {
             header.screenHeader()
-            if segment == .insights { studio(insights) }
+            if segment == .insights { recipeBoard }
             else { ProfileWorkspaceView(store: store) }
+        }
+        .sheet(item: $activeRecipe, onDismiss: finishRecipe) { lens in
+            RecipeRunSheet(store: store, lens: lens,
+                           onRun: { exitRecipe(with: .run) },
+                           onEdit: { exitRecipe(with: .edit(lens)) })
+        }
+        .sheet(isPresented: $showHistory, onDismiss: {
+            guard let report = pendingHistoryReport else { return }
+            pendingHistoryReport = nil
+            if let api = store.api { insights.openReport(report, api: api) }
+        }) {
+            InsightReportsHistorySheet(insights: insights) { report in
+                pendingHistoryReport = report
+                showHistory = false
+            }
         }
         .sheet(isPresented: $insights.showReport, onDismiss: {
             insights.stopReport()
@@ -40,12 +61,26 @@ struct InsightsTabView: View {
                                onOpenTag: { exitReport(with: .openTag($0)) })
         }
         .sheet(item: $lensEditor) { route in CustomLensSheet(store: store, lens: route.lens) }
-        .sheet(isPresented: $choosingLens) { LensPickerSheet(insights: insights) }
-        .task {
-            if let api = store.api {
-                insights.preview(api: api)
-                await insights.loadLibrary(api: api)
-            }
+        .task(id: store.api != nil) {
+            if let api = store.api { await insights.loadLibrary(api: api) }
+        }
+        .onChange(of: insights.lenses.map(\.id)) { _, _ in
+            selectedCategory = InsightsStore.resolvedCategory(selectedCategory, for: insights.lenses)
+        }
+    }
+
+    private func exitRecipe(with action: RecipeExitAction) {
+        pendingRecipeAction = action
+        activeRecipe = nil
+    }
+
+    private func finishRecipe() {
+        guard let action = pendingRecipeAction else { return }
+        pendingRecipeAction = nil
+        switch action {
+        case .run:
+            if let api = store.api { store.insights.run(api: api, options: store.options) }
+        case .edit(let lens): lensEditor = LensEditorRoute(lens: lens)
         }
     }
 
@@ -55,17 +90,35 @@ struct InsightsTabView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Text("洞察")
-                .font(Theme.TypeScale.pageTitle)
-                .foregroundStyle(Theme.ink)
-            Spacer(minLength: 8)
+        HStack(spacing: 8) {
             HStack(spacing: 2) {
                 segmentButton(.insights, title: "洞察")
                 segmentButton(.profile, title: "画像")
             }
             .padding(3)
             .background(Theme.subtle, in: Capsule())
+            Spacer(minLength: 0)
+            if segment == .insights {
+                Button { showHistory = true } label: {
+                    let count = store.insights.reports.count
+                    Chip(text: count == 0 ? "历史" : "历史 \(count)", symbol: "clock.arrow.circlepath")
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("insights-history-button")
+                Button { lensEditor = LensEditorRoute(lens: nil) } label: {
+                    Image(systemName: "plus").font(Theme.TypeScale.body.weight(.semibold))
+                        .foregroundStyle(Theme.active)
+                        .frame(width: 34, height: 34)
+                        .background(Theme.accentSoft, in: Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("新建视角")
+                .accessibilityIdentifier("insights-new-lens-button")
+            }
         }
     }
 
@@ -78,7 +131,7 @@ struct InsightsTabView: View {
                 .font(Theme.TypeScale.meta.weight(selected ? .semibold : .medium))
                 .foregroundStyle(selected ? Theme.ink : Theme.ink2)
                 .padding(.horizontal, 14)
-                .frame(minHeight: 30)
+                .frame(minHeight: 34)
                 .background {
                     if selected {
                         Capsule().fill(Theme.paper)
@@ -86,351 +139,300 @@ struct InsightsTabView: View {
                             .matchedGeometryEffect(id: "segment", in: segmentSelection)
                     }
                 }
-                .contentShape(Capsule())
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("insights-segment-" + value.rawValue)
     }
 
-    private func studio(_ insights: InsightsStore) -> some View {
-        @Bindable var insights = insights
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                studioCard(insights)
-                reportsSection(insights)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 6)
-            .padding(.bottom, 28)
-        }
-        .onChange(of: insights.scope.range) { _, _ in updateDates() }
-        .onChange(of: startDate) { _, _ in updateDates() }
-        .onChange(of: endDate) { _, _ in updateDates() }
-        .onChange(of: insights.scope) { _, _ in if let api = store.api { insights.preview(api: api) } }
-    }
-
-    private func studioCard(_ insights: InsightsStore) -> some View {
-        @Bindable var insights = insights
-        let lens = insights.selectedLens
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
-                Text(lens?.category ?? "分析视角")
-                    .font(Theme.TypeScale.meta.weight(.medium))
-                    .foregroundStyle(Theme.active)
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: 26)
-                    .background(Theme.accentSoft, in: Capsule())
-                Spacer(minLength: 8)
-                if let lens, !lens.builtin {
-                    Button("编辑") { lensEditor = LensEditorRoute(lens: lens) }
-                        .font(Theme.TypeScale.meta.weight(.medium))
-                        .foregroundStyle(Theme.ink2)
-                }
-                Button {
-                    lensEditor = LensEditorRoute(lens: nil)
-                } label: {
-                    Label("新建视角", systemImage: "plus")
-                        .font(Theme.TypeScale.meta.weight(.medium))
-                        .foregroundStyle(Theme.active)
-                }
-                .buttonStyle(.plain)
-            }
-
-            Button {
-                choosingLens = true
-            } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(lens?.name ?? "选择视角")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(Theme.ink)
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Theme.ink3)
-                    }
-                    if let description = lens?.description, !description.isEmpty {
-                        Text(description)
-                            .font(Theme.TypeScale.body)
-                            .foregroundStyle(Theme.ink2)
-                            .lineSpacing(4)
-                            .multilineTextAlignment(.leading)
+    private var recipeBoard: some View {
+        let insights = store.insights
+        let recipes = InsightsStore.filteredLenses(insights.lenses, category: selectedCategory)
+        return VStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 7) {
+                    ForEach(categories, id: \.self) { category in
+                        Button { selectedCategory = category } label: {
+                            Chip(text: category ?? "全部", selected: selectedCategory == category)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(selectedCategory == category ? .isSelected : [])
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                .padding(.horizontal, 16)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("分析视角")
-            .accessibilityValue(lens?.name ?? "")
-            .accessibilityIdentifier("insights-lens-picker")
-
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-
-            VStack(alignment: .leading, spacing: 12) {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        rangeMenu(insights)
-                        if !store.index.exactTags.isEmpty {
-                            tagMenu(insights)
+            .scrollIndicators(.hidden)
+            ScrollView {
+                if recipes.isEmpty {
+                    if insights.error != nil { InlineError(message: insights.error).padding(16) }
+                    else { Text("暂无配方").foregroundStyle(Theme.ink3).padding(.top, 32) }
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+                        ForEach(recipes) { lens in
+                            Button {
+                                insights.prepareRecipe(lens, api: store.api)
+                                activeRecipe = lens
+                            } label: { recipeCard(lens) }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("insights-recipe-card-\(lens.id)")
                         }
                     }
+                    .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
                 }
-                .scrollIndicators(.hidden)
-
-                if insights.scope.range == "custom" {
-                    HStack(spacing: 10) {
-                        DatePicker("起始", selection: $startDate, displayedComponents: .date)
-                            .labelsHidden()
-                        Text("至").font(Theme.TypeScale.meta).foregroundStyle(Theme.ink3)
-                        DatePicker("结束", selection: $endDate, in: startDate..., displayedComponents: .date)
-                            .labelsHidden()
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    if let stats = insights.stats {
-                        Text(stats.label)
-                            .font(Theme.TypeScale.meta.monospacedDigit())
-                            .foregroundStyle(Theme.ink2)
-                            .accessibilityIdentifier("insights-preview-stats")
-                    } else if store.api != nil && insights.error == nil {
-                        ProgressView().controlSize(.small)
-                    }
-                    Spacer(minLength: 8)
-                }
-
-                Toggle(isOn: $insights.useProfile) {
-                    Text("结合个人画像")
-                        .font(Theme.TypeScale.body)
-                        .foregroundStyle(Theme.ink)
-                }
-                .tint(Theme.accent)
             }
-
-            InlineError(message: insights.error)
-
-            Button {
-                if let api = store.api { insights.run(api: api, options: store.options) }
-            } label: {
-                Label("生成洞察", systemImage: "sparkles")
-            }
-            .buttonStyle(.weijiPrimaryWide)
-            .disabled((insights.stats?.noteCount ?? 0) == 0 || lens == nil)
-            .accessibilityIdentifier("insights-run-button")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .noteCard(padding: 18, cornerRadius: 20)
     }
 
-    private func rangeMenu(_ insights: InsightsStore) -> some View {
-        @Bindable var insights = insights
-        return Menu {
-            Picker("时间范围", selection: $insights.scope.range) {
-                Text("全部时间").tag("all")
-                Text("近 7 天").tag("7d")
-                Text("本周").tag("week")
-                Text("本月").tag("month")
-                Text("自定义日期").tag("custom")
+    private func recipeCard(_ lens: InsightLens) -> some View {
+        let (symbol, accent): (String, ThemeAccent) = switch (lens.builtin, lens.category) {
+        case (true, "复盘整理"): ("square.stack", .pine)
+        case (true, "自我觉察"): ("waveform.path", .plum)
+        case (true, "思维决策"): ("point.3.connected.trianglepath.dotted", .indigo)
+        case (true, "大师视角"): ("book.closed", .clay)
+        default: ("slider.horizontal.3", .graphite)
+        }
+        let shape = RoundedRectangle(cornerRadius: 18)
+        return VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: symbol)
+                .font(Theme.TypeScale.body.weight(.semibold)).foregroundStyle(accent.active)
+                .frame(width: 34, height: 34)
+                .background(accent.accentSoft, in: .rect(cornerRadius: 10))
+                .accessibilityHidden(true)
+            Text(lens.name).font(Theme.TypeScale.itemTitle).foregroundStyle(Theme.ink).lineLimit(1)
+            Text(lens.description).font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
+                .lineLimit(2, reservesSpace: true)
+            HStack(spacing: 4) {
+                Text(lens.category).foregroundStyle(accent.active)
+                Spacer(minLength: 0)
+                Text(recipeRangeLabel(lens.suggestedRange ?? "7d")).foregroundStyle(Theme.ink3)
+            }
+            .font(Theme.TypeScale.meta)
+            .lineLimit(1)
+        }
+        .multilineTextAlignment(.leading)
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            shape.fill(Theme.paper)
+            shape.fill(RadialGradient(colors: [accent.tone.opacity(0.12), .clear], center: .topTrailing,
+                                      startRadius: 6, endRadius: 110))
+        }
+        .overlay { shape.strokeBorder(Theme.hairline).allowsHitTesting(false) }
+        .contentShape(shape)
+    }
+}
+
+private func recipeRangeLabel(_ range: String) -> String {
+    switch range {
+    case "week": "本周"
+    case "month": "本月"
+    case "all": "全部"
+    case "custom": "自定义"
+    default: "近 7 天"
+    }
+}
+
+private struct RecipeRunSheet: View {
+    let store: AppStore
+    let lens: InsightLens
+    let onRun: () -> Void
+    let onEdit: () -> Void
+    @State private var startDate = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
+    @State private var endDate = Date.now
+    private var insights: InsightsStore { store.insights }
+
+    var body: some View {
+        @Bindable var insights = store.insights
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(lens.name).font(Theme.TypeScale.pageTitle).foregroundStyle(Theme.ink)
+                            .accessibilityAddTraits(.isHeader)
+                        if !lens.builtin {
+                            Spacer(minLength: 8)
+                            Button("编辑", action: onEdit).buttonStyle(.weijiSecondary)
+                        }
+                    }
+                    Text(lens.description).font(Theme.TypeScale.body).foregroundStyle(Theme.ink2).lineSpacing(4)
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 7) {
+                            rangeMenu
+                            if !store.index.exactTags.isEmpty { tagMenu }
+                            Toggle(isOn: $insights.useProfile) {
+                                Chip(text: "结合个人画像", symbol: "person.crop.circle", selected: insights.useProfile)
+                            }
+                            .toggleStyle(.button)
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                    if insights.scope.range == "custom" {
+                        HStack(spacing: 8) {
+                            DatePicker("起始日期", selection: $startDate, displayedComponents: .date).labelsHidden()
+                            Text("至").font(Theme.TypeScale.meta).foregroundStyle(Theme.ink3)
+                            DatePicker("结束日期", selection: $endDate, displayedComponents: .date).labelsHidden()
+                        }
+                    }
+                    InlineError(message: insights.error)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let stats = insights.stats {
+                            Text(stats.label).font(Theme.TypeScale.meta.monospacedDigit()).foregroundStyle(Theme.ink2)
+                                .accessibilityIdentifier("insights-preview-stats")
+                        } else if store.api != nil && insights.error == nil {
+                            ProgressView().controlSize(.small).accessibilityLabel("正在计算笔记范围")
+                        }
+                        Button(action: onRun) { Label("开始分析", systemImage: "sparkles") }
+                            .buttonStyle(.weijiPrimaryWide)
+                            .disabled(store.api == nil || (insights.stats?.noteCount ?? 0) == 0)
+                            .accessibilityIdentifier("insights-run-button")
+                    }
+                }
+                .padding(.horizontal, 20).padding(.vertical, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.top, 18)
+        .onChange(of: startDate) { _, _ in if insights.scope.range == "custom" { applyDates() } }
+        .onChange(of: endDate) { _, _ in if insights.scope.range == "custom" { applyDates() } }
+        .weijiSheetBackground()
+        .presentationBackground(Theme.canvas)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var rangeMenu: some View {
+        Menu {
+            Picker("时间范围", selection: Binding(get: { insights.scope.range }, set: selectRange)) {
+                ForEach(["7d", "week", "month", "all", "custom"], id: \.self) { range in
+                    Text(range == "custom" ? "自定义日期" : recipeRangeLabel(range)).tag(range)
+                }
             }
         } label: {
-            filterPill(symbol: "calendar", text: rangeLabel(insights.scope.range), active: insights.scope.range != "all")
+            Chip(text: recipeRangeLabel(insights.scope.range), symbol: "calendar", selected: insights.scope.range != "all")
         }
         .accessibilityLabel("时间范围")
+        .accessibilityValue(recipeRangeLabel(insights.scope.range))
     }
 
-    private func tagMenu(_ insights: InsightsStore) -> some View {
-        @Bindable var insights = insights
+    private var tagMenu: some View {
         let active = !insights.scope.tags.isEmpty
-        let title = active ? insights.scope.tags.map { "#" + $0 }.joined(separator: " · ") : "全部标签"
         return Menu {
-            Picker("匹配方式", selection: $insights.scope.tagMode) {
+            Picker("匹配方式", selection: Binding(get: { insights.scope.tagMode }, set: { mode in
+                updateScope { $0.tagMode = mode }
+            })) {
                 Text("任一标签").tag("any")
                 Text("全部标签").tag("all")
             }
             if active {
-                Button("清除已选标签", role: .destructive) { insights.scope.tags.removeAll() }
+                Button("清除已选标签", role: .destructive) { updateScope { $0.tags = [] } }
             }
             ForEach(store.index.exactTags, id: \.self) { tag in
                 Button {
-                    if insights.scope.tags.contains(tag) { insights.scope.tags.removeAll { $0 == tag } }
-                    else if insights.scope.tags.count < 20 { insights.scope.tags.append(tag) }
+                    updateScope {
+                        if $0.tags.contains(tag) { $0.tags.removeAll { $0 == tag } }
+                        else if $0.tags.count < 20 { $0.tags.append(tag) }
+                    }
                 } label: {
                     if insights.scope.tags.contains(tag) { Label("#" + tag, systemImage: "checkmark") }
                     else { Text("#" + tag) }
                 }
             }
         } label: {
-            filterPill(symbol: "number", text: title, active: active)
+            Chip(text: active ? "标签 \(insights.scope.tags.count)" : "全部标签", symbol: "number", selected: active)
         }
         .accessibilityLabel("筛选标签")
+        .accessibilityValue(insights.scope.tags.joined(separator: "、"))
     }
 
-    private func filterPill(symbol: String, text: String, active: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(active ? Theme.active : Theme.ink3)
-            Text(text)
-                .font(Theme.TypeScale.meta.weight(.medium))
-                .foregroundStyle(active ? Theme.active : Theme.ink)
-                .lineLimit(1)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(active ? Theme.active : Theme.ink3)
-        }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 34)
-        .background(active ? Theme.accentSoft : Theme.subtle, in: Capsule())
-    }
-
-    private func reportsSection(_ insights: InsightsStore) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                SectionLabel("历史报告")
-                Spacer()
-                if !insights.reports.isEmpty {
-                    Text("\(insights.reports.count) 篇")
-                        .font(Theme.TypeScale.meta.monospacedDigit())
-                        .foregroundStyle(Theme.ink3)
-                        .padding(.horizontal, 4)
-                }
-            }
-
-            if insights.reports.isEmpty {
-                Text("生成的洞察报告会保存在这里")
-                    .font(Theme.TypeScale.meta)
-                    .foregroundStyle(Theme.ink3)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 28)
-                    .noteCard(padding: 16, cornerRadius: 16)
-            } else {
-                LazyVStack(spacing: 10) {
-                    ForEach(insights.reports) { report in
-                        Button {
-                            if let api = store.api { insights.openReport(report, api: api) }
-                        } label: {
-                            reportCard(report)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("insight-report-row-\(report.id)")
-                    }
-                }
+    private func selectRange(_ range: String) {
+        if range == "custom" { applyDates() }
+        else {
+            updateScope {
+                $0.range = range
+                $0.startDate = nil
+                $0.endDate = nil
             }
         }
     }
 
-    private func reportCard(_ report: InsightReport) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text(report.lensName)
-                    .font(Theme.TypeScale.meta.weight(.medium))
-                    .foregroundStyle(Theme.active)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(String(report.createdAt.prefix(10)))
-                    .font(Theme.TypeScale.meta.monospacedDigit())
-                    .foregroundStyle(Theme.ink3)
-            }
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(report.title)
-                        .font(Theme.TypeScale.itemTitle)
-                        .foregroundStyle(Theme.ink)
-                        .lineSpacing(3)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    if let excerpt = report.excerpt, !excerpt.isEmpty {
-                        Text(excerpt)
-                            .font(Theme.TypeScale.body)
-                            .foregroundStyle(Theme.ink2)
-                            .lineSpacing(3)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                    }
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Theme.ink3)
-                    .padding(.top, 4)
-            }
-        }
-        .noteCard(padding: 16, cornerRadius: 16)
+    private func updateScope(_ change: (inout InsightScope) -> Void) {
+        var scope = insights.scope
+        change(&scope)
+        guard scope != insights.scope else { return }
+        insights.scope = scope
+        if let api = store.api { insights.preview(api: api) }
     }
 
-    private func rangeLabel(_ value: String) -> String {
-        switch value {
-        case "7d": "近 7 天"
-        case "week": "本周"
-        case "month": "本月"
-        case "custom": "自定义"
-        default: "全部时间"
-        }
-    }
-
-    private func updateDates() {
-        let current = store.insights.scope
-        var next = current
-        if next.range == "custom" {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.dateFormat = "yyyy-MM-dd"
-            next.startDate = formatter.string(from: startDate)
-            next.endDate = formatter.string(from: max(startDate, endDate))
-        } else {
-            next.startDate = nil
-            next.endDate = nil
-        }
-        if next != current { store.insights.scope = next }
+    private func applyDates() {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let end = max(startDate, endDate)
+        let startText = formatter.string(from: startDate)
+        let endText = formatter.string(from: end)
+        if endDate != end { endDate = end }
+        guard insights.scope.range != "custom" || insights.scope.startDate != startText || insights.scope.endDate != endText else { return }
+        insights.applyCustomDateRange(start: startText, end: endText, api: store.api)
     }
 }
 
-/// Clean list instead of a system Menu, so each lens shows its description and nothing glassy floats over the run button.
-private struct LensPickerSheet: View {
-    @Bindable var insights: InsightsStore
+private struct InsightReportsHistorySheet: View {
+    let insights: InsightsStore
+    let onSelect: (InsightReport) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            List(insights.lenses) { lens in
-                let selected = insights.lensId == lens.id
-                Button {
-                    insights.lensId = lens.id
-                    dismiss()
-                } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(lens.name)
-                                .font(Theme.TypeScale.itemTitle.weight(selected ? .semibold : .medium))
-                                .foregroundStyle(Theme.ink)
-                            Text(lens.description)
-                                .font(Theme.TypeScale.meta)
-                                .foregroundStyle(Theme.ink2)
-                                .lineLimit(3)
-                        }
-                        Spacer(minLength: 8)
-                        if selected {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Theme.active)
+            ScrollView {
+                if insights.reports.isEmpty {
+                    Text("暂无历史报告").font(Theme.TypeScale.body).foregroundStyle(Theme.ink3)
+                        .frame(maxWidth: .infinity).padding(.top, 32)
+                } else {
+                    LazyVStack(spacing: 10) {
+                        ForEach(insights.reports) { report in
+                            Button { onSelect(report) } label: { reportCard(report) }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("insight-report-row-\(report.id)")
                         }
                     }
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
+                    .padding(16)
                 }
-                .buttonStyle(.plain)
-                .listRowBackground(Theme.paper)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-                .accessibilityIdentifier("insights-lens-\(lens.id)")
             }
             .weijiSheetBackground()
-            .navigationTitle("分析视角")
+            .navigationTitle("历史报告")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
         .tint(Theme.active)
+        .presentationBackground(Theme.canvas)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+
+    private func reportCard(_ report: InsightReport) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text(report.lensName).foregroundStyle(Theme.active).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(String(report.createdAt.prefix(10))).monospacedDigit().foregroundStyle(Theme.ink3)
+            }
+            .font(Theme.TypeScale.meta)
+            HStack {
+                Text(report.title).font(Theme.TypeScale.itemTitle).foregroundStyle(Theme.ink).lineLimit(2)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Theme.ink3)
+            }
+            if let excerpt = report.excerpt, !excerpt.isEmpty {
+                Text(excerpt).font(Theme.TypeScale.body).foregroundStyle(Theme.ink2).lineLimit(2)
+            }
+        }
+        .multilineTextAlignment(.leading)
+        .noteCard(padding: 16, cornerRadius: 16)
     }
 }

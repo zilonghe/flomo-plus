@@ -431,6 +431,7 @@ final class AppStore {
         let updated = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
         guard connection == connectionGeneration, stamp == dataGeneration else { return }
         index = updated
+        walk.syncValidIds(Set(updated.byId.keys))
         if refresh == refreshGeneration { notesETag = etag }
         scheduleSearch()
         if persist, let key = accountKey {
