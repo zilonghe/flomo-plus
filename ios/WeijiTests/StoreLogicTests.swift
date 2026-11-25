@@ -811,27 +811,42 @@ final class StoreLogicTests: XCTestCase {
         walk.previous()
         XCTAssertEqual(walk.result?.focus.id, "a")
 
-        for deleteWhileLoading in [false, true] {
+        // 1. Out-of-order response: slow B starts first, fast C finishes first, then B completes and must not overwrite C.
+        do {
             let transportConfig = URLSessionConfiguration.ephemeral
             transportConfig.protocolClasses = [DelayedWalkProtocol.self]
             let transport = URLSession(configuration: transportConfig)
             defer { transport.invalidateAndCancel(); DelayedWalkProtocol.pending.withLock { $0 = nil } }
-            walk.pivot(to: "b", api: WeijiAPIClient(configuration: config, transport: transport))
+            let slowBTask = try XCTUnwrap(walk.pivot(to: "b", api: WeijiAPIClient(configuration: config, transport: transport)))
             try await waitUntil("慢 B 请求已在途") { DelayedWalkProtocol.pending.withLock { $0 != nil } }
-            let finish = try XCTUnwrap(DelayedWalkProtocol.pending.withLock { $0 })
-            if deleteWhileLoading {
-                await app.applyRecord(nil, id: "b")
-                XCTAssertNil(app.notesById["b"])
-                XCTAssertEqual(walk.result?.related.map(\.id), ["a"])
-            } else {
-                walk.pivot(to: "c", api: api)
-                try await waitUntil("快 C 先于慢 B 完成") { !walk.loading }
-                XCTAssertEqual(walk.result?.focus.id, "c")
-                XCTAssertEqual(walk.previousFocus?.id, "a")
-            }
-            finish(relatedJSON("b", ["a", "c"]))
-            try await waitUntil("慢 B 已放行且漫步停止加载") { !walk.loading }
+            let finishSlowB = try XCTUnwrap(DelayedWalkProtocol.pending.withLock { $0 })
+            let fastCTask = try XCTUnwrap(walk.pivot(to: "c", api: api))
+            await fastCTask.value
             XCTAssertEqual(walk.result?.focus.id, "c")
+            XCTAssertEqual(walk.previousFocus?.id, "a")
+            finishSlowB(relatedJSON("b", ["a", "c"]))
+            await slowBTask.value
+            XCTAssertEqual(walk.result?.focus.id, "c")
+            XCTAssertEqual(walk.previousFocus?.id, "a")
+            XCTAssertNil(walk.error)
+        }
+
+        // 2. In-flight deletion: request B is deleted before its response arrives; late response must be discarded.
+        do {
+            let transportConfig = URLSessionConfiguration.ephemeral
+            transportConfig.protocolClasses = [DelayedWalkProtocol.self]
+            let transport = URLSession(configuration: transportConfig)
+            defer { transport.invalidateAndCancel(); DelayedWalkProtocol.pending.withLock { $0 = nil } }
+            let slowDeletedTask = try XCTUnwrap(walk.pivot(to: "b", api: WeijiAPIClient(configuration: config, transport: transport)))
+            try await waitUntil("待删 B 请求已在途") { DelayedWalkProtocol.pending.withLock { $0 != nil } }
+            let finishDeletedB = try XCTUnwrap(DelayedWalkProtocol.pending.withLock { $0 })
+            await app.applyRecord(nil, id: "b")
+            XCTAssertNil(app.notesById["b"])
+            XCTAssertEqual(walk.result?.related.map(\.id), ["a"])
+            finishDeletedB(relatedJSON("b", ["a", "c"]))
+            await slowDeletedTask.value
+            XCTAssertEqual(walk.result?.focus.id, "c")
+            XCTAssertEqual(walk.previousFocus?.id, "a")
             XCTAssertNil(walk.error)
         }
 

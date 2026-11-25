@@ -62,20 +62,22 @@ final class WalkStore {
                             related: value.related.filter { validNoteIds.contains($0.id) })
     }
 
-    func shuffle(notes: [Note], api: WeijiAPIClient) {
+    @discardableResult
+    func shuffle(notes: [Note], api: WeijiAPIClient) -> Task<Void, Never>? {
         let current = result?.focus.id
-        guard let note = notes.lazy.filter({ $0.id != current }).randomElement() else { return }
-        pivot(to: note.id, api: api)
+        guard let note = notes.lazy.filter({ $0.id != current }).randomElement() else { return nil }
+        return pivot(to: note.id, api: api)
     }
 
-    func pivot(to noteId: String, api: WeijiAPIClient) {
-        guard noteId != result?.focus.id else { return }
+    @discardableResult
+    func pivot(to noteId: String, api: WeijiAPIClient) -> Task<Void, Never>? {
+        guard noteId != result?.focus.id else { return nil }
         generation += 1
         let stamp = generation
         task?.cancel()
         loading = true
         error = nil
-        task = Task {
+        let currentTask = Task {
             defer { if stamp == generation { loading = false } }
             do {
                 let next: RelatedNotes = try await api.get("/api/notes/\(noteId)/related?limit=10")
@@ -85,6 +87,8 @@ final class WalkStore {
                 if stamp == generation, !Task.isCancelled { self.error = error.localizedDescription }
             }
         }
+        task = currentTask
+        return currentTask
     }
 
     private func commitResponse(_ next: RelatedNotes, generation stamp: Int) {

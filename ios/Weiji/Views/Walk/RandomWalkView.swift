@@ -19,8 +19,18 @@ struct RandomWalkView: View {
                                 .id(result.focus.id)
                                 .transition(.opacity)
                         } else if !walk.loading && walk.error == nil {
-                            Text("暂无可漫步的笔记").foregroundStyle(Theme.ink3)
+                            if store.index.entries.isEmpty {
+                                Text("暂无可漫步的笔记").foregroundStyle(Theme.ink3)
+                                    .padding(.top, 48)
+                            } else {
+                                VStack(spacing: 12) {
+                                    Text("当前焦点已移除").font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
+                                    Button("换一条继续漫步", action: shuffle)
+                                        .buttonStyle(.weijiSecondary)
+                                        .disabled(store.api == nil)
+                                }
                                 .padding(.top, 48)
+                            }
                         }
                         InlineError(message: walk.error)
                     }
