@@ -12,8 +12,8 @@ enum Theme {
     static let paper = adaptive(light: 0xFFFFFF, dark: 0x22211E)
     static let subtle = adaptive(light: 0xEEECE5, dark: 0x2B2A26)
     static let ink = adaptive(light: 0x1C1B18, dark: 0xEDEBE5)
-    static let ink2 = adaptive(light: 0x6E6A61, dark: 0xA6A196)
-    static let ink3 = adaptive(light: 0x9C978D, dark: 0x76726A)
+    static let ink2 = adaptive(light: 0x55524A, dark: 0xB5B0A6)
+    static let ink3 = adaptive(light: 0x6F6B63, dark: 0x8F8A80)
     static let line = adaptive(light: 0xE6E3DA, dark: 0x3A3833)
     static let hairline = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.08) : UIColor(white: 0, alpha: 0.06)

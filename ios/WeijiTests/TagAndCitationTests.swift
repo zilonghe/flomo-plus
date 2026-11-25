@@ -77,16 +77,16 @@ final class TagAndCitationTests: XCTestCase {
     }
 
     func testMarkdownBlocksParseRulesHeadingLevelsAndNestedLists() {
-        let text = "# 标题\n## 小节\n### 细节\n---\n***\n_ _ _\n- 一级\n  - 【推测】二级\n    * 三级\n1. 第一\n  2) 第二\n> 引用\n```\n- 代码\n```\n普通段落\n#tag 不是标题"
+        let text = "# 标题\n## 小节\n### 细节\n---\n***\n_ _ _\n- 一级\n  - 【推测】二级\n    * 三级\n      - 四级\n        - 五级\n1. 第一\n  2) 第二\n> 引用\n```\n- 代码\n```\n普通段落\n#tag 不是标题"
         let blocks = MarkdownBlockView.blocks(text)
         XCTAssertEqual(blocks.map(\.kind), [
             .heading(1), .heading(2), .heading(3), .rule, .rule, .rule,
-            .bullet(level: 0), .bullet(level: 1), .bullet(level: 2),
+            .bullet(level: 0), .bullet(level: 1), .bullet(level: 2), .bullet(level: 3), .bullet(level: 4),
             .ordered("1", level: 0), .ordered("2", level: 1),
             .quote, .code, .paragraph, .paragraph,
         ])
         XCTAssertEqual(blocks.map(\.text), [
-            "标题", "小节", "细节", "", "", "", "一级", "【推测】二级", "三级", "第一", "第二", "引用", "- 代码", "普通段落", "#tag 不是标题",
+            "标题", "小节", "细节", "", "", "", "一级", "【推测】二级", "三级", "四级", "五级", "第一", "第二", "引用", "- 代码", "普通段落", "#tag 不是标题",
         ])
         XCTAssertFalse(blocks.contains { $0.text.contains("---") })
     }
@@ -112,6 +112,10 @@ final class TagAndCitationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(contrast(Theme.accent, .white, style: style), 4.5, "primary CTA contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.canvas, style: style), 7.0, "body-on-canvas contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.paper, style: style), 7.0, "body-on-paper contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.ink2, Theme.canvas, style: style), 4.5, "ink2-on-canvas contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.ink2, Theme.paper, style: style), 4.5, "ink2-on-paper contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.ink3, Theme.canvas, style: style), 4.5, "ink3-on-canvas contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.ink3, Theme.paper, style: style), 4.5, "ink3-on-paper contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.active, Theme.accentSoft, style: style), 4.5, "active-on-soft contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.active, Theme.paper, style: style), 4.5, "active-on-paper contrast (\(mode))")
         }

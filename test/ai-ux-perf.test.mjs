@@ -669,7 +669,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       durationMs: 272,
       items: [
         { ref: 'N1', noteId: id, title: '2023-08-20', excerpt: '这是一段很长的笔记摘录，用于验证处理过程卡片内不会因为白空不换行而撑爆右侧边框并把耗时顶出卡片外面：'.repeat(3) },
-        { ref: 'N2', noteId: id, title: '巴黎评论（套装共7册）', excerpt: '创作者的作品，首要目的是为了取悦自己。海明威真是一个有意思的人，写了书和故事又能不被别人要求去解释它们可真够难的。' },
+        { ref: 'N2', noteId: id, title: '巴黎评论（套装共7册）· 作家访谈精选典藏合集', excerpt: '创作者的作品，首要目的是为了取悦自己。海明威真是一个有意思的人，写了书和故事又能不被别人要求去解释它们可真够难的。' },
       ],
     };
     const step = { id: 'think', kind: 'think', status: 'running', label: '思考与生成' };
@@ -683,26 +683,31 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       const el = document.querySelector('#ai-pending-reply details.ai-reasoning');
       return Boolean(el && !el.hidden);
     })()`), 'live reasoning disclosure visible before first delta');
-    const stepBounds = await page.evaluate(`(() => {
-      const card = document.querySelector('#ai-pending-reply .ai-steps-card');
+    const measureStepsCard = selector => `(() => {
+      const card = ${selector};
+      const measureTextLines = node => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const tops = new Set([...range.getClientRects()].filter(r => r.width > 0 && r.height > 0).map(r => Math.round(r.top)));
+        return tops.size;
+      };
       const cardRect = card.getBoundingClientRect();
+      const scrollOverflow = card.scrollWidth - card.clientWidth;
       const listRect = card.querySelector('.ai-step-list').getBoundingClientRect();
       const timeRect = card.querySelector('.ai-step-time').getBoundingClientRect();
-      const notes = [...card.querySelectorAll('.ai-step-note')].map(btn => {
-        const title = btn.querySelector('span:first-child');
-        return {
-          right: btn.getBoundingClientRect().right,
-          titleLines: title.getClientRects().length,
-        };
-      });
+      const notes = [...card.querySelectorAll('.ai-step-note')].map(btn => ({
+        right: btn.getBoundingClientRect().right,
+        titleLines: measureTextLines(btn.querySelector('span:first-child')),
+      }));
       return {
-        scrollOverflow: card.scrollWidth - card.clientWidth,
+        scrollOverflow,
         listOverflow: listRect.right - cardRect.right,
         timeOverflow: timeRect.right - cardRect.right,
         maxNoteOverflow: Math.max(...notes.map(n => n.right - cardRect.right)),
         maxTitleLines: Math.max(...notes.map(n => n.titleLines)),
       };
-    })()`);
+    })()`;
+    const stepBounds = await page.evaluate(measureStepsCard("document.querySelector('#ai-pending-reply .ai-steps-card')"));
     assert.ok(stepBounds.scrollOverflow <= 1, 'steps card must not scroll horizontally: ' + JSON.stringify(stepBounds));
     assert.ok(stepBounds.listOverflow <= 1, 'step list must stay within card right edge: ' + JSON.stringify(stepBounds));
     assert.ok(stepBounds.timeOverflow <= 1, 'step duration must stay within card right edge: ' + JSON.stringify(stepBounds));
@@ -738,25 +743,9 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     assert.equal(await page.evaluate("document.querySelector('#ai-chat-thread details.ai-steps').open"), false);
     assert.equal(await page.evaluate("window.frozenReply.isConnected"), true);
     await page.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 2, mobile: true });
-    const historyStepBounds = await page.evaluate(`(() => {
-      const card = [...document.querySelectorAll('#ai-chat-thread details.ai-steps')].at(-1);
-      card.querySelector('summary').click();
-      const cardRect = card.getBoundingClientRect();
-      const listRect = card.querySelector('.ai-step-list').getBoundingClientRect();
-      const timeRect = card.querySelector('.ai-step-time').getBoundingClientRect();
-      const notes = [...card.querySelectorAll('.ai-step-note')].map(btn => ({
-        right: btn.getBoundingClientRect().right,
-        titleLines: btn.querySelector('span:first-child').getClientRects().length,
-      }));
-      card.querySelector('summary').click();
-      return {
-        scrollOverflow: card.scrollWidth - card.clientWidth,
-        listOverflow: listRect.right - cardRect.right,
-        timeOverflow: timeRect.right - cardRect.right,
-        maxNoteOverflow: Math.max(...notes.map(n => n.right - cardRect.right)),
-        maxTitleLines: Math.max(...notes.map(n => n.titleLines)),
-      };
-    })()`);
+    await page.evaluate("[...document.querySelectorAll('#ai-chat-thread details.ai-steps')].at(-1).querySelector('summary').click()");
+    const historyStepBounds = await page.evaluate(measureStepsCard("[...document.querySelectorAll('#ai-chat-thread details.ai-steps')].at(-1)"));
+    await page.evaluate("[...document.querySelectorAll('#ai-chat-thread details.ai-steps')].at(-1).querySelector('summary').click()");
     await page.send('Emulation.clearDeviceMetricsOverride');
     assert.ok(historyStepBounds.scrollOverflow <= 1, 'mobile history steps card must not overflow: ' + JSON.stringify(historyStepBounds));
     assert.ok(historyStepBounds.listOverflow <= 1, 'mobile history step list overflow: ' + JSON.stringify(historyStepBounds));

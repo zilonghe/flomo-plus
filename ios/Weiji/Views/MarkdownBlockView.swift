@@ -177,9 +177,9 @@ struct MarkdownBlockView: View {
             if code != nil { code?.append(line); continue }
             let trimmed = body.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
-            // Two spaces (or a tab) per nesting level, as models usually emit.
+            // Two spaces (or a tab) per nesting level; preserve semantic depth and cap visual indent at layout time.
             let indent = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 2 : 1) }
-            let level = min(indent / 2, 3)
+            let level = indent / 2
             let compact = trimmed.filter { $0 != " " }
             if compact.count >= 3, let mark = compact.first, "-*_".contains(mark), compact.allSatisfy({ $0 == mark }) {
                 result.append(Block(kind: .rule, text: ""))
@@ -208,6 +208,6 @@ struct MarkdownBlockView: View {
             marker.frame(minWidth: 14, alignment: .trailing).accessibilityHidden(true)
             Text(content).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.leading, CGFloat(level) * 18)
+        .padding(.leading, CGFloat(min(level, 3)) * 18)
     }
 }
