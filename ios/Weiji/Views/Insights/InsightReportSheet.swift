@@ -3,9 +3,11 @@ import SwiftUI
 struct InsightReportSheet: View {
     let store: AppStore
     let followUp: (InsightReport) -> Void
+    let onAskNote: (Note) -> Void
+    let onOpenTag: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var cited: AppStore.Detail?
-    @State private var askCited: Note?
+    @State private var editingCited = false
     @State private var confirmDelete = false
     private var insights: InsightsStore { store.insights }
 
@@ -40,7 +42,7 @@ struct InsightReportSheet: View {
                     }
                     MarkdownBlockView(text: insights.reportText, citations: insights.report?.citations ?? []) { id in
                         Task {
-                            if let note = await store.resolveNote(id) { cited = .init(note: note) }
+                            if let note = await store.resolveNote(id) { cited = .init(note: note, source: .insights) }
                         }
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
@@ -62,17 +64,12 @@ struct InsightReportSheet: View {
                     }
                 }
             }
-            .sheet(item: $cited, onDismiss: {
-                if let askCited {
-                    self.askCited = nil
-                    dismiss()
-                    store.askAbout(askCited)
-                }
-            }) { item in
-                NoteDetailSheet(store: store, note: item.note) { askCited = item.note }
+            .navigationDestination(item: $cited) { item in
+                NoteReaderView(store: store, note: item.note, source: .insights, presentation: .pushed,
+                               isEditing: $editingCited, onAsk: { onAskNote(item.note) }, onOpenTag: onOpenTag)
             }
         }
         .tint(Theme.active)
-        .interactiveDismissDisabled(insights.deletingReport)
+        .interactiveDismissDisabled(insights.deletingReport || editingCited)
     }
 }

@@ -10,42 +10,6 @@ struct QuickComposerSheet: View {
     @State private var timestamp = AppStore.timestamp()
     @State private var saving = false
     @State private var error: String?
-    @State private var tagFeedback = 0
-
-    private var tagCounts: [String: Int] {
-        var result: [String: Int] = [:]
-        func walk(_ nodes: [TagParser.Node]) {
-            for node in nodes {
-                result[node.path] = node.count
-                walk(node.children)
-            }
-        }
-        walk(store.index.tags)
-        return result
-    }
-
-    private var cursorIndex: String.Index? {
-        guard let selection else { return draft.endIndex }
-        switch selection.indices {
-        case .selection(let range):
-            guard range.lowerBound == range.upperBound, range.upperBound <= draft.endIndex else { return nil }
-            return range.upperBound
-        case .multiSelection:
-            return nil
-        @unknown default:
-            return draft.endIndex
-        }
-    }
-
-    private var activeTag: TagParser.ActiveTagQuery? {
-        guard let cursor = cursorIndex else { return nil }
-        return TagParser.activeTagQuery(in: draft, cursor: cursor)
-    }
-
-    private var suggestions: [String] {
-        guard let activeTag else { return [] }
-        return TagParser.suggestTags(for: activeTag.query, from: store.index.exactTags, counts: tagCounts, limit: 10)
-    }
 
     private var canSave: Bool {
         !saving && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -83,7 +47,15 @@ struct QuickComposerSheet: View {
                 }
             }
             .background(Theme.canvas)
-            .safeAreaInset(edge: .bottom, spacing: 0) { bottomAccessory }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                NoteTagAccessoryBar(store: store, draft: $draft, selection: $selection, refocus: { focused = true }) {
+                    Button(action: save) {
+                        Label("保存", systemImage: "arrow.up")
+                    }
+                    .buttonStyle(.weijiPrimary)
+                    .disabled(!canSave)
+                }
+            }
             .navigationTitle("记一条")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -98,7 +70,6 @@ struct QuickComposerSheet: View {
                 }
             }
             .task { focused = true }
-            .sensoryFeedback(.selection, trigger: tagFeedback)
         }
         .tint(Theme.active)
         .presentationDetents([.medium, .large])
@@ -106,9 +77,62 @@ struct QuickComposerSheet: View {
         .interactiveDismissDisabled(saving)
     }
 
-    private var bottomAccessory: some View {
+    private func save() {
+        saving = true
+        Task {
+            defer { saving = false }
+            do { try await store.create(draft, id: id, createdAt: timestamp); dismiss() }
+            catch is CancellationError {}
+            catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
+struct NoteTagAccessoryBar<Trailing: View>: View {
+    let store: AppStore
+    @Binding var draft: String
+    @Binding var selection: TextSelection?
+    let refocus: () -> Void
+    @ViewBuilder let trailing: () -> Trailing
+    @State private var tagFeedback = 0
+
+    private var tagCounts: [String: Int] {
+        var result: [String: Int] = [:]
+        func walk(_ nodes: [TagParser.Node]) {
+            for node in nodes {
+                result[node.path] = node.count
+                walk(node.children)
+            }
+        }
+        walk(store.index.tags)
+        return result
+    }
+
+    private var cursorIndex: String.Index? {
+        guard let selection else { return draft.endIndex }
+        switch selection.indices {
+        case .selection(let range):
+            guard range.lowerBound == range.upperBound, range.upperBound <= draft.endIndex else { return nil }
+            return range.upperBound
+        case .multiSelection:
+            return nil
+        @unknown default:
+            return draft.endIndex
+        }
+    }
+
+    private var activeTag: TagParser.ActiveTagQuery? {
+        guard let cursor = cursorIndex else { return nil }
+        return TagParser.activeTagQuery(in: draft, cursor: cursor)
+    }
+
+    var body: some View {
+        let activeTag = activeTag
+        let suggestions = activeTag.map {
+            TagParser.suggestTags(for: $0.query, from: store.index.exactTags, counts: tagCounts, limit: 10)
+        } ?? []
         VStack(spacing: 0) {
-            if activeTag != nil, !suggestions.isEmpty {
+            if !suggestions.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         ForEach(suggestions, id: \.self) { tag in
@@ -158,12 +182,7 @@ struct QuickComposerSheet: View {
                 }
 
                 Spacer(minLength: 8)
-
-                Button(action: save) {
-                    Label("保存", systemImage: "arrow.up")
-                }
-                .buttonStyle(.weijiPrimary)
-                .disabled(!canSave)
+                trailing()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -171,6 +190,7 @@ struct QuickComposerSheet: View {
             .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
         }
         .animation(.easeOut(duration: 0.16), value: suggestions)
+        .sensoryFeedback(.selection, trigger: tagFeedback)
     }
 
     private func insertHash() {
@@ -180,7 +200,7 @@ struct QuickComposerSheet: View {
         draft.insert(contentsOf: insert, at: idx)
         let newCursor = draft.index(idx, offsetBy: insert.count)
         selection = TextSelection(insertionPoint: newCursor)
-        focused = true
+        refocus()
         tagFeedback += 1
     }
 
@@ -190,17 +210,7 @@ struct QuickComposerSheet: View {
         let applied = TagParser.applyTagSuggestion(tag, in: draft, replacing: current.range)
         draft = applied.text
         selection = TextSelection(insertionPoint: applied.cursor)
-        focused = true
+        refocus()
         tagFeedback += 1
-    }
-
-    private func save() {
-        saving = true
-        Task {
-            defer { saving = false }
-            do { try await store.create(draft, id: id, createdAt: timestamp); dismiss() }
-            catch is CancellationError {}
-            catch { self.error = error.localizedDescription }
-        }
     }
 }

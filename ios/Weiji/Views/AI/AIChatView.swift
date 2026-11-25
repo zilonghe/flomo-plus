@@ -35,7 +35,7 @@ struct AIChatView: View {
                         ForEach(chat.pins, id: \.self) { id in
                             Button {
                                 writing = false
-                                Task { await store.openNote(id) }
+                                Task { await store.openNote(id, from: .ai) }
                             } label: {
                                 Chip(text: store.notesById[id].map { String($0.body.prefix(25)) } ?? "引用笔记",
                                      symbol: "pin.fill", selected: true)
@@ -287,7 +287,7 @@ struct AIChatView: View {
 
     private func openNote(_ id: String) {
         writing = false
-        Task { await store.openNote(id) }
+        Task { await store.openNote(id, from: .ai) }
     }
 }
 

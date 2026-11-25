@@ -6,13 +6,16 @@ struct InsightsTabView: View {
     @State private var segment: Segment = .insights
     @State private var lensEditor: LensEditorRoute?
     @State private var choosingLens = false
-    @State private var followup: InsightReport?
+    @State private var pendingReportAction: ReportExitAction?
     @State private var startDate = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
     @State private var endDate = Date.now
     @Namespace private var segmentSelection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct LensEditorRoute: Identifiable { let id = UUID(); let lens: InsightLens? }
+    private enum ReportExitAction {
+        case followUp(InsightReport), askNote(Note), openTag(String)
+    }
 
     var body: some View {
         @Bindable var insights = store.insights
@@ -23,12 +26,18 @@ struct InsightsTabView: View {
         }
         .sheet(isPresented: $insights.showReport, onDismiss: {
             insights.stopReport()
-            if let followup { store.askAbout(followup); self.followup = nil }
-        }) {
-            InsightReportSheet(store: store) { report in
-                followup = report
-                insights.showReport = false
+            guard let action = pendingReportAction else { return }
+            pendingReportAction = nil
+            switch action {
+            case .followUp(let report): store.askAbout(report)
+            case .askNote(let note): store.askAbout(note)
+            case .openTag(let tag): store.openTag(tag)
             }
+        }) {
+            InsightReportSheet(store: store,
+                               followUp: { exitReport(with: .followUp($0)) },
+                               onAskNote: { exitReport(with: .askNote($0)) },
+                               onOpenTag: { exitReport(with: .openTag($0)) })
         }
         .sheet(item: $lensEditor) { route in CustomLensSheet(store: store, lens: route.lens) }
         .sheet(isPresented: $choosingLens) { LensPickerSheet(insights: insights) }
@@ -38,6 +47,11 @@ struct InsightsTabView: View {
                 await insights.loadLibrary(api: api)
             }
         }
+    }
+
+    private func exitReport(with action: ReportExitAction) {
+        pendingReportAction = action
+        store.insights.showReport = false
     }
 
     private var header: some View {

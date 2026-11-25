@@ -9,15 +9,34 @@ enum TagParser {
         let query: String
     }
 
+    static func matchRanges(in text: String) -> [(fullRange: Range<String.Index>, tag: String)] {
+        matcher.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            guard let fullRange = Range(match.range, in: text),
+                  let range = Range(match.range(at: 1), in: text),
+                  nonNumber.firstMatch(in: text, range: match.range(at: 1)) != nil else { return nil }
+            return (fullRange, String(text[range]))
+        }
+    }
+
     static func tags(in text: String) -> [String] {
         var seen = Set<String>()
-        return matcher.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
-            guard let range = Range(match.range(at: 1), in: text) else { return nil }
-            let tag = text[range].lowercased()
-            guard nonNumber.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)) != nil,
-                  seen.insert(tag).inserted else { return nil }
-            return tag
-        }
+        return matchRanges(in: text).map { $0.tag.lowercased() }.filter { seen.insert($0).inserted }
+    }
+
+    static func tagURL(for tag: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "weiji"
+        components.host = "tag"
+        components.queryItems = [URLQueryItem(name: "name", value: tag)]
+        return components.url
+    }
+
+    static func tagPath(from url: URL) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == "weiji", components.host == "tag",
+              let tag = components.queryItems?.first(where: { $0.name == "name" })?.value,
+              !tag.isEmpty else { return nil }
+        return tag
     }
 
     /// Detects an active `#prefix` token immediately preceding `cursor` (defaults to end of `text`).
@@ -108,6 +127,25 @@ enum TagParser {
             (grouped[path] ?? []).sorted().map { Node(path: $0, count: counts[$0] ?? 0, children: children(of: $0)) }
         }
         return children(of: "")
+    }
+}
+
+enum NoteDateFormatter {
+    static func fullDisplay(from isoString: String, locale: Locale = Locale(identifier: "zh_Hans_CN"), timeZone: TimeZone = .current) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = iso.date(from: isoString) ?? {
+            iso.formatOptions = [.withInternetDateTime]
+            return iso.date(from: isoString)
+        }()
+        guard let date else { return String(isoString.prefix(10)) }
+
+        let display = DateFormatter()
+        display.locale = locale
+        display.calendar = Calendar(identifier: .gregorian)
+        display.timeZone = timeZone
+        display.dateFormat = "yyyy年M月d日 EEE HH:mm"
+        return display.string(from: date)
     }
 }
 

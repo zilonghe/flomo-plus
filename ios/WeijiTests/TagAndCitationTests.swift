@@ -9,6 +9,40 @@ final class TagAndCitationTests: XCTestCase {
                        ["work/复盘", "12/34", "a1", "日语_1", "abc"])
     }
 
+    func testHighlightingTagsLinksFullBodyAndSkipsPureDigits() {
+        let body = "👨‍👩‍👧‍👦 #碎碎念/职场 #12/34 #2026 #碎碎念/职场 " + String(repeating: "字", count: 500) + " #尾标签"
+        let expected = ["#碎碎念/职场", "#12/34", "#碎碎念/职场", "#尾标签"]
+        let preview = NoteCardContent.highlightingTags(body, limit: 400, linkTags: false)
+        XCTAssertEqual(String(preview.characters), String(body.prefix(400)))
+        XCTAssertTrue(preview.runs.allSatisfy { $0.link == nil })
+        XCTAssertEqual(preview.runs.filter { $0.foregroundColor != nil }.map { String(preview[$0.range].characters) },
+                       Array(expected.dropLast()))
+
+        let reader = NoteCardContent.highlightingTags(body, limit: nil, linkTags: true)
+        XCTAssertEqual(String(reader.characters), body)
+        let links = reader.runs.filter { $0.link != nil }
+        XCTAssertEqual(links.map { String(reader[$0.range].characters) }, expected)
+        XCTAssertEqual(links.compactMap { $0.link.flatMap(TagParser.tagPath(from:)) }, expected.map { String($0.dropFirst()) })
+        XCTAssertEqual(reader.runs.filter { $0.foregroundColor != nil }.map { String(reader[$0.range].characters) }, expected)
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        let active = UIColor(Theme.active).resolvedColor(with: traits)
+        for run in links {
+            XCTAssertEqual(run.foregroundColor.map { UIColor($0).resolvedColor(with: traits) }, active)
+        }
+        for url in ["https://tag?name=工作", "weiji://note?name=工作", "weiji://tag?name=", "weiji://tag"] {
+            XCTAssertNil(URL(string: url).flatMap(TagParser.tagPath(from:)), url)
+        }
+    }
+
+    func testNoteDateFormatterFormatsISO8601WithAndWithoutFractionalSeconds() throws {
+        let zone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        let locale = Locale(identifier: "zh_Hans_CN")
+        for value in ["2026-11-25T06:29:00.123Z", "2026-11-25T06:29:00Z"] {
+            XCTAssertEqual(NoteDateFormatter.fullDisplay(from: value, locale: locale, timeZone: zone), "2026年11月25日 周三 14:29")
+        }
+        XCTAssertEqual(NoteDateFormatter.fullDisplay(from: "2026-11-25", locale: locale, timeZone: zone), "2026-11-25")
+    }
+
     func testBuildsTagTreeAnd84DayHeatmap() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 8 * 3600))

@@ -5,6 +5,7 @@ struct RootTabView: View {
     @State private var notesSidebar = false
     @State private var aiSessionsDrawer = false
     @Namespace private var tabSelection
+    @Namespace private var noteZoom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -20,8 +21,8 @@ struct RootTabView: View {
             case .online, .offline:
                 Group {
                     switch store.tab {
-                    case .notes: NotesTabView(store: store, sidebar: $notesSidebar)
-                    case .walk: RandomWalkView(store: store)
+                    case .notes: NotesTabView(store: store, noteZoom: noteZoom, sidebar: $notesSidebar)
+                    case .walk: RandomWalkView(store: store, noteZoom: noteZoom)
                     case .ai: AIChatView(store: store, showSessions: $aiSessionsDrawer)
                     case .insights: InsightsTabView(store: store)
                     }
@@ -50,10 +51,22 @@ struct RootTabView: View {
             aiSessionsDrawer = false
         }
         .sheet(isPresented: $store.showSettings) { ConnectionSettingsView(store: store) }
-        .sheet(item: $store.detail) { detail in
-            NoteDetailSheet(store: store, note: detail.note)
+        .fullScreenCover(item: $store.detail) { detail in
+            noteReader(for: detail)
         }
         .task { store.start() }
+    }
+
+    @ViewBuilder
+    private func noteReader(for detail: AppStore.Detail) -> some View {
+        let reader = NavigationStack {
+            NoteReaderView(store: store, note: detail.note, source: detail.source, presentation: .fullScreen)
+        }
+        if detail.source.supportsZoom {
+            reader.navigationTransition(.zoom(sourceID: detail.id, in: noteZoom))
+        } else {
+            reader
+        }
     }
 
     private var tabBar: some View {

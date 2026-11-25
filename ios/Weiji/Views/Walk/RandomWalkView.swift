@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RandomWalkView: View {
     let store: AppStore
+    let noteZoom: Namespace.ID
     private var walk: WalkStore { store.walk }
 
     var body: some View {
@@ -15,11 +16,12 @@ struct RandomWalkView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if let result = walk.result {
                         Button {
-                            Task { await store.openNote(result.focus.id) }
+                            Task { await store.openNote(result.focus.id, from: .walk) }
                         } label: {
                             focusCard(result.focus)
                         }
                         .buttonStyle(.plain)
+                        .matchedTransitionSource(id: result.focus.id, in: noteZoom)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("walk-focus-card")
                         .accessibilityValue(result.focus.id)
@@ -28,11 +30,12 @@ struct RandomWalkView: View {
                             VStack(spacing: 8) {
                                 ForEach(result.related) { item in
                                     Button {
-                                        Task { await store.openNote(item.id) }
+                                        Task { await store.openNote(item.id, from: .walk) }
                                     } label: {
                                         relatedCard(item)
                                     }
                                     .buttonStyle(.plain)
+                                    .matchedTransitionSource(id: item.id, in: noteZoom)
                                     .accessibilityElement(children: .combine)
                                     .accessibilityIdentifier("walk-related-card-" + item.id)
                                 }

@@ -5,10 +5,29 @@ enum AuthScreenState: Equatable {
     case restoring, needsLogin, online, offline
 }
 
+enum DetailSource: Hashable, Sendable {
+    case notes, walk, ai, insights
+
+    var supportsZoom: Bool { self == .notes || self == .walk }
+}
+
 @Observable @MainActor
 final class AppStore {
     enum Tab: String, CaseIterable { case notes, walk, ai, insights }
-    struct Detail: Identifiable { let note: Note; var id: String { note.id } }
+    struct Detail: Identifiable, Hashable {
+        let note: Note
+        let source: DetailSource
+        var id: String { note.id }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id && lhs.source == rhs.source
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(id)
+            hasher.combine(source)
+        }
+    }
 
     let walk = WalkStore()
     let chat = AIChatStore()
@@ -448,8 +467,29 @@ final class AppStore {
         pageSize += 50
     }
 
-    func openNote(_ id: String) async {
-        if let note = await resolveNote(id) { detail = Detail(note: note) }
+    func openNote(_ id: String, from source: DetailSource) async {
+        if let note = await resolveNote(id) { detail = Detail(note: note, source: source) }
+    }
+
+    func openTag(_ tag: String) {
+        detail = nil
+        query = ""
+        filter = NoteFilter(tag: tag.lowercased())
+        tab = .notes
+    }
+
+    func canPerformReaderPrimaryAction(for noteId: String, source: DetailSource) -> Bool {
+        if source == .ai { return chat.pins.contains(noteId) || chat.pins.count < 10 }
+        return api != nil
+    }
+
+    func performReaderPrimaryAction(for note: Note, source: DetailSource) {
+        if source == .ai {
+            chat.togglePin(note.id)
+            detail = nil
+        } else {
+            askAbout(note)
+        }
     }
 
     func resolveNote(_ id: String) async -> Note? {

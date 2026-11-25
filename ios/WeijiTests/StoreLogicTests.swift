@@ -4,6 +4,108 @@ import os
 
 @MainActor
 final class StoreLogicTests: XCTestCase {
+    func testOpenNoteCapturesSourceBeforeAsyncFetch() async throws {
+        let fetches = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/ai/sessions/reader-session": return .init(status: 200, body: readerSessionFixture)
+            case "/api/notes":
+                let count = fetches.withLock { $0 += 1; return $0 }
+                return .init(status: 200, body: count == 1 ? #"{"notes":[],"deleted":[]}"# : notesFixture)
+            default: return .init(status: 404, body: "")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let store = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("完成初始同步") { !store.syncing }
+        try await loadReaderSession(in: store, api: XCTUnwrap(store.api))
+        XCTAssertNil(store.notesById["note"])
+        store.tab = .notes
+        await store.openNote("note", from: .ai)
+
+        let detail = try XCTUnwrap(store.detail)
+        XCTAssertEqual(fetches.withLock { $0 }, 2)
+        XCTAssertEqual(detail.id, "note")
+        XCTAssertEqual(detail.source, .ai)
+        store.performReaderPrimaryAction(for: detail.note, source: detail.source)
+        XCTAssertEqual(store.chat.pins, ["note"])
+        XCTAssertEqual(store.chat.session?.id, "reader-session")
+        XCTAssertEqual(store.tab, .notes)
+        XCTAssertNil(store.detail)
+    }
+
+    func testOpenTagClearsQueryAndSwitchesToNotesFilter() throws {
+        let store = AppStore(temporary: true, reset: true)
+        let note = Note(id: "note", body: "#Work/职场", createdAt: "2026-11-25", revision: 1)
+        store.tab = .ai
+        store.detail = .init(note: note, source: .ai)
+        store.query = "旧搜索"
+        store.filter = NoteFilter(day: "2026-11-25")
+
+        store.openTag("Work/职场")
+
+        XCTAssertNil(store.detail)
+        XCTAssertEqual(store.tab, .notes)
+        XCTAssertEqual(store.filter, NoteFilter(tag: "work/职场"))
+        XCTAssertEqual(store.query, "")
+    }
+
+    func testReaderPrimaryActionFromAIPinsWithoutResettingSessionAndRespectsLimit() async throws {
+        let (config, transport) = try StubProtocol.make { request in
+            XCTAssertEqual(request.url?.path, "/api/ai/sessions/reader-session")
+            return .init(status: 200, body: readerSessionFixture)
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let store = AppStore(temporary: true, reset: true)
+        // AI references also work without a live AppStore connection.
+        try await loadReaderSession(in: store, api: WeijiAPIClient(configuration: config, transport: transport))
+        store.tab = .ai
+        store.chat.draft = "继续追问"
+        let note = Note(id: "note", body: "正文", createdAt: "2026-11-25", revision: 1)
+        func toggleReaderPin() {
+            store.detail = .init(note: note, source: .ai)
+            store.performReaderPrimaryAction(for: note, source: .ai)
+            XCTAssertEqual(store.chat.session?.id, "reader-session")
+            XCTAssertEqual(store.chat.session?.version, 7)
+            XCTAssertEqual(store.chat.draft, "继续追问")
+            XCTAssertEqual(store.tab, .ai)
+            XCTAssertNil(store.detail)
+        }
+
+        XCTAssertTrue(store.canPerformReaderPrimaryAction(for: note.id, source: .ai))
+        toggleReaderPin()
+        XCTAssertEqual(store.chat.pins, [note.id])
+        toggleReaderPin()
+        XCTAssertTrue(store.chat.pins.isEmpty)
+        toggleReaderPin()
+        for index in 1...9 { store.chat.togglePin("pin-\(index)") }
+        XCTAssertEqual(store.chat.pins.count, 10)
+        XCTAssertFalse(store.canPerformReaderPrimaryAction(for: "overflow", source: .ai))
+        XCTAssertTrue(store.canPerformReaderPrimaryAction(for: note.id, source: .ai))
+        toggleReaderPin()
+        XCTAssertEqual(store.chat.pins.count, 9)
+        XCTAssertFalse(store.chat.pins.contains(note.id))
+        XCTAssertTrue(store.canPerformReaderPrimaryAction(for: "overflow", source: .ai))
+
+        store.tab = .notes
+        store.detail = .init(note: note, source: .notes)
+        XCTAssertFalse(store.canPerformReaderPrimaryAction(for: note.id, source: .notes))
+        store.performReaderPrimaryAction(for: note, source: .notes)
+        XCTAssertEqual(store.tab, .ai)
+        XCTAssertNil(store.detail)
+        XCTAssertNil(store.chat.session)
+        XCTAssertTrue(store.chat.draft.isEmpty)
+        XCTAssertTrue(store.chat.pins.isEmpty)
+    }
+
+    private func loadReaderSession(in store: AppStore, api: WeijiAPIClient) async throws {
+        store.chat.select("reader-session", api: api)
+        try await waitUntil("读取阅读页引用测试会话") { !store.chat.loadingSession }
+        XCTAssertEqual(store.chat.session?.id, "reader-session")
+    }
+
     func test409ConflictPreservesDraftWithoutOverwritingServer() async throws {
         let conflicts = OSAllocatedUnfairLock(initialState: 0)
         let (config, transport) = try StubProtocol.make { request in
@@ -1189,6 +1291,7 @@ final class StoreLogicTests: XCTestCase {
     }
 }
 
+private let readerSessionFixture = #"{"session":{"id":"reader-session","title":"会话","version":7,"updatedAt":"2026-11-25T00:00:00Z","origin":"chat"}}"#
 private let sessionFixture = #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":false}"#
 private let notesFixture = #"{"notes":[{"id":"note","body":"原始版本","createdAt":"2025-02-01T00:00:00.000Z","turns":[],"revision":2}],"deleted":[]}"#
 

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NotesTabView: View {
     @Bindable var store: AppStore
+    let noteZoom: Namespace.ID
     @State private var showSearch = false
     @Binding var sidebar: Bool
     @State private var composer = false
@@ -40,11 +41,12 @@ struct NotesTabView: View {
                     ForEach(store.results.prefix(store.pageSize)) { note in
                         Button {
                             searching = false
-                            Task { await store.openNote(note.id) }
+                            Task { await store.openNote(note.id, from: .notes) }
                         } label: {
                             NoteCardContent(note: note).noteCard(padding: 16)
                         }
                         .buttonStyle(.plain)
+                        .matchedTransitionSource(id: note.id, in: noteZoom)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("note-card-" + note.id)
                         .onAppear { store.loadMore(after: note.id) }
@@ -149,17 +151,14 @@ struct NoteCardContent: View {
         }
     }
 
-    private static let tagPattern = try! NSRegularExpression(pattern: #"(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+(?:/[\p{L}\p{N}_]+)*"#)
-
-    /// Tints `#tag` runs in accent; only the visible head of the body is scanned.
-    static func highlightingTags(_ body: String) -> AttributedString {
-        let head = String(body.prefix(400))
-        var rich = AttributedString(head)
-        for match in tagPattern.matches(in: head, range: NSRange(head.startIndex..., in: head)) {
-            guard let range = Range(match.range, in: head),
-                  let start = AttributedString.Index(range.lowerBound, within: rich),
+    static func highlightingTags(_ body: String, limit: Int? = 400, linkTags: Bool = false) -> AttributedString {
+        let text = limit.map { String(body.prefix($0)) } ?? body
+        var rich = AttributedString(text)
+        for (range, tag) in TagParser.matchRanges(in: text) {
+            guard let start = AttributedString.Index(range.lowerBound, within: rich),
                   let end = AttributedString.Index(range.upperBound, within: rich) else { continue }
             rich[start..<end].foregroundColor = Theme.active
+            if linkTags { rich[start..<end].link = TagParser.tagURL(for: tag) }
         }
         return rich
     }
