@@ -15,17 +15,17 @@ struct QuickComposerSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     TextField("记下此刻的想法", text: $draft, axis: .vertical)
-                        .lineLimit(4...12).padding(12).background(Theme.paper, in: .rect(cornerRadius: 10))
+                        .lineLimit(4...12).lineSpacing(4).noteCard(padding: 14)
                         .focused($focused)
                         .accessibilityIdentifier("composer-text-editor")
                     ScrollView(.horizontal) {
-                        HStack {
-                            Button("#") { appendTag("") }
+                        HStack(spacing: 6) {
+                            Button { appendTag("") } label: { Chip(text: "#") }
                             ForEach(store.index.exactTags.prefix(12), id: \.self) { tag in
-                                Button("#" + tag) { appendTag(tag) }
+                                Button { appendTag(tag) } label: { Chip(text: "#" + tag) }
                             }
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.plain)
                     }.scrollIndicators(.hidden)
                     InlineError(message: error)
                 }.padding(16)
@@ -43,6 +43,7 @@ struct QuickComposerSheet: View {
             }
             .task { focused = true }
         }
+        .tint(Theme.active)
         .interactiveDismissDisabled(saving)
     }
 

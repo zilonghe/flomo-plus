@@ -6,62 +6,43 @@ struct NotesTabView: View {
     @Binding var sidebar: Bool
     @State private var composer = false
     @FocusState private var searching: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                if #available(iOS 26.0, *) { GlassEffectContainer(spacing: 8) { header } }
-                else { header }
-            }
-            .screenHeader()
+            header.screenHeader()
             if store.isOffline {
                 Label("离线 · 仅可浏览已同步笔记", systemImage: "wifi.slash")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.line.opacity(0.6), in: .rect(cornerRadius: 8))
-                    .padding(.horizontal, 16)
+                    .font(.footnote).foregroundStyle(Theme.ink2)
+                    .padding(.horizontal, 12).padding(.vertical, 9).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.subtle, in: .rect(cornerRadius: 10))
+                    .padding(.horizontal, 16).padding(.bottom, 6)
             }
-            if showSearch {
-                TextField("搜索笔记、书名、作者", text: $store.query)
-                    .focused($searching)
-                    .submitLabel(.search)
-                    .onSubmit { searching = false }
-                    .onChange(of: store.query) { previous, current in
-                        if !previous.isEmpty && current.isEmpty { searching = false }
-                    }
-                    .padding(.vertical, 11)
-                    .padding(.horizontal, 16)
-                    .weijiGlassCapsule(interactive: false)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
-                    .accessibilityIdentifier("notes-search-field")
-            }
+            if showSearch { searchField.transition(.move(edge: .top).combined(with: .opacity)) }
             if store.filter != NoteFilter() {
                 Button {
                     store.filter = NoteFilter()
                 } label: {
-                    Label(store.filter.tag.map { "#" + $0 } ?? store.filter.day ?? store.filter.kind.rawValue, systemImage: "xmark.circle")
-                        .font(.footnote).padding(.horizontal, 16).padding(.vertical, 6)
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                    Chip(text: store.filter.tag.map { "#" + $0 } ?? store.filter.day ?? store.filter.kind.rawValue,
+                         symbol: "xmark", selected: true)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除筛选")
+                .padding(.horizontal, 16).padding(.bottom, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             InlineError(message: store.error).padding(.horizontal, 16)
             ScrollView {
-                LazyVStack(spacing: 9) {
+                LazyVStack(spacing: 10) {
                     if store.results.isEmpty && !store.syncing {
-                        Text("暂无笔记").foregroundStyle(.secondary).padding(.top, 36)
+                        Text("暂无笔记").foregroundStyle(Theme.ink3).padding(.top, 48)
                     }
                     ForEach(store.results.prefix(store.pageSize)) { note in
                         Button {
                             searching = false
                             Task { await store.openNote(note.id) }
                         } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(note.reading?.bookTitle ?? String(note.createdAt.prefix(10)))
-                                    .foregroundStyle(.secondary).font(.caption)
-                                Text(note.body).font(.subheadline).lineLimit(3)
-                                    .multilineTextAlignment(.leading)
-                            }
-                            .noteCard()
+                            NoteCardContent(note: note).noteCard(padding: 16)
                         }
                         .buttonStyle(.plain)
                         .accessibilityElement(children: .combine)
@@ -70,8 +51,8 @@ struct NotesTabView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 76)
+                .padding(.top, 4)
+                .padding(.bottom, 96)
             }
             .scrollDismissesKeyboard(.interactively)
             .refreshable { store.refresh() }
@@ -80,40 +61,107 @@ struct NotesTabView: View {
                     Button {
                         composer = true
                     } label: {
-                        Image(systemName: "plus").font(.system(size: 25, weight: .medium))
-                            .foregroundStyle(Theme.ink)
-                            .frame(width: 54, height: 54)
-                            .weijiGlassCircle(tint: Theme.green.opacity(0.55))
+                        Image(systemName: "plus").font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 56, height: 56)
+                            .background {
+                                Circle().fill(Theme.accent)
+                                    .shadow(color: Theme.accent.opacity(0.32), radius: 12, y: 5)
+                            }
+                            .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("快速记")
                     .accessibilityIdentifier("notes-fab-new")
-                    .padding(18)
+                    .padding(.trailing, 20).padding(.bottom, 12)
                 }
             }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: showSearch)
         .onChange(of: sidebar) { _, open in if open { searching = false } }
         .sheet(isPresented: $composer) { QuickComposerSheet(store: store) }
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 4) {
             IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") { sidebar = true }
-                .weijiGlassCircle()
+                .padding(.leading, -10)
             Text("微记").font(.title2.bold())
             Spacer()
-            if store.syncing { ProgressView().controlSize(.small).accessibilityLabel("正在同步") }
-            HStack(spacing: 0) {
-                IconAction(symbol: "magnifyingglass", label: "搜索", id: "notes-search-button") {
-                    showSearch.toggle()
-                    searching = showSearch
-                    if !showSearch { store.query = "" }
-                }
-                IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
-                    .disabled(store.syncing)
+            if store.syncing { ProgressView().controlSize(.small).accessibilityLabel("正在同步").padding(.trailing, 4) }
+            IconAction(symbol: showSearch ? "xmark" : "magnifyingglass", label: "搜索", id: "notes-search-button") {
+                showSearch.toggle()
+                searching = showSearch
+                if !showSearch { store.query = "" }
             }
-            .weijiGlassCapsule()
+            IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
+                .disabled(store.syncing)
+                .padding(.trailing, -10)
         }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.subheadline).foregroundStyle(Theme.ink3).accessibilityHidden(true)
+            TextField("搜索笔记、书名、作者", text: $store.query)
+                .focused($searching)
+                .submitLabel(.search)
+                .onSubmit { searching = false }
+                .onChange(of: store.query) { previous, current in
+                    if !previous.isEmpty && current.isEmpty { searching = false }
+                }
+                .accessibilityIdentifier("notes-search-field")
+            if !store.query.isEmpty {
+                Button { store.query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.ink3)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除搜索")
+            }
+        }
+        .padding(.horizontal, 12).frame(minHeight: 42)
+        .background(Theme.paper, in: .rect(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.hairline).allowsHitTesting(false) }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+}
+
+struct NoteCardContent: View {
+    let note: Note
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                if let book = note.reading?.bookTitle, !book.isEmpty {
+                    Image(systemName: "book.closed.fill").font(.caption2).foregroundStyle(Theme.active)
+                        .accessibilityHidden(true)
+                    Text(book).font(.caption.weight(.medium)).foregroundStyle(Theme.ink2).lineLimit(1)
+                    Spacer(minLength: 8)
+                }
+                Text(String(note.createdAt.prefix(10))).font(.caption.monospacedDigit()).foregroundStyle(Theme.ink3)
+            }
+            Text(Self.highlightingTags(note.body))
+                .font(.callout).foregroundStyle(Theme.ink)
+                .lineSpacing(4).lineLimit(4)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private static let tagPattern = try! NSRegularExpression(pattern: #"(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+(?:/[\p{L}\p{N}_]+)*"#)
+
+    /// Tints `#tag` runs in accent; only the visible head of the body is scanned.
+    static func highlightingTags(_ body: String) -> AttributedString {
+        let head = String(body.prefix(400))
+        var rich = AttributedString(head)
+        for match in tagPattern.matches(in: head, range: NSRange(head.startIndex..., in: head)) {
+            guard let range = Range(match.range, in: head),
+                  let start = AttributedString.Index(range.lowerBound, within: rich),
+                  let end = AttributedString.Index(range.upperBound, within: rich) else { continue }
+            rich[start..<end].foregroundColor = Theme.active
+        }
+        return rich
     }
 }
 
@@ -136,16 +184,22 @@ struct NotesDrawer: ViewModifier {
                 if isOpen {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
-                            Color.black.opacity(0.28)
+                            Color.black.opacity(0.32)
                                 .ignoresSafeArea()
                                 .onTapGesture { isOpen = false }
                                 .accessibilityHidden(true)
                                 .transition(.opacity)
                             SidebarSheetView(store: store, onClose: { isOpen = false })
-                                .frame(width: min(310, geo.size.width * 0.82))
+                                .frame(width: min(320, geo.size.width * 0.84))
                                 .frame(maxHeight: .infinity)
-                                .weijiGlassSurface(in: UnevenRoundedRectangle(bottomTrailingRadius: 26, topTrailingRadius: 26))
-                                .shadow(color: .black.opacity(0.18), radius: 14, x: 5)
+                                .clipped()
+                                .background {
+                                    // Opaque panel: large surfaces never use translucent glass.
+                                    UnevenRoundedRectangle(bottomTrailingRadius: 24, topTrailingRadius: 24)
+                                        .fill(Theme.canvas)
+                                        .shadow(color: .black.opacity(0.22), radius: 20, x: 6)
+                                        .ignoresSafeArea()
+                                }
                                 .accessibilityAddTraits(.isModal)
                                 .accessibilityAction(.escape) { isOpen = false }
                                 .transition(.move(edge: .leading))

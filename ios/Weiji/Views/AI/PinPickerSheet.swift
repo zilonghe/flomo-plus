@@ -15,18 +15,24 @@ struct PinPickerSheet: View {
                     Button {
                         store.chat.togglePin(note.id)
                     } label: {
-                        HStack {
-                            Text(note.body).lineLimit(2)
-                            Spacer()
-                            if selected { Image(systemName: "checkmark").foregroundStyle(Theme.active) }
+                        HStack(spacing: 12) {
+                            Text(note.body).font(.subheadline).foregroundStyle(Theme.ink).lineLimit(2).lineSpacing(2)
+                            Spacer(minLength: 8)
+                            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                .font(.title3).foregroundStyle(selected ? Theme.active : Theme.ink3.opacity(0.6))
                         }
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Theme.paper)
                     .disabled(!selected && store.chat.pins.count >= 10)
                     .onAppear {
                         if displayCount < results.count && results[displayCount - 1].id == note.id { displayCount += 50 }
                     }
                 }
             }
+            .weijiSheetBackground()
             .searchable(text: $query, prompt: "搜索笔记")
             .navigationTitle("置顶笔记 · \(store.chat.pins.count)/10")
             .navigationBarTitleDisplayMode(.inline)
@@ -40,5 +46,6 @@ struct PinPickerSheet: View {
                 displayCount = 50
             }
         }
+        .tint(Theme.active)
     }
 }

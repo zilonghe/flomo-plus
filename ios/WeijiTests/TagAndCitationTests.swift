@@ -1,3 +1,5 @@
+import SwiftUI
+import UIKit
 import XCTest
 @testable import Weiji
 
@@ -72,5 +74,46 @@ final class TagAndCitationTests: XCTestCase {
         XCTAssertEqual(CitationParser.split("甲[N1][N20]乙 [N0] [n3] [N]"),
                        [.text("甲"), .reference("N1"), .reference("N20"), .text("乙 "), .reference("N0"), .text(" [n3] [N]")])
         XCTAssertEqual(CitationParser.split(""), [])
+    }
+
+    func testMarkdownBlocksParseRulesHeadingLevelsAndNestedLists() {
+        let text = "# 标题\n## 小节\n### 细节\n---\n***\n_ _ _\n- 一级\n  - 【推测】二级\n    * 三级\n1. 第一\n  2) 第二\n> 引用\n```\n- 代码\n```\n普通段落\n#tag 不是标题"
+        let blocks = MarkdownBlockView.blocks(text)
+        XCTAssertEqual(blocks.map(\.kind), [
+            .heading(1), .heading(2), .heading(3), .rule, .rule, .rule,
+            .bullet(level: 0), .bullet(level: 1), .bullet(level: 2),
+            .ordered("1", level: 0), .ordered("2", level: 1),
+            .quote, .code, .paragraph, .paragraph,
+        ])
+        XCTAssertEqual(blocks.map(\.text), [
+            "标题", "小节", "细节", "", "", "", "一级", "【推测】二级", "三级", "第一", "第二", "引用", "- 代码", "普通段落", "#tag 不是标题",
+        ])
+        XCTAssertFalse(blocks.contains { $0.text.contains("---") })
+    }
+
+    func testThemeContrastMeetsWCAGInLightAndDarkMode() {
+        func luminance(_ color: UIColor) -> Double {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(color.getRed(&r, green: &g, blue: &b, alpha: &a))
+            func linear(_ c: CGFloat) -> Double {
+                let v = Double(c)
+                return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        }
+        func contrast(_ a: Color, _ b: Color, style: UIUserInterfaceStyle) -> Double {
+            let traits = UITraitCollection(userInterfaceStyle: style)
+            let la = luminance(UIColor(a).resolvedColor(with: traits))
+            let lb = luminance(UIColor(b).resolvedColor(with: traits))
+            return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+        }
+        for style: UIUserInterfaceStyle in [.light, .dark] {
+            let mode = style == .light ? "light" : "dark"
+            XCTAssertGreaterThanOrEqual(contrast(Theme.accent, .white, style: style), 4.5, "primary CTA contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.canvas, style: style), 7.0, "body-on-canvas contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.paper, style: style), 7.0, "body-on-paper contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.active, Theme.accentSoft, style: style), 4.5, "active-on-soft contrast (\(mode))")
+            XCTAssertGreaterThanOrEqual(contrast(Theme.active, Theme.paper, style: style), 4.5, "active-on-paper contrast (\(mode))")
+        }
     }
 }

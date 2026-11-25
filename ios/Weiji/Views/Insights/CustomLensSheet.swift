@@ -23,6 +23,7 @@ struct CustomLensSheet: View {
                 if input.id != nil { Button("删除视角", role: .destructive) { confirmDelete = true }.disabled(saving) }
                 InlineError(message: error)
             }
+            .weijiSheetBackground()
             .navigationTitle(input.id == nil ? "新视角" : "编辑视角")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -37,6 +38,7 @@ struct CustomLensSheet: View {
                 Button("删除", role: .destructive) { perform(remove: true) }
             }
         }
+        .tint(Theme.active)
         .interactiveDismissDisabled(saving)
     }
 

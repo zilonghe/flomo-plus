@@ -660,16 +660,54 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     assert.equal(chat.body.reasoningEffort, 'xhigh');
     assert.equal(await page.evaluate("localStorage.getItem('weiji.reasoningEffort')"), 'xhigh');
     const citation = { ref: 'N1', noteId: id, excerpt: bodyA, createdAt };
+    const retrieveStep = {
+      id: 'retrieve',
+      kind: 'retrieve',
+      status: 'done',
+      label: '检索相关笔记',
+      detail: '命中 19 条笔记',
+      durationMs: 272,
+      items: [
+        { ref: 'N1', noteId: id, title: '2023-08-20', excerpt: '这是一段很长的笔记摘录，用于验证处理过程卡片内不会因为白空不换行而撑爆右侧边框并把耗时顶出卡片外面：'.repeat(3) },
+        { ref: 'N2', noteId: id, title: '巴黎评论（套装共7册）', excerpt: '创作者的作品，首要目的是为了取悦自己。海明威真是一个有意思的人，写了书和故事又能不被别人要求去解释它们可真够难的。' },
+      ],
+    };
     const step = { id: 'think', kind: 'think', status: 'running', label: '思考与生成' };
     const stream = chat.res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     const event = (name, data) => stream.write('event: ' + name + '\ndata: ' + JSON.stringify(data) + '\n\n');
     event('citations', { citations: [citation] });
+    event('step', retrieveStep);
     event('step', step);
     event('reasoning', { text: '第一段推理：' });
     await until(() => page.evaluate(`(() => {
       const el = document.querySelector('#ai-pending-reply details.ai-reasoning');
       return Boolean(el && !el.hidden);
     })()`), 'live reasoning disclosure visible before first delta');
+    const stepBounds = await page.evaluate(`(() => {
+      const card = document.querySelector('#ai-pending-reply .ai-steps-card');
+      const cardRect = card.getBoundingClientRect();
+      const listRect = card.querySelector('.ai-step-list').getBoundingClientRect();
+      const timeRect = card.querySelector('.ai-step-time').getBoundingClientRect();
+      const notes = [...card.querySelectorAll('.ai-step-note')].map(btn => {
+        const title = btn.querySelector('span:first-child');
+        return {
+          right: btn.getBoundingClientRect().right,
+          titleLines: title.getClientRects().length,
+        };
+      });
+      return {
+        scrollOverflow: card.scrollWidth - card.clientWidth,
+        listOverflow: listRect.right - cardRect.right,
+        timeOverflow: timeRect.right - cardRect.right,
+        maxNoteOverflow: Math.max(...notes.map(n => n.right - cardRect.right)),
+        maxTitleLines: Math.max(...notes.map(n => n.titleLines)),
+      };
+    })()`);
+    assert.ok(stepBounds.scrollOverflow <= 1, 'steps card must not scroll horizontally: ' + JSON.stringify(stepBounds));
+    assert.ok(stepBounds.listOverflow <= 1, 'step list must stay within card right edge: ' + JSON.stringify(stepBounds));
+    assert.ok(stepBounds.timeOverflow <= 1, 'step duration must stay within card right edge: ' + JSON.stringify(stepBounds));
+    assert.ok(stepBounds.maxNoteOverflow <= 1, 'step note rows must stay within card right edge: ' + JSON.stringify(stepBounds));
+    assert.equal(stepBounds.maxTitleLines, 1, 'step note titles must stay single-line: ' + JSON.stringify(stepBounds));
     assert.equal(await found(page, '原笔记'), false);
     await page.evaluate("document.querySelector('#ai-pending-reply details.ai-reasoning summary').click()");
     event('reasoning', { text: '第二段推理' });
@@ -694,11 +732,37 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     const doneStep = { ...step, status: 'done', durationMs: 20 };
     event('step', doneStep);
     event('done', { session: { ...sessionEntries[0], version: 2, turns: [...sessionEntries[0].turns,
-      { role: 'user', text: chat.body.message }, { role: 'assistant', text: '原笔记 `[N1]`\n\n后续', citations: [citation], steps: [doneStep] }] } });
+      { role: 'user', text: chat.body.message }, { role: 'assistant', text: '原笔记 `[N1]`\n\n后续', citations: [citation], steps: [retrieveStep, doneStep] }] } });
     stream.end();
     await until(() => page.evaluate("!document.getElementById('ai-pending-reply')"), 'done painted');
     assert.equal(await page.evaluate("document.querySelector('#ai-chat-thread details.ai-steps').open"), false);
     assert.equal(await page.evaluate("window.frozenReply.isConnected"), true);
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 2, mobile: true });
+    const historyStepBounds = await page.evaluate(`(() => {
+      const card = [...document.querySelectorAll('#ai-chat-thread details.ai-steps')].at(-1);
+      card.querySelector('summary').click();
+      const cardRect = card.getBoundingClientRect();
+      const listRect = card.querySelector('.ai-step-list').getBoundingClientRect();
+      const timeRect = card.querySelector('.ai-step-time').getBoundingClientRect();
+      const notes = [...card.querySelectorAll('.ai-step-note')].map(btn => ({
+        right: btn.getBoundingClientRect().right,
+        titleLines: btn.querySelector('span:first-child').getClientRects().length,
+      }));
+      card.querySelector('summary').click();
+      return {
+        scrollOverflow: card.scrollWidth - card.clientWidth,
+        listOverflow: listRect.right - cardRect.right,
+        timeOverflow: timeRect.right - cardRect.right,
+        maxNoteOverflow: Math.max(...notes.map(n => n.right - cardRect.right)),
+        maxTitleLines: Math.max(...notes.map(n => n.titleLines)),
+      };
+    })()`);
+    await page.send('Emulation.clearDeviceMetricsOverride');
+    assert.ok(historyStepBounds.scrollOverflow <= 1, 'mobile history steps card must not overflow: ' + JSON.stringify(historyStepBounds));
+    assert.ok(historyStepBounds.listOverflow <= 1, 'mobile history step list overflow: ' + JSON.stringify(historyStepBounds));
+    assert.ok(historyStepBounds.timeOverflow <= 1, 'mobile history step time overflow: ' + JSON.stringify(historyStepBounds));
+    assert.ok(historyStepBounds.maxNoteOverflow <= 1, 'mobile history step notes overflow: ' + JSON.stringify(historyStepBounds));
+    assert.equal(historyStepBounds.maxTitleLines, 1, 'mobile history step note titles must stay single-line: ' + JSON.stringify(historyStepBounds));
 
     const cachedB = { userId: 'B', etag: '"cached-b"', notes: [{ ...note(bodyB), revision: 1 }], deleted: [], savedAt: 1 };
     await page.evaluate(`import('/ux-helpers.js').then(({ notesCacheTransaction }) =>

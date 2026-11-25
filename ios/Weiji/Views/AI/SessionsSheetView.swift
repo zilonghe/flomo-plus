@@ -13,11 +13,17 @@ struct SessionsSheetView: View {
                         if let api = store.api { chat.select(session.id, api: api) }
                         dismiss()
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(session.title)
-                            Text(origin(session.origin)).font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(session.title).font(.body).foregroundStyle(Theme.ink).lineLimit(2)
+                            Text(origin(session.origin)).font(.caption).foregroundStyle(Theme.ink3)
                         }
-                    }.swipeActions {
+                        .padding(.vertical, 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Theme.paper)
+                    .swipeActions {
                         Button("删除", role: .destructive) {
                             if let api = store.api { Task { await chat.remove(session.id, api: api) } }
                         }
@@ -29,15 +35,17 @@ struct SessionsSheetView: View {
                         if let api = store.api { chat.refreshSessions(api: api, more: true) }
                     }
                 } else if chat.sessions.isEmpty {
-                    Text("暂无会话").foregroundStyle(.secondary)
+                    Text("暂无会话").foregroundStyle(Theme.ink3)
                 }
                 InlineError(message: chat.error)
             }
+            .weijiSheetBackground()
             .navigationTitle("会话")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .onAppear { if let api = store.api { chat.refreshSessions(api: api) } }
         }
+        .tint(Theme.active)
     }
 
     private func origin(_ value: String) -> String {

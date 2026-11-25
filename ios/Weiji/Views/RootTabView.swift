@@ -32,7 +32,6 @@ struct RootTabView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas.ignoresSafeArea())
-        .foregroundStyle(Theme.ink)
         .tint(Theme.active)
         .onChange(of: store.authScreenState) { _, state in
             if state == .needsLogin || state == .restoring { sidebar = false }
@@ -45,21 +44,21 @@ struct RootTabView: View {
     }
 
     private var tabBar: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             ForEach(AppStore.Tab.allCases, id: \.self) { tab in
                 let selected = store.tab == tab
                 Button {
                     store.tab = tab
                 } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: icon(tab)).font(.system(size: 19))
-                        Text(title(tab)).font(.caption)
+                    VStack(spacing: 2) {
+                        Image(systemName: icon(tab)).font(.system(size: 17, weight: selected ? .semibold : .regular))
+                        Text(title(tab)).font(.system(size: 10, weight: selected ? .semibold : .medium))
                     }
-                    .foregroundStyle(selected ? Color.white : Theme.ink)
-                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .foregroundStyle(selected ? Theme.active : Theme.ink3)
+                    .frame(maxWidth: .infinity, minHeight: 46)
                     .background {
                         if selected {
-                            Capsule().fill(Theme.deepGreen)
+                            Capsule().fill(Theme.accentSoft)
                                 .matchedGeometryEffect(id: "selected-tab", in: tabSelection)
                         }
                     }
@@ -71,12 +70,26 @@ struct RootTabView: View {
             }
         }
         .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: store.tab)
-        .padding(5)
-        .frame(maxWidth: 420)
-        .weijiGlassCapsule(interactive: false)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 5)
+        .padding(4)
+        .background {
+            Capsule().fill(Theme.paper)
+                .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
+        }
+        .overlay { Capsule().strokeBorder(Theme.hairline).allowsHitTesting(false) }
+        .frame(maxWidth: 360)
+        .padding(.horizontal, 28)
+        .padding(.top, 6)
+        .padding(.bottom, 4)
         .frame(maxWidth: .infinity)
+        .background {
+            // Fades scrolled content out under the floating bar instead of letting it peek around the capsule.
+            LinearGradient(stops: [.init(color: Theme.canvas.opacity(0), location: 0),
+                                   .init(color: Theme.canvas, location: 0.45)],
+                           startPoint: .top, endPoint: .bottom)
+                .padding(.top, -18)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+        }
     }
 
     private func icon(_ tab: AppStore.Tab) -> String {

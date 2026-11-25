@@ -29,10 +29,10 @@ struct AIChatView: View {
                                 writing = false
                                 Task { await store.openNote(id) }
                             } label: {
-                                Text(store.notesById[id].map { String($0.body.prefix(25)) } ?? "引用笔记")
-                                    .lineLimit(1).font(.caption.weight(.medium))
+                                Chip(text: store.notesById[id].map { String($0.body.prefix(25)) } ?? "引用笔记",
+                                     symbol: "pin.fill", selected: true)
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.plain)
                             .accessibilityIdentifier("ai-pin-chip-" + id)
                             .contextMenu { Button("移除引用", role: .destructive) { chat.togglePin(id) } }
                         }
@@ -44,8 +44,16 @@ struct AIChatView: View {
                 .scrollIndicators(.hidden)
                 .padding(.bottom, 8)
             }
-            if let insight = chat.insight { Label(insight.title, systemImage: "chart.bar").font(.footnote).padding(8) }
-            messages(chat)
+            if let insight = chat.insight {
+                Label(insight.title, systemImage: "chart.bar").font(.footnote.weight(.medium)).foregroundStyle(Theme.ink2)
+                    .lineLimit(1).padding(.horizontal, 16).padding(.bottom, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if chat.session == nil && chat.pendingQuestion.isEmpty && !chat.sending && !chat.loadingSession {
+                emptyState(chat)
+            } else {
+                messages(chat)
+            }
             InlineError(message: chat.error).padding(.horizontal, 16)
             composer(chat)
         }
@@ -60,57 +68,77 @@ struct AIChatView: View {
 
     private func composer(_ chat: AIChatStore) -> some View {
         @Bindable var chat = chat
-        return VStack(alignment: .leading, spacing: 6) {
-            modelControls
-                .padding(.horizontal, 6)
-            HStack(alignment: .bottom, spacing: 4) {
+        let canSend = store.api != nil && !chat.loadingSession
+            && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return VStack(alignment: .leading, spacing: 4) {
+            TextField("问一问你的笔记", text: $chat.draft, axis: .vertical)
+                .lineLimit(1...6)
+                .focused($writing)
+                .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
+                .accessibilityIdentifier("ai-input-field")
+            HStack(spacing: 4) {
                 IconAction(symbol: "at", label: "置顶笔记", id: "ai-pin-picker-button") { showPins = true }
-                TextField("问一问你的笔记", text: $chat.draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .focused($writing)
-                    .padding(.vertical, 11)
-                    .accessibilityIdentifier("ai-input-field")
+                    .foregroundStyle(Theme.ink2)
+                modelControls
+                Spacer(minLength: 4)
                 if chat.sending {
-                    IconAction(symbol: "stop.circle.fill", label: "停止", id: "ai-stop-button") {
+                    composerButton(symbol: "stop.fill", label: "停止", id: "ai-stop-button", enabled: true) {
                         sendFeedback += 1
                         chat.stop()
                     }
-                    .foregroundStyle(Theme.active)
                 } else {
-                    IconAction(symbol: "arrow.up.circle.fill", label: "发送", id: "ai-send-button") {
+                    composerButton(symbol: "arrow.up", label: "发送", id: "ai-send-button", enabled: canSend) {
                         guard let api = store.api else { return }
                         writing = false
                         sendFeedback += 1
                         chat.send(api: api, options: store.options, profile: store.insights)
                     }
-                    .foregroundStyle(Theme.active)
-                    .disabled(store.api == nil || chat.loadingSession || chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .padding(4)
-            .weijiGlassCard(cornerRadius: 25)
+            .padding(.leading, 2).padding(.trailing, 8).padding(.bottom, 6)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 22).fill(Theme.paper)
+                .shadow(color: .black.opacity(0.06), radius: 14, y: 4)
+        }
+        .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(Theme.hairline).allowsHitTesting(false) }
+        .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 8)
+    }
+
+    private func composerButton(symbol: String, label: String, id: String, enabled: Bool,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(Theme.accent.opacity(enabled ? 1 : 0.3), in: Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(id)
     }
 
     private var modelControls: some View {
         let model = store.selectedModelMeta
         let gatewayModel = store.selectedGatewayModel
         let vendor = ModelVendor(model?.vendor ?? (store.options.provider == .openai ? "openai" : "other"))
-        return HStack(spacing: 8) {
+        return HStack(spacing: 4) {
             Button {
                 if store.options.provider == .codex && !store.gatewayModelMeta.isEmpty { showModels = true }
                 else { showAISettings = true }
             } label: {
-                HStack(spacing: 6) {
-                    vendor.badge
+                HStack(spacing: 5) {
+                    vendor.badge.font(.caption2)
                     Text(model?.label ?? store.options.provider.label).lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.ink3)
                 }
-                .padding(.horizontal, 11).frame(minHeight: 34)
+                .padding(.horizontal, 10).frame(minHeight: 30)
+                .background(Theme.subtle, in: Capsule())
+                .frame(minHeight: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .weijiGlassCapsule()
             .accessibilityLabel("模型：\(model?.label ?? store.options.provider.label)")
 
             if let gatewayModel, !gatewayModel.selectableEfforts.isEmpty {
@@ -121,18 +149,20 @@ struct AIChatView: View {
                     }
                 } label: {
                     Label(effortLabel(store.options.reasoningEffort), systemImage: "brain")
-                        .padding(.horizontal, 11).frame(minHeight: 34)
+                        .padding(.horizontal, 10).frame(minHeight: 30)
+                        .background(Theme.subtle, in: Capsule())
+                        .frame(minHeight: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .weijiGlassCapsule()
                 .accessibilityLabel("思考档位：\(effortLabel(store.options.reasoningEffort))")
             } else if let effort = gatewayModel?.fixedEffort, gatewayModel?.thinking == true {
                 Label(effortLabel(effort), systemImage: "brain")
-                    .foregroundStyle(.secondary).padding(.horizontal, 11).frame(minHeight: 34)
-                    .weijiGlassCapsule(interactive: false)
+                    .foregroundStyle(Theme.ink3).padding(.horizontal, 6)
                     .accessibilityLabel("固定思考档位：\(effortLabel(effort))")
             }
-        }.font(.caption.weight(.semibold))
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(Theme.ink2)
     }
 
     @State private var nearBottom = true
@@ -151,12 +181,8 @@ struct AIChatView: View {
                                 reply(turn.text, citations: turn.citations ?? [])
                             }
                         }
-                    } else if chat.pendingQuestion.isEmpty {
-                        if chat.loadingSession { ProgressView().frame(maxWidth: .infinity).padding(24) }
-                        else {
-                            Text("和你的笔记聊聊").font(.title3.weight(.semibold)).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity).padding(.top, 46)
-                        }
+                    } else if chat.pendingQuestion.isEmpty && chat.loadingSession {
+                        ProgressView().frame(maxWidth: .infinity).padding(24)
                     }
                     if !chat.pendingQuestion.isEmpty { question(chat.pendingQuestion, insight: false) }
                     if chat.sending && !chat.pendingQuestion.isEmpty {
@@ -165,7 +191,7 @@ struct AIChatView: View {
                     }
                     if !chat.streamedText.isEmpty { reply(chat.streamedText, citations: chat.liveCitations) }
                     Color.clear.frame(height: 1).id("chat-bottom").accessibilityHidden(true)
-                }.padding(.horizontal, 16).padding(.vertical, 10)
+                }.padding(.horizontal, 18).padding(.vertical, 12)
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom, for: .alignment)
@@ -187,8 +213,17 @@ struct AIChatView: View {
             .overlay(alignment: .bottomTrailing) {
                 if !nearBottom {
                     Button { proxy.scrollTo("chat-bottom", anchor: .bottom) } label: {
-                        Image(systemName: "arrow.down.circle.fill").font(.title2).padding(10)
-                    }.accessibilityLabel("回到最新消息")
+                        Image(systemName: "arrow.down").font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Theme.ink2)
+                            .frame(width: 36, height: 36)
+                            .background(Theme.paper, in: Circle())
+                            .overlay { Circle().strokeBorder(Theme.hairline) }
+                            .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 12).padding(.bottom, 4)
+                    .accessibilityLabel("回到最新消息")
                 }
             }
         }
@@ -197,12 +232,53 @@ struct AIChatView: View {
     private func question(_ text: String, insight: Bool) -> some View {
         let content = insight ? text.components(separatedBy: "\n\n[追问]\n").last ?? text : text
         return Text(content).textSelection(.enabled)
-            .padding(12).background(Theme.green.opacity(0.13), in: .rect(cornerRadius: 12))
+            .font(.callout).foregroundStyle(Theme.ink).lineSpacing(3)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Theme.accentSoft, in: .rect(cornerRadius: 18))
+            .frame(maxWidth: 300, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.top, 6)
     }
 
     private func reply(_ text: String, citations: [Citation]) -> some View {
-        MarkdownBlockView(text: text, citations: citations, openCitation: openNote).noteCard()
+        MarkdownBlockView(text: text, citations: citations, openCitation: openNote)
+            .padding(.vertical, 2)
+    }
+
+    private static let starters = ["最近我在关注什么？", "帮我回顾这周的读书摘录", "我的笔记里有哪些反复出现的想法？"]
+
+    private func emptyState(_ chat: AIChatStore) -> some View {
+        VStack(spacing: 18) {
+            Spacer(minLength: 0)
+            Image(systemName: "sparkles")
+                .font(.system(size: 24, weight: .medium)).foregroundStyle(Theme.active)
+                .frame(width: 56, height: 56)
+                .background(Theme.accentSoft, in: Circle())
+                .accessibilityHidden(true)
+            Text("和你的笔记聊聊").font(.title3.weight(.semibold)).foregroundStyle(Theme.ink)
+            VStack(spacing: 8) {
+                ForEach(Self.starters, id: \.self) { prompt in
+                    Button {
+                        chat.draft = prompt
+                        guard let api = store.api else { writing = true; return }
+                        sendFeedback += 1
+                        chat.send(api: api, options: store.options, profile: store.insights)
+                    } label: {
+                        Text(prompt).font(.subheadline).foregroundStyle(Theme.ink2)
+                            .padding(.horizontal, 14).frame(minHeight: 38)
+                            .background(Theme.paper, in: Capsule())
+                            .overlay { Capsule().strokeBorder(Theme.hairline) }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 6)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .contentShape(Rectangle())
+        .onTapGesture { writing = false }
     }
 
     private func openNote(_ id: String) {
@@ -228,19 +304,19 @@ private struct StepsTimelineView: View {
                     HStack(alignment: .top, spacing: 9) {
                         VStack(spacing: 4) {
                             Image(systemName: step.status == "running" ? "circle.dotted" : "checkmark.circle")
-                                .foregroundStyle(step.status == "running" ? Theme.active : .secondary)
+                                .foregroundStyle(step.status == "running" ? Theme.active : Theme.ink3)
                             if step.id != steps.last?.id {
                                 Rectangle().fill(Theme.line).frame(width: 1)
                             }
                         }.frame(width: 16).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
-                                Text(step.label).fontWeight(.medium)
+                                Text(step.label).fontWeight(.medium).foregroundStyle(Theme.ink)
                                 Spacer(minLength: 0)
-                                if let ms = step.durationMs { Text(duration(ms)).monospacedDigit().foregroundStyle(.secondary) }
+                                if let ms = step.durationMs { Text(duration(ms)).monospacedDigit().foregroundStyle(Theme.ink3) }
                             }
                             if let detail = step.detail, !detail.isEmpty {
-                                Text(detail).foregroundStyle(.secondary)
+                                Text(detail).foregroundStyle(Theme.ink2)
                             }
                             ForEach(step.items ?? []) { item in
                                 Button {
@@ -250,7 +326,7 @@ private struct StepsTimelineView: View {
                                         Label("[\(item.ref)] \(item.title)", systemImage: "arrow.up.right")
                                             .fontWeight(.medium).foregroundStyle(Theme.active).lineLimit(1)
                                         if !item.excerpt.isEmpty {
-                                            Text(item.excerpt).foregroundStyle(.secondary).lineLimit(1)
+                                            Text(item.excerpt).foregroundStyle(Theme.ink2).lineLimit(1)
                                         }
                                     }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
                                 }
@@ -262,7 +338,8 @@ private struct StepsTimelineView: View {
                 }
                 if !reasoning.isEmpty {
                     DisclosureGroup("思考过程", isExpanded: $showReasoning) {
-                        Text(reasoning).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                        Text(reasoning).font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.ink2)
+                            .lineSpacing(2)
                             .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 5)
                     }
                 }
@@ -282,11 +359,12 @@ private struct StepsTimelineView: View {
                 Text(running ? (steps.last(where: { $0.status == "running" })?.label ?? status ?? "正在处理") : summary)
                     .contentTransition(reduceMotion ? .identity : .opacity)
             }
-            .font(.caption.weight(.semibold))
+            .font(.caption.weight(.medium))
+            .foregroundStyle(Theme.ink2)
         }
-        .tint(Theme.active)
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .weijiGlassCard(cornerRadius: 14)
+        .tint(Theme.ink3)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Theme.subtle.opacity(0.6), in: .rect(cornerRadius: 12))
     }
 
     private var summary: String {
@@ -329,7 +407,7 @@ private enum ModelVendor: String, CaseIterable, Identifiable {
         case .gemini: (symbol, color) = ("sparkles", .indigo)
         case .openai: (symbol, color) = ("cpu", Theme.active)
         case .claude: (symbol, color) = ("sun.max.fill", .orange)
-        case .other: (symbol, color) = ("circle.hexagongrid.fill", .secondary)
+        case .other: (symbol, color) = ("circle.hexagongrid.fill", Theme.ink2)
         }
         return Image(systemName: symbol).foregroundStyle(color).accessibilityHidden(true)
     }
@@ -366,6 +444,7 @@ private struct ModelPickerSheet: View {
                     ContentUnavailableView.search(text: query)
                 }
             }
+            .weijiSheetBackground()
             .searchable(text: $query, prompt: "搜索模型")
             .navigationTitle("选择模型")
             .navigationBarTitleDisplayMode(.inline)
@@ -380,11 +459,16 @@ private struct ModelPickerSheet: View {
             store.setModel(selection)
             dismiss()
         } label: {
-            HStack(spacing: 10) {
-                vendor.badge.frame(width: 22)
-                Text(label).foregroundStyle(.primary)
+            HStack(spacing: 12) {
+                vendor.badge.font(.footnote)
+                    .frame(width: 30, height: 30)
+                    .background(Theme.subtle, in: .rect(cornerRadius: 8))
+                Text(label).font(.body.weight(store.options.model == selection ? .semibold : .regular))
+                    .foregroundStyle(Theme.ink)
                 if thinking {
-                    Image(systemName: "brain").font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "brain").font(.caption2).foregroundStyle(Theme.ink3)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Theme.subtle, in: Capsule())
                         .accessibilityLabel("支持思考")
                 }
                 Spacer()
@@ -393,10 +477,11 @@ private struct ModelPickerSheet: View {
                         .accessibilityLabel("已选")
                 }
             }
-            .padding(.vertical, 3)
+            .padding(.vertical, 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowBackground(Theme.paper)
     }
 }
 
@@ -419,9 +504,10 @@ private struct AISettingsView: View {
                     TextField("模型", text: Binding(get: { store.options.model }, set: store.setModel))
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
-                Toggle("使用个人画像", isOn: $chat.useProfile)
+                Toggle("使用个人画像", isOn: $chat.useProfile).tint(Theme.accent)
                 InlineError(message: error)
             }
+            .weijiSheetBackground()
             .navigationTitle("AI 设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -434,6 +520,8 @@ private struct AISettingsView: View {
             }
             .onAppear { apiKey = store.options.apiKey }
         }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 

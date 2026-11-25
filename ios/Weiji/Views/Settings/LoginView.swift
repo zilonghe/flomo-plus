@@ -39,8 +39,7 @@ struct LoginView: View {
                             .accessibilityLabel("服务器地址")
                             SecureField("手动访问令牌", text: $draft.token)
                             Button("使用令牌连接", action: connect)
-                                .buttonStyle(.borderedProminent)
-                                .frame(maxWidth: .infinity)
+                                .buttonStyle(.weijiPrimaryWide)
                         }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -50,19 +49,16 @@ struct LoginView: View {
                 }
                 .disabled(loginBusy || store.signingOut)
                 .padding(24)
+                .noteCard(padding: 0, cornerRadius: 28)
                 .frame(maxWidth: 396)
-                .weijiGlassCard(cornerRadius: 30)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 18)
                 .frame(maxWidth: .infinity, minHeight: geo.size.height)
             }
             .scrollDismissesKeyboard(.interactively)
         }
-        .background {
-            RadialGradient(colors: [Theme.green.opacity(0.20), Theme.canvas],
-                           center: .init(x: 0.27, y: 0.29), startRadius: 0, endRadius: 420)
-                .ignoresSafeArea()
-        }
+        .background(Theme.canvas.ignoresSafeArea())
+        .tint(Theme.active)
         .task(id: "\(origin ?? "")|\(retry)") { await discoverProviders() }
     }
 
@@ -71,15 +67,8 @@ struct LoginView: View {
             if providers.authMode == "oauth" {
                 VStack(spacing: 10) {
                     ForEach(providers.providers) { provider in
-                        Button {
-                            login(provider.id)
-                        } label: {
-                            Text("用 \(provider.name) 登录")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, minHeight: 48)
-                                .weijiGlassCapsule()
-                        }
-                        .buttonStyle(.plain)
+                        Button("用 \(provider.name) 登录") { login(provider.id) }
+                            .buttonStyle(.weijiPrimaryWide)
                     }
                     if loginBusy { ProgressView().accessibilityLabel("正在登录") }
                 }
@@ -87,7 +76,7 @@ struct LoginView: View {
         } else if let providerError {
             VStack(spacing: 8) {
                 InlineError(message: providerError)
-                Button("重试") { retry += 1 }.buttonStyle(.bordered)
+                Button("重试") { retry += 1 }.buttonStyle(.weijiSecondary)
             }
         } else if origin != nil {
             ProgressView().accessibilityLabel("正在载入登录方式")
@@ -152,7 +141,7 @@ struct WeijiLoginMark: View {
                 .font(.system(size: 25, weight: .semibold))
                 .foregroundStyle(Theme.active)
                 .frame(width: 58, height: 58)
-                .weijiGlassCircle(tint: Theme.green.opacity(0.32), interactive: false)
+                .background(Theme.accentSoft, in: .rect(cornerRadius: 18))
                 .accessibilityHidden(true)
             Text("微记").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
         }

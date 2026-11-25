@@ -18,18 +18,19 @@ struct InsightReportSheet: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("删除这份报告？").font(.subheadline)
                                 HStack {
-                                    Button("取消") { confirmDelete = false }
+                                    Button("取消") { confirmDelete = false }.buttonStyle(.weijiSecondary)
                                     Spacer()
                                     Button("确认删除", role: .destructive) {
                                         Task { await insights.deleteReport(report.id, api: api) }
                                     }
+                                    .buttonStyle(.borderedProminent).tint(.red)
                                     .accessibilityIdentifier("insight-report-confirm-delete")
-                                }.buttonStyle(.bordered)
+                                }
                             }.noteCard()
                             .disabled(insights.deletingReport)
                         } else {
                             Button("删除报告", role: .destructive) { confirmDelete = true }
-                                .font(.subheadline)
+                                .font(.footnote.weight(.medium))
                                 .accessibilityIdentifier("insight-report-delete-button")
                         }
                     }
@@ -42,7 +43,7 @@ struct InsightReportSheet: View {
                             if let note = await store.resolveNote(id) { cited = .init(note: note) }
                         }
                     }
-                }.padding(16)
+                }.padding(.horizontal, 20).padding(.vertical, 16)
             }
             .background(Theme.canvas)
             .navigationTitle(insights.report?.title ?? insights.selectedLens?.name ?? "洞察")
@@ -71,6 +72,7 @@ struct InsightReportSheet: View {
                 NoteDetailSheet(store: store, note: item.note) { askCited = item.note }
             }
         }
+        .tint(Theme.active)
         .interactiveDismissDisabled(insights.deletingReport)
     }
 }

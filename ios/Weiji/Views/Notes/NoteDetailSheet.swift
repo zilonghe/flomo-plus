@@ -18,11 +18,19 @@ struct NoteDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(current.reading?.bookTitle ?? String(current.createdAt.prefix(10)))
-                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if let book = current.reading?.bookTitle {
+                            Image(systemName: "book.closed").accessibilityHidden(true)
+                            Text(book).lineLimit(1)
+                            Text("·")
+                        }
+                        Text(String(current.createdAt.prefix(10))).monospacedDigit()
+                    }
+                    .font(.caption.weight(.medium)).foregroundStyle(Theme.ink3)
                     if draft != nil {
                         TextField("笔记正文", text: Binding(get: { draft?.body ?? "" }, set: { draft?.body = $0 }), axis: .vertical)
-                            .lineLimit(5...).focused($editing)
+                            .lineLimit(5...).lineSpacing(4).focused($editing)
+                            .noteCard(padding: 14)
                             .accessibilityIdentifier("detail-body-editor")
                         if draft?.conflict == true {
                             if let latest = conflictServerNote {
@@ -36,11 +44,11 @@ struct NoteDetailSheet: View {
                                     error = nil
                                 }
                             } else {
-                                Text("这条笔记已在云端删除。").foregroundStyle(.secondary)
+                                Text("这条笔记已在云端删除。").foregroundStyle(Theme.ink2)
                             }
                         }
                     } else {
-                        Text(current.body).font(.body).textSelection(.enabled)
+                        Text(current.body).font(.body).lineSpacing(5).foregroundStyle(Theme.ink).textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Button {
                             dismiss()
@@ -48,9 +56,12 @@ struct NoteDetailSheet: View {
                         } label: {
                             Label("与 AI 聊这条", systemImage: "bubble.left")
                         }
+                        .buttonStyle(.weijiPrimary)
                         .accessibilityIdentifier("detail-ask-ai-button")
                         .disabled(store.api == nil)
+                        .padding(.top, 10)
                         Button("删除笔记", role: .destructive) { confirmingDelete = true }
+                            .font(.footnote.weight(.medium))
                             .accessibilityIdentifier("detail-delete-button")
                             .disabled(saving || store.api == nil || store.notesById[note.id] == nil)
                     }
@@ -84,6 +95,7 @@ struct NoteDetailSheet: View {
                 Button("删除", role: .destructive, action: delete)
             }
         }
+        .tint(Theme.active)
         .interactiveDismissDisabled(draft != nil || saving)
     }
 

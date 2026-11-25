@@ -99,7 +99,7 @@ struct ConnectionSettingsView: View {
                             }
                             if let stats = run.stats {
                                 Text("新增 \(stats.created) · 更新 \(stats.updated) · 冲突 \(stats.conflicts)")
-                                    .font(.subheadline).foregroundStyle(.secondary)
+                                    .font(.subheadline).foregroundStyle(Theme.ink2)
                             }
                             InlineError(message: run.ok ? run.indexWarning : (run.error ?? "同步失败"))
                         }
@@ -109,11 +109,13 @@ struct ConnectionSettingsView: View {
                     }
                 }
             }
+            .weijiSheetBackground()
             .navigationTitle("连接设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
             }
+            .tint(Theme.active)
             .task(id: origin) { await discoverProviders() }
             .task(id: store.api.map(ObjectIdentifier.init)) {
                 obsidian = nil

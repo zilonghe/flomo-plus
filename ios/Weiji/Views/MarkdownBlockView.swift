@@ -7,7 +7,7 @@ struct MarkdownBlockView: View {
 
     var body: some View {
         let validMap = Self.validCitations(citations)
-        let rendered = blocks.map { block in
+        let rendered = Self.blocks(text).map { block in
             (block, block.kind == .code ? nil : Self.buildCitedAttributedString(block.text, validMap: validMap))
         }
         let shown = Set<String>(rendered.compactMap { $0.1 }.flatMap { rich in
@@ -21,24 +21,35 @@ struct MarkdownBlockView: View {
             }
         })
         let allowedIDs = Set(validMap.values)
-        return VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(rendered.enumerated()), id: \.offset) { _, row in
+        return VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(rendered.enumerated()), id: \.offset) { index, row in
                 let (block, rich) = row
+                let content = rich ?? AttributedString(block.text)
                 switch block.kind {
                 case .code:
                     ScrollView(.horizontal) {
                         Text(block.text).font(.system(.callout, design: .monospaced))
-                            .padding(10).textSelection(.enabled)
-                    }.background(Theme.line.opacity(0.45), in: .rect(cornerRadius: 8))
-                case .heading:
-                    Text(rich ?? AttributedString(block.text)).font(.headline)
+                            .padding(12).textSelection(.enabled)
+                    }.background(Theme.subtle, in: .rect(cornerRadius: 10))
+                case .heading(let level):
+                    Text(content)
+                        .font(level == 1 ? .title3.weight(.bold) : level == 2 ? .headline : .callout.weight(.semibold))
+                        .foregroundStyle(Theme.ink)
+                        .padding(.top, index == 0 ? 0 : level == 1 ? 12 : level == 2 ? 8 : 5)
+                        .accessibilityAddTraits(.isHeader)
+                case .rule:
+                    Divider().padding(.vertical, 6)
                 case .quote:
-                    HStack(alignment: .top, spacing: 8) {
-                        Rectangle().fill(Theme.green).frame(width: 2)
-                        Text(rich ?? AttributedString(block.text)).foregroundStyle(.secondary)
+                    HStack(alignment: .top, spacing: 10) {
+                        RoundedRectangle(cornerRadius: 1).fill(Theme.green.opacity(0.6)).frame(width: 3)
+                        Text(content).foregroundStyle(Theme.ink2)
                     }.fixedSize(horizontal: false, vertical: true)
+                case .bullet(let level):
+                    listRow(level: level, marker: Text(level == 0 ? "•" : "◦").foregroundStyle(Theme.ink3), content: content)
+                case .ordered(let number, let level):
+                    listRow(level: level, marker: Text(number + ".").monospacedDigit().foregroundStyle(Theme.ink2), content: content)
                 case .paragraph:
-                    Text(rich ?? AttributedString(block.text))
+                    Text(content)
                 }
             }
             let cited = references(shown: shown, validMap: validMap)
@@ -49,29 +60,36 @@ struct MarkdownBlockView: View {
                             Button {
                                 if let id = validMap[citation.ref] { openCitation(id) }
                             } label: {
-                                VStack(alignment: .leading, spacing: 6) {
+                                VStack(alignment: .leading, spacing: 5) {
                                     HStack(spacing: 6) {
-                                        Text("[\(citation.ref)]").font(.caption2.weight(.semibold))
-                                            .padding(.horizontal, 6).padding(.vertical, 3)
+                                        Text(citation.ref).font(.caption2.weight(.semibold)).monospacedDigit()
                                             .foregroundStyle(Theme.active)
-                                            .background(Theme.green.opacity(0.13), in: Capsule())
+                                            .padding(.horizontal, 5).padding(.vertical, 2)
+                                            .background(Theme.accentSoft, in: .rect(cornerRadius: 5))
                                         Text(citation.bookTitle ?? citation.createdAt.map { String($0.prefix(10)) } ?? "笔记")
-                                            .font(.caption.weight(.medium)).lineLimit(1)
+                                            .font(.caption.weight(.medium)).foregroundStyle(Theme.ink).lineLimit(1)
                                         Spacer(minLength: 0)
-                                        Image(systemName: "arrow.up.right").font(.caption2).foregroundStyle(.secondary)
                                     }
-                                    Text(citation.excerpt).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    Text(citation.excerpt).font(.caption).foregroundStyle(Theme.ink2).lineLimit(2)
+                                        .frame(maxWidth: .infinity, alignment: .topLeading)
                                 }
-                                .padding(9).frame(width: 200, alignment: .leading)
-                                .background(Theme.green.opacity(0.06), in: .rect(cornerRadius: 10))
+                                .padding(10).frame(width: 210, height: 72, alignment: .topLeading)
+                                .background(Theme.paper, in: .rect(cornerRadius: 12))
+                                .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.hairline) }
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("citation-pill-" + citation.ref)
                         }
                     }
-                }.scrollIndicators(.hidden)
+                    .padding(.vertical, 2)
+                }
+                .scrollClipDisabled()
+                .scrollIndicators(.hidden)
+                .padding(.top, 4)
             }
         }
+        .lineSpacing(4)
+        .foregroundStyle(Theme.ink)
         .frame(maxWidth: .infinity, alignment: .leading)
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme?.lowercased() == Self.citationScheme else { return .systemAction }
@@ -127,39 +145,69 @@ struct MarkdownBlockView: View {
         for (range, url) in links {
             rich[range].link = url
             rich[range].foregroundColor = Theme.active
-            rich[range].backgroundColor = Theme.green.opacity(0.13)
+            rich[range].backgroundColor = Theme.accentSoft
+            rich[range].font = .footnote.weight(.semibold)
         }
         return rich
     }
 
-    private struct Block {
-        enum Kind { case heading, quote, code, paragraph }
+    struct Block: Equatable {
+        enum Kind: Equatable {
+            case heading(Int), quote, code, rule, paragraph
+            case bullet(level: Int)
+            case ordered(String, level: Int)
+        }
         let kind: Kind
         let text: String
     }
 
-    private var blocks: [Block] {
+    private static let orderedPattern = try! NSRegularExpression(pattern: #"^([0-9]{1,3})[.)] +(.*)$"#)
+
+    static func blocks(_ text: String) -> [Block] {
         var result: [Block] = []
         var code: [String]? = nil
         for piece in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(piece)
-            if line.hasPrefix("```") {
+            let body = line.drop { $0 == " " || $0 == "\t" }
+            if body.hasPrefix("```") {
                 if let lines = code { result.append(Block(kind: .code, text: lines.joined(separator: "\n"))); code = nil }
                 else { code = [] }
-            } else if code != nil {
-                code?.append(line)
-            } else if line.hasPrefix("#"), let space = line.firstIndex(of: " "),
-                      line[..<space].allSatisfy({ $0 == "#" }) {
-                result.append(Block(kind: .heading, text: String(line[line.index(after: space)...])))
-            } else if line.hasPrefix("> ") {
-                result.append(Block(kind: .quote, text: String(line.dropFirst(2))))
-            } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                result.append(Block(kind: .paragraph, text: "• " + line.dropFirst(2)))
-            } else if !line.isEmpty {
-                result.append(Block(kind: .paragraph, text: line))
+                continue
+            }
+            if code != nil { code?.append(line); continue }
+            let trimmed = body.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            // Two spaces (or a tab) per nesting level, as models usually emit.
+            let indent = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 2 : 1) }
+            let level = min(indent / 2, 3)
+            let compact = trimmed.filter { $0 != " " }
+            if compact.count >= 3, let mark = compact.first, "-*_".contains(mark), compact.allSatisfy({ $0 == mark }) {
+                result.append(Block(kind: .rule, text: ""))
+            } else if indent < 4, trimmed.hasPrefix("#"), let space = trimmed.firstIndex(of: " "),
+                      trimmed[..<space].allSatisfy({ $0 == "#" }) {
+                let hashes = trimmed.distance(from: trimmed.startIndex, to: space)
+                result.append(Block(kind: .heading(min(hashes, 3)),
+                                    text: trimmed[space...].trimmingCharacters(in: .whitespaces)))
+            } else if trimmed.hasPrefix(">") {
+                result.append(Block(kind: .quote, text: String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)))
+            } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
+                result.append(Block(kind: .bullet(level: level), text: String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)))
+            } else if let match = orderedPattern.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+                      let number = Range(match.range(at: 1), in: trimmed), let rest = Range(match.range(at: 2), in: trimmed) {
+                result.append(Block(kind: .ordered(String(trimmed[number]), level: level), text: String(trimmed[rest])))
+            } else {
+                result.append(Block(kind: .paragraph, text: trimmed))
             }
         }
         if let code { result.append(Block(kind: .code, text: code.joined(separator: "\n"))) }
         return result
+    }
+
+    private func listRow(level: Int, marker: Text, content: AttributedString) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            marker.frame(minWidth: 14, alignment: .trailing).accessibilityHidden(true)
+            Text(content).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.leading, CGFloat(level) * 18)
     }
 }
