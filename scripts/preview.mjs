@@ -148,19 +148,29 @@ const server = createServer(async (incoming, outgoing) => {
       await response.body?.cancel();
       outgoing.end();
     } else if (response.body) Readable.fromWeb(response.body).on("error", err => {
-      if (!controller.signal.aborted) console.error("Preview stream error", { path: incoming.url?.split("?")[0], name: err?.name, code: err?.code });
+      if (!controller.signal.aborted) console.error("Preview stream error", { route: routeBucket(incoming.url), name: err?.name, code: err?.code });
       outgoing.destroy();
     }).pipe(outgoing);
     else outgoing.end();
   } catch (error) {
     if (!outgoing.destroyed) {
-      console.error("Preview handler failed", { method: incoming.method, path: incoming.url?.split("?")[0], name: error?.name, code: error?.code });
+      console.error("Preview handler failed", { method: incoming.method, route: routeBucket(incoming.url), name: error?.name, code: error?.code });
     }
     if (outgoing.headersSent) outgoing.destroy();
     else if (auth) outgoing.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ error: "暂时无法完成操作，请稍后重试。" }));
     else outgoing.writeHead(500).end("Local preview error");
   }
 });
+
+function routeBucket(rawUrl) {
+  const path = String(rawUrl || "").split("?")[0];
+  if (path.startsWith("/api/ai/")) return "/api/ai/*";
+  if (path.startsWith("/api/insights/")) return "/api/insights/*";
+  if (path.startsWith("/api/notes")) return "/api/notes/*";
+  if (path.startsWith("/api/auth/")) return "/api/auth/*";
+  if (path.startsWith("/api/")) return "/api/*";
+  return "static";
+}
 
 const portIndex = process.argv.indexOf("--port");
 const port = Number(process.env.PORT || (portIndex >= 0 && process.argv[portIndex + 1]) || 5173);

@@ -81,13 +81,13 @@ final class ThemeManager {
 }
 
 enum Theme {
-    /// Strict shared typography scale across all tabs so font sizes never drift.
+    /// Strict shared typography scale across all tabs using Dynamic Type semantic styles.
     enum TypeScale {
-        static let pageTitle = Font.system(size: 24, weight: .bold)
-        static let sectionTitle = Font.system(size: 13, weight: .semibold)
-        static let itemTitle = Font.system(size: 16, weight: .semibold)
-        static let body = Font.system(size: 15, weight: .regular)
-        static let meta = Font.system(size: 13, weight: .regular)
+        static let pageTitle = Font.system(.title2, weight: .bold)
+        static let sectionTitle = Font.system(.footnote, weight: .semibold)
+        static let itemTitle = Font.system(.headline)
+        static let body = Font.system(.subheadline)
+        static let meta = Font.system(.footnote)
     }
 
     static var active: Color { ThemeManager.shared.accent.active }

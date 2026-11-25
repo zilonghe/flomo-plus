@@ -835,14 +835,19 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
   { timeout: 30_000 }, async t => {
     assert.ok(chrome, 'Chromium binary is required (set WEIJI_TEST_CHROME)');
     const tab = await headless(t);
+    const thirdId = '33333333-3333-4333-8333-333333333333';
     const noteA = { ...note('随机漫步起点笔记 A，用于验证上一跳卡片展示和返回导航。', id), revision: 1 };
-    const noteB = { ...note('随机漫步下一跳笔记 B，用于验证聚焦切换和连线绘制。', anotherId), revision: 1 };
-    const noteMap = new Map([[noteA.id, noteA], [noteB.id, noteB]]);
+    const noteB = { ...note('随机漫步中继笔记 B，用于验证聚焦切换和同步删除回退。', anotherId), revision: 1 };
+    const noteC = { ...note('随机漫步终点笔记 C，用于验证三跳历史清理。', thirdId), revision: 1 };
+    const noteMap = new Map([[noteA.id, noteA], [noteB.id, noteB], [noteC.id, noteC]]);
+    let liveNotes = [noteA, noteB, noteC];
+    let deletedNotes = [];
+    const nextInCycle = new Map([[noteA.id, noteB], [noteB.id, noteC], [noteC.id, noteA]]);
     const json = (res, value, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(value));
     const web = createServer(async (req, res) => {
       const pathname = new URL(req.url, origin).pathname;
       if (pathname === '/api/session') return json(res, { user: { id: 'A', name: 'A' }, authMode: 'oauth', codexAvailable: true, codexMode: 'gateway' });
-      if (pathname === '/api/notes') return json(res, { notes: [noteA, noteB], deleted: [] });
+      if (pathname === '/api/notes') return json(res, { notes: liveNotes, deleted: deletedNotes });
       if (pathname === '/api/ai/models') return json(res, {
         models: ['gemini-4-neon-xhigh', 'gemini-3-flash', 'gpt-6.2-sol'],
         defaultModel: 'gemini-4-neon-xhigh',
@@ -857,7 +862,7 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
       const relatedMatch = pathname.match(/^\/api\/notes\/([^/]+)\/related$/);
       if (relatedMatch) {
         const focus = noteMap.get(relatedMatch[1]) ?? noteA;
-        const other = focus.id === noteA.id ? noteB : noteA;
+        const other = nextInCycle.get(focus.id) ?? noteB;
         return json(res, { focus, related: [{ id: other.id, note: other, relevancePercent: 92 }] });
       }
       const response = await worker.fetch(new Request(origin + req.url, {
@@ -990,4 +995,119 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     assert.equal(afterBack.focusId, initialWalk.focusId);
     assert.equal(afterBack.hasPrevCard, false);
     assert.equal(afterBack.hasPrevLink, false);
+
+    // 3. Random Walk 3-hop sync deletion: deleting previous hop prunes card & falls back to surviving history
+    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.relatedId)} && Boolean(document.querySelector('#rw-related .rw-related-card'))`),
+      'hopped to second note');
+    const hop2Id = initialWalk.relatedId;
+    const hop3Id = await page.evaluate("document.querySelector('#rw-related .rw-related-card').dataset.noteId");
+    assert.notEqual(hop3Id, initialWalk.focusId);
+    assert.notEqual(hop3Id, hop2Id);
+
+    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop3Id)} && Boolean(document.querySelector('#rw-prev-slot .rw-prev-card'))`),
+      'hopped to third note');
+    const hop1Body = noteMap.get(initialWalk.focusId).body.slice(0, 12);
+    const hop2Body = noteMap.get(hop2Id).body.slice(0, 12);
+    assert.ok((await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').textContent")).includes(hop2Body));
+
+    // Delete hop2 on server and sync inside Random Walk -> previous card must immediately fall back to hop1
+    liveNotes = liveNotes.filter(n => n.id !== hop2Id);
+    deletedNotes = [{ id: hop2Id, revision: 2 }];
+    await page.evaluate("document.getElementById('refresh-button').click()");
+    await until(() => page.evaluate(`document.getElementById('sync-state')?.dataset.status === 'ok' && !document.getElementById('refresh-button').disabled && !document.querySelector('#rw-prev-slot')?.textContent.includes(${JSON.stringify(hop2Body)})`),
+      'deleted hop2 pruned from previous card after sync');
+    const afterFirstDelete = await page.evaluate(`({
+      focusId: document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId,
+      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
+      backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
+      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
+    })`);
+    assert.equal(afterFirstDelete.focusId, hop3Id);
+    assert.ok(afterFirstDelete.prevText.includes(hop1Body), `expected fallback to hop1: ${JSON.stringify(afterFirstDelete)}`);
+    assert.equal(afterFirstDelete.backDisabled, false);
+    assert.equal(afterFirstDelete.hasPrevLink, true);
+
+    // Delete hop1 too and sync -> previous card, link, and back button all clear immediately
+    liveNotes = liveNotes.filter(n => n.id !== initialWalk.focusId);
+    deletedNotes = [{ id: hop2Id, revision: 2 }, { id: initialWalk.focusId, revision: 2 }];
+    await page.evaluate("document.getElementById('refresh-button').click()");
+    await until(() => page.evaluate("document.getElementById('sync-state')?.dataset.status === 'ok' && !document.getElementById('refresh-button').disabled && !document.querySelector('#rw-prev-slot .rw-prev-card')"),
+      'all deleted history pruned after sync');
+    const afterSecondDelete = await page.evaluate(`({
+      hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
+      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
+      backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
+    })`);
+    assert.equal(afterSecondDelete.hasPrevCard, false);
+    assert.equal(afterSecondDelete.hasPrevLink, false);
+    assert.equal(afterSecondDelete.backDisabled, true);
   });
+
+test('Chat SSE flushes : connected immediately before upstream replies', async t => {
+  const { call, put } = await fixture(t);
+  put('A', note('用于验证首包实时刷新的笔记'));
+  let markUpstreamArrived;
+  const upstreamArrived = new Promise(resolve => { markUpstreamArrived = resolve; });
+  let releaseUpstream;
+  const upstreamGate = new Promise(resolve => { releaseUpstream = resolve; });
+
+  const server = createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gemini-3-flash' }] }));
+      return;
+    }
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', async () => {
+      markUpstreamArrived();
+      await upstreamGate;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: '实时回答' } }] }) + '\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => {
+    releaseUpstream?.();
+    return new Promise(resolve => { server.closeAllConnections?.(); server.close(resolve); });
+  });
+  const base = 'http://127.0.0.1:' + server.address().port;
+  const env = { OPENAI_BASE_URL: base + '/v1', OPENAI_API_KEY: 'test-gateway-token', OPENAI_MODEL: 'gemini-3-flash' };
+
+  const response = await call('/api/ai/chat', {
+    body: { message: '测试首包实时到达', provider: 'codex', referencedNoteIds: [id], useAllNotes: false, stream: true },
+  }, env);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('Content-Type'), /^text\/event-stream/);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  // Read first chunk BEFORE releasing the upstream gate — buffered EOF streams will time out and fail here.
+  const firstRead = await Promise.race([
+    reader.read(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('SSE : connected preface did not flush before upstream responded')), 1000)),
+  ]);
+  assert.equal(firstRead.done, false);
+  const firstChunk = decoder.decode(firstRead.value, { stream: true });
+  assert.equal(firstChunk, ': connected\n\n');
+
+  await Promise.race([
+    upstreamArrived,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('upstream did not receive chat request')), 2000)),
+  ]);
+  releaseUpstream();
+
+  let rest = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    rest += decoder.decode(value, { stream: true });
+  }
+  rest += decoder.decode();
+  assert.ok(rest.includes('event: delta') && rest.includes('实时回答'), 'expected streamed delta after releasing upstream');
+  assert.ok(rest.includes('event: done'), 'expected terminal done frame');
+});

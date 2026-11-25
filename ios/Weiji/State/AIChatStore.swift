@@ -64,6 +64,7 @@ final class AIChatStore {
 
     func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil) {
         stop()
+        requestID.clear()
         sessionTask?.cancel()
         loadingSession = false
         draft = ""
@@ -102,7 +103,6 @@ final class AIChatStore {
         finishStreaming()
         streamedText = ""
         pendingQuestion = ""
-        requestID.clear()
         if wasSending, draft.isEmpty, let unsent { draft = unsent }
     }
 

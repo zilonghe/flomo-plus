@@ -24,20 +24,22 @@ struct QuickComposerSheet: View {
         return result
     }
 
-    private var cursorIndex: String.Index {
+    private var cursorIndex: String.Index? {
         guard let selection else { return draft.endIndex }
         switch selection.indices {
         case .selection(let range):
-            return min(range.upperBound, draft.endIndex)
-        case .multiSelection(let ranges):
-            return min(ranges.ranges.last?.upperBound ?? draft.endIndex, draft.endIndex)
+            guard range.lowerBound == range.upperBound, range.upperBound <= draft.endIndex else { return nil }
+            return range.upperBound
+        case .multiSelection:
+            return nil
         @unknown default:
             return draft.endIndex
         }
     }
 
     private var activeTag: TagParser.ActiveTagQuery? {
-        TagParser.activeTagQuery(in: draft, cursor: cursorIndex)
+        guard let cursor = cursorIndex else { return nil }
+        return TagParser.activeTagQuery(in: draft, cursor: cursor)
     }
 
     private var suggestions: [String] {
@@ -111,7 +113,7 @@ struct QuickComposerSheet: View {
                     HStack(spacing: 8) {
                         ForEach(suggestions, id: \.self) { tag in
                             Button {
-                                applySuggestion(tag, replacing: activeTag.range)
+                                applySuggestion(tag)
                             } label: {
                                 HStack(spacing: 3) {
                                     Text("#").foregroundStyle(Theme.active)
@@ -172,7 +174,7 @@ struct QuickComposerSheet: View {
     }
 
     private func insertHash() {
-        let idx = cursorIndex
+        let idx = cursorIndex ?? draft.endIndex
         let needsLeadingSpace = idx > draft.startIndex && !draft[draft.index(before: idx)].isWhitespace
         let insert = needsLeadingSpace ? " #" : "#"
         draft.insert(contentsOf: insert, at: idx)
@@ -182,8 +184,10 @@ struct QuickComposerSheet: View {
         tagFeedback += 1
     }
 
-    private func applySuggestion(_ tag: String, replacing range: Range<String.Index>) {
-        let applied = TagParser.applyTagSuggestion(tag, in: draft, replacing: range)
+    private func applySuggestion(_ tag: String) {
+        guard let cursor = cursorIndex,
+              let current = TagParser.activeTagQuery(in: draft, cursor: cursor) else { return }
+        let applied = TagParser.applyTagSuggestion(tag, in: draft, replacing: current.range)
         draft = applied.text
         selection = TextSelection(insertionPoint: applied.cursor)
         focused = true

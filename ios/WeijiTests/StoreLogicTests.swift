@@ -1130,6 +1130,63 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(chat.pendingQuestion, "")
         XCTAssertEqual(chat.session?.id, "chat-clear")
     }
+
+    func testStopThenResendReusesClientRequestIDAndEditRotatesIt() async throws {
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let requestIDs = OSAllocatedUnfairLock(initialState: [String]())
+        let (config, transport) = try StubProtocol.make { request in
+            let body = jsonBody(request)
+            let clientId = body?["clientRequestId"] as? String ?? ""
+            let index = requestIDs.withLock { ids -> Int in
+                ids.append(clientId)
+                return ids.count
+            }
+            if index == 1 {
+                _ = releaseFirst.wait(timeout: .now() + 8)
+            }
+            return .init(status: 200, body: """
+            event: done
+            data: {"session":{"id":"chat-stop","version":1,"title":"测试","origin":"chat","updatedAt":"2026-11-25","turns":[{"role":"user","text":"停止后重试"},{"role":"assistant","text":"收到"}]}}
+
+
+            """, headers: ["Content-Type": "text/event-stream"])
+        }
+        defer {
+            releaseFirst.signal()
+            transport.invalidateAndCancel()
+            StubProtocol.remove(config)
+        }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let chat = AIChatStore()
+        let profile = InsightsStore()
+
+        // 1. Send, hold upstream response, stop mid-flight -> draft restored
+        chat.draft = "停止后重试"
+        chat.send(api: api, options: .init(), profile: profile)
+        try await waitUntil("首轮请求到达服务端") { requestIDs.withLock { !$0.isEmpty } }
+        chat.stop()
+        XCTAssertFalse(chat.sending)
+        XCTAssertEqual(chat.draft, "停止后重试")
+        releaseFirst.signal()
+
+        // 2. Resend identical restored draft -> MUST reuse exact same clientRequestId
+        chat.send(api: api, options: .init(), profile: profile)
+        try await waitUntil("停止后原样重发完成") { !chat.sending }
+        XCTAssertNil(chat.error)
+        XCTAssertEqual(chat.draft, "")
+
+        // 3. New send with edited text after stop -> rotates to a fresh clientRequestId
+        chat.start()
+        chat.draft = "修改后的问题"
+        chat.send(api: api, options: .init(), profile: profile)
+        try await waitUntil("修改文案发送完成") { !chat.sending }
+
+        let captured = requestIDs.withLock { $0 }
+        XCTAssertEqual(captured.count, 3)
+        XCTAssertFalse(captured[0].isEmpty)
+        XCTAssertEqual(captured[0], captured[1], "Stop followed by identical resend must preserve clientRequestId")
+        XCTAssertNotEqual(captured[1], captured[2], "Fresh/edited request must generate a new clientRequestId")
+    }
 }
 
 private let sessionFixture = #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":false}"#

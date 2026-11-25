@@ -388,6 +388,7 @@ function applyNotesSnapshot({ notes, deleted, etag }) {
   if (changed || firstLoad) {
     rebuildNoteIndex();
     renderFeedList({ reset: true, preservePage: true });
+    syncWalkState();
   }
   if (openChanged && $('note-dialog').open) showRemoteDetail();
 }
@@ -517,6 +518,7 @@ async function mutate(change) {
     rebuildNoteIndex();
     renderFeedList({ reset: true, preservePage: true });
     if (change.id === rw.id) reconcileWalkFocus(data);
+    else syncWalkState();
     return data;
   } catch (error) {
     if (error.status === 409) {
@@ -525,6 +527,7 @@ async function mutate(change) {
       reconcileInlineEditState();
       rebuildNoteIndex();
       renderFeedList({ reset: true, preservePage: true });
+      syncWalkState();
       setSync('ok', '已同步');
     } else {
       setSync('error', '同步未完成');
@@ -2657,12 +2660,32 @@ function pivotWalk(id, remember = true) {
   });
 }
 
+function syncWalkState() {
+  if ($('random-walk-overlay').hidden) return;
+  rw.history = rw.history.filter(id => state.notes.has(id) && id !== rw.id);
+  const prevBtn = $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]');
+  if (prevBtn) prevBtn.disabled = !rw.history.length;
+  renderWalkPrev();
+  if (rw.id && !state.notes.has(rw.id)) {
+    rw.id = null;
+    resetWalkRelated();
+    $('rw-focus').replaceChildren();
+    $('rw-related').replaceChildren();
+    drawWalkLinks();
+    shuffleWalk();
+    return;
+  }
+  drawWalkLinks();
+}
+
 function reconcileWalkFocus(data) {
   if (data.note) { pivotWalk(data.note.id, false); return; }
   if (!data.deleted) return;
-  rw.history = rw.history.filter(id => id !== data.deleted.id);
+  rw.history = rw.history.filter(id => state.notes.has(id) && id !== data.deleted.id);
   rw.id = null;
   resetWalkRelated();
+  const prevBtn = $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]');
+  if (prevBtn) prevBtn.disabled = !rw.history.length;
   renderWalkPrev();
   $('rw-focus').replaceChildren();
   $('rw-related').replaceChildren();
