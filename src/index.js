@@ -892,7 +892,7 @@ async function chatSession(env, account, input, requestSignal) {
   const existing = id ? await sessionRow(db, account, id) : sourceId ? await sessionBySourceNote(db, account, sourceId) : null;
   if (id && !existing) throw new ApiError(404, "找不到这段对话。");
   const respond = work => stream
-    ? insightStream(requestSignal, positiveMs(env.INSIGHT_PING_INTERVAL_MS, 15_000), work)
+    ? insightStream(requestSignal, positiveMs(env.INSIGHT_PING_INTERVAL_MS, 15_000), work, "暂时无法生成回复，请稍后重试。")
     : work(requestSignal, () => {}).then(data => json(data));
   if (existing) {
     if (sessionHasRequest(existing, requestId)) return respond(async () => sessionPayload(existing, requestId, true));
@@ -1094,14 +1094,22 @@ function insightStream(requestSignal, pingMs, work, errorMessage = "暂时无法
   let cleanup;
   const body = new ReadableStream({
     start(controller) {
+      let closed = false;
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        try { controller.close(); } catch {}
+      };
       const write = text => {
-        if (!signal.aborted) controller.enqueue(encoder.encode(text));
+        if (!signal.aborted && !closed) {
+          try { controller.enqueue(encoder.encode(text)); } catch { closed = true; }
+        }
       };
       const send = (event, data) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       const ping = setInterval(() => write(": ping\n\n"), pingMs);
       const abort = () => {
         cleanup();
-        if (!cancel.signal.aborted) controller.close();
+        if (!cancel.signal.aborted) close();
       };
       cleanup = () => {
         clearInterval(ping);
@@ -1109,15 +1117,17 @@ function insightStream(requestSignal, pingMs, work, errorMessage = "暂时无法
       };
       if (signal.aborted) { abort(); return; }
       signal.addEventListener("abort", abort, { once: true });
+      write(": connected\n\n");
       void (async () => {
         try {
           send("done", await work(signal, send));
         } catch (error) {
+          if (!(error instanceof ApiError)) console.error("SSE stream failed", { name: error?.name, code: error?.code });
           send("error", error instanceof ApiError ? { error: error.message, status: error.status }
             : { error: errorMessage, status: 500 });
         } finally {
           cleanup();
-          if (!signal.aborted) controller.close();
+          if (!signal.aborted) close();
         }
       })();
     },

@@ -147,7 +147,7 @@ struct ObsidianSyncResponse: Decodable, Equatable, Sendable {
 enum AIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case codex, openai
     var id: String { rawValue }
-    var label: String { self == .codex ? "Codex" : "OpenAI" }
+    var label: String { self == .codex ? "内置服务" : "自定义 Key" }
 }
 
 struct ModelMeta: Decodable, Equatable, Identifiable, Sendable {

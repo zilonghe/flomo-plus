@@ -7,7 +7,7 @@ struct RandomWalkView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("漫步").font(.title2.bold())
+                Text("漫步").font(Theme.TypeScale.pageTitle).foregroundStyle(Theme.ink)
                 Spacer()
                 if walk.loading { ProgressView().controlSize(.small) }
             }.screenHeader()
@@ -85,11 +85,11 @@ struct RandomWalkView: View {
     private func relatedCard(_ item: RelatedNotes.Item) -> some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(item.note.body).font(.subheadline).foregroundStyle(Theme.ink)
+                Text(item.note.body).font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
                     .lineSpacing(3).lineLimit(2).multilineTextAlignment(.leading)
                 if !item.sharedTags.isEmpty {
                     Text(item.sharedTags.prefix(3).map { "#" + $0 }.joined(separator: "  "))
-                        .font(.caption).foregroundStyle(Theme.ink3).lineLimit(1)
+                        .font(Theme.TypeScale.meta).foregroundStyle(Theme.ink3).lineLimit(1)
                 }
             }
             Spacer(minLength: 0)

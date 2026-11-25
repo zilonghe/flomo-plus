@@ -138,7 +138,9 @@ async function upstream(t) {
 async function streamEvents(response) {
   assert.equal(response.status, 200);
   assert.match(response.headers.get('Content-Type'), /^text\/event-stream/);
-  return (await response.text()).trim().split('\n\n').filter(frame => frame.startsWith('event: '))
+  const raw = await response.text();
+  assert.ok(raw.startsWith(': connected\n\n'), 'SSE stream should flush an immediate connected preface');
+  return raw.trim().split('\n\n').filter(frame => frame.startsWith('event: '))
     .map(frame => {
       const [name, data] = frame.split('\n');
       return [name.slice(7), JSON.parse(data.slice(6))];
@@ -827,4 +829,165 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       assert.deepEqual(await stale.evaluate('firstFrameLeaks'), []);
       assert.equal(await stale.evaluate("import('/ux-helpers.js').then(m => m.notesCacheTransaction('readonly', s => s.get('A'))).then(Boolean)"), false);
     }
+  });
+
+test('Chromium verifies AI insights filter bar consistency and random walk previous-hop card',
+  { timeout: 30_000 }, async t => {
+    assert.ok(chrome, 'Chromium binary is required (set WEIJI_TEST_CHROME)');
+    const tab = await headless(t);
+    const noteA = { ...note('随机漫步起点笔记 A，用于验证上一跳卡片展示和返回导航。', id), revision: 1 };
+    const noteB = { ...note('随机漫步下一跳笔记 B，用于验证聚焦切换和连线绘制。', anotherId), revision: 1 };
+    const noteMap = new Map([[noteA.id, noteA], [noteB.id, noteB]]);
+    const json = (res, value, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(value));
+    const web = createServer(async (req, res) => {
+      const pathname = new URL(req.url, origin).pathname;
+      if (pathname === '/api/session') return json(res, { user: { id: 'A', name: 'A' }, authMode: 'oauth', codexAvailable: true, codexMode: 'gateway' });
+      if (pathname === '/api/notes') return json(res, { notes: [noteA, noteB], deleted: [] });
+      if (pathname === '/api/ai/models') return json(res, {
+        models: ['gemini-4-neon-xhigh', 'gemini-3-flash', 'gpt-6.2-sol'],
+        defaultModel: 'gemini-4-neon-xhigh',
+        modelMeta: [
+          { id: 'gemini-4-neon-xhigh', vendor: 'gemini', label: 'Gemini 4 Neon', thinking: true, fixedEffort: 'xhigh', efforts: [] },
+          { id: 'gemini-3-flash', vendor: 'gemini', label: 'Gemini 3 Flash', thinking: true, efforts: ['low', 'medium', 'high'] },
+          { id: 'gpt-6.2-sol', vendor: 'openai', label: 'GPT-6.2 Sol', thinking: true, efforts: ['low', 'medium', 'high', 'xhigh'] },
+        ],
+      });
+      if (pathname === '/api/insights/lenses') return json(res, { lenses: [], categories: [] });
+      if (pathname === '/api/insights/preview') return json(res, { noteCount: 2, tagCount: 0, dayCount: 1, willSample: false });
+      const relatedMatch = pathname.match(/^\/api\/notes\/([^/]+)\/related$/);
+      if (relatedMatch) {
+        const focus = noteMap.get(relatedMatch[1]) ?? noteA;
+        const other = focus.id === noteA.id ? noteB : noteA;
+        return json(res, { focus, related: [{ id: other.id, note: other, relevancePercent: 92 }] });
+      }
+      const response = await worker.fetch(new Request(origin + req.url, {
+        headers: { 'oai-authenticated-user-id': 'A', 'oai-authenticated-auth-mode': 'oauth' },
+      }), {});
+      res.writeHead(response.status, Object.fromEntries(response.headers)).end(await response.text());
+    });
+    web.listen(0, '127.0.0.1');
+    await once(web, 'listening');
+    t.after(() => new Promise(resolve => { web.closeAllConnections(); web.close(resolve); }));
+    const local = 'http://127.0.0.1:' + web.address().port;
+
+    const page = await tab();
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await page.navigate(local + '/');
+    await until(() => page.evaluate("document.getElementById('sync-state')?.dataset.status === 'ok'"), 'notes loaded');
+
+    // 1. AI Insights filter bar uniform control height & searchable model picker
+    await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
+    await until(() => page.evaluate("!document.getElementById('ins-model-picker').hidden && document.getElementById('ins-model-toggle').textContent.includes('Gemini 4 Neon')"),
+      'insights model picker rendered');
+    const insState = await page.evaluate(`(() => {
+      const range = document.getElementById('ins-range-select');
+      const tag = document.getElementById('ins-tag-trigger');
+      const toggle = document.getElementById('ins-model-toggle');
+      const profile = document.querySelector('#ins-scope label:has(#ins-use-profile)');
+      const select = document.getElementById('ins-model-select');
+      return {
+        selectHidden: select.hidden,
+        selectValue: select.value,
+        toggleText: toggle.textContent.trim(),
+        hasVendorIcon: Boolean(toggle.querySelector('svg.ai-vendor-gemini')),
+        heights: {
+          range: range.getBoundingClientRect().height,
+          tag: tag.getBoundingClientRect().height,
+          toggle: toggle.getBoundingClientRect().height,
+          profile: profile.getBoundingClientRect().height,
+        },
+      };
+    })()`);
+    assert.equal(insState.selectHidden, true);
+    assert.equal(insState.selectValue, 'gemini-4-neon-xhigh');
+    assert.equal(insState.toggleText, 'Gemini 4 Neon');
+    assert.equal(insState.hasVendorIcon, true);
+    assert.ok(!insState.toggleText.includes('gemini-4-neon-xhigh'));
+    const heights = Object.values(insState.heights);
+    for (const h of heights) assert.ok(h > 0, 'control height must be positive: ' + JSON.stringify(insState.heights));
+    for (const h1 of heights) {
+      for (const h2 of heights) {
+        assert.ok(Math.abs(h1 - h2) <= 2, `insights controls height mismatch: ${JSON.stringify(insState.heights)}`);
+      }
+    }
+
+    await page.evaluate(`(() => {
+      document.getElementById('ins-model-toggle').click();
+      const search = document.getElementById('ins-model-search');
+      search.value = 'gpt';
+      search.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    })()`);
+    const popoverState = await page.evaluate(`(() => {
+      const popover = document.getElementById('ins-model-popover');
+      const options = [...popover.querySelectorAll('#ins-model-options button')].map(b => b.textContent.trim());
+      return { open: !popover.hidden, options };
+    })()`);
+    assert.equal(popoverState.open, true);
+    assert.ok(popoverState.options.some(text => text.includes('GPT-6.2 Sol')), 'filtered option list: ' + JSON.stringify(popoverState.options));
+
+    await page.evaluate("document.querySelector('#ins-model-options button').click()");
+    const afterSelect = await page.evaluate(`({
+      popoverHidden: document.getElementById('ins-model-popover').hidden,
+      selectValue: document.getElementById('ins-model-select').value,
+      toggleText: document.getElementById('ins-model-toggle').textContent.trim(),
+      hasOpenAIIcon: Boolean(document.querySelector('#ins-model-toggle svg.ai-vendor-openai')),
+    })`);
+    assert.equal(afterSelect.popoverHidden, true);
+    assert.equal(afterSelect.selectValue, 'gpt-6.2-sol');
+    assert.equal(afterSelect.toggleText, 'GPT-6.2 Sol');
+    assert.equal(afterSelect.hasOpenAIIcon, true);
+
+    await page.evaluate("document.getElementById('ins-model-toggle').click()");
+    assert.equal(await page.evaluate("document.getElementById('ins-model-popover').hidden"), false);
+    await page.evaluate("document.getElementById('ins-model-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+    assert.equal(await page.evaluate("document.getElementById('ins-model-popover').hidden"), true);
+    await page.evaluate("document.querySelector('[data-action=ins-close]').click()");
+
+    // 2. Random Walk previous-hop card on left + curved link + back navigation
+    await page.evaluate("document.querySelector('[data-action=open-random-walk]').click()");
+    await until(() => page.evaluate("Boolean(document.querySelector('#rw-focus .rw-focus-card') && document.querySelector('#rw-related .rw-related-card'))"),
+      'random walk initial card and related list loaded');
+    const initialWalk = await page.evaluate(`({
+      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
+      relatedId: document.querySelector('#rw-related .rw-related-card').dataset.noteId,
+      hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
+      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
+    })`);
+    assert.equal(initialWalk.hasPrevCard, false);
+    assert.equal(initialWalk.hasPrevLink, false);
+    assert.notEqual(initialWalk.focusId, initialWalk.relatedId);
+
+    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.relatedId)} && Boolean(document.querySelector('#rw-prev-slot .rw-prev-card'))`),
+      'random walk pivoted and rendered previous-hop card');
+    const pivotedWalk = await page.evaluate(`(() => {
+      const prevCard = document.querySelector('#rw-prev-slot .rw-prev-card');
+      const focusCard = document.querySelector('#rw-focus .rw-focus-card');
+      const prevPath = document.querySelector('svg.rw-links path.rw-link-prev');
+      const prevRect = prevCard.getBoundingClientRect();
+      const focusRect = focusCard.getBoundingClientRect();
+      return {
+        prevText: prevCard.textContent,
+        prevRect: { left: prevRect.left, right: prevRect.right, width: prevRect.width, height: prevRect.height },
+        focusRect: { left: focusRect.left, right: focusRect.right },
+        prevPathD: prevPath?.getAttribute('d') ?? '',
+      };
+    })()`);
+    assert.ok(pivotedWalk.prevRect.width > 0 && pivotedWalk.prevRect.height > 0);
+    assert.ok(pivotedWalk.prevRect.right <= pivotedWalk.focusRect.left,
+      `previous-hop card must be strictly to the left of focus card: ${JSON.stringify(pivotedWalk)}`);
+    assert.match(pivotedWalk.prevPathD, /^M\s+-?\d+\s+-?\d+\s+C\s+/);
+    assert.ok(pivotedWalk.prevText.includes('上一跳'));
+
+    await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.focusId)}`),
+      'clicking previous-hop card navigated back to initial note');
+    const afterBack = await page.evaluate(`({
+      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
+      hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
+      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
+    })`);
+    assert.equal(afterBack.focusId, initialWalk.focusId);
+    assert.equal(afterBack.hasPrevCard, false);
+    assert.equal(afterBack.hasPrevLink, false);
   });

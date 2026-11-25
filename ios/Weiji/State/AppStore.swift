@@ -296,7 +296,8 @@ final class AppStore {
         guard generation == connectionGeneration else { return }
         offlineFallbackAllowed = false
         let key = accountKey
-        if let key, !chat.draft.isEmpty { rejectedChatDraft = (key, chat.draft) }
+        let recoverable = chat.recoverableDraft
+        if let key, !recoverable.isEmpty { rejectedChatDraft = (key, recoverable) }
         resetConnection(to: config)
         showSettings = false
         error = failure.localizedDescription

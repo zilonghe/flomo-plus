@@ -162,8 +162,15 @@
                     <div class="ins-pills" id="ins-tag-list"></div>
                   </div>
                 </div>
-                <select id="ins-model-select" class="field ins-model" aria-label="洞察模型" hidden></select>
-                <label><input id="ins-use-profile" type="checkbox"> 附带个人画像</label>
+                <select id="ins-model-select" class="sr-only" aria-label="洞察模型" tabindex="-1" aria-hidden="true" hidden></select>
+                <div id="ins-model-picker" class="ai-model-picker ins-model-picker" hidden>
+                  <button id="ins-model-toggle" class="ins-model-toggle" type="button" aria-label="选择洞察模型" aria-expanded="false" aria-controls="ins-model-popover"></button>
+                  <div id="ins-model-popover" class="ai-picker-popover ins-model-popover" hidden>
+                    <input class="field" id="ins-model-search" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off">
+                    <div id="ins-model-options"></div>
+                  </div>
+                </div>
+                <label class="ins-profile-toggle"><input id="ins-use-profile" type="checkbox"> 附带个人画像</label>
               </div>
               <div id="ins-custom-dates" class="ins-pills" hidden>
                 <label>起始 <input id="ins-start-date" class="field" type="date"></label>
@@ -329,6 +336,7 @@
     <div class="rw-viewport">
       <div id="rw-stage">
         <svg class="rw-links" aria-hidden="true"></svg>
+        <div id="rw-prev-slot" class="rw-prev-slot" aria-label="上一跳笔记"></div>
         <div id="rw-focus"></div>
         <div class="rw-related-list" id="rw-related" aria-label="相关笔记"></div>
       </div>

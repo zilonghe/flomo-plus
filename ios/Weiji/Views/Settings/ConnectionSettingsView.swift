@@ -38,6 +38,7 @@ struct ConnectionSettingsView: View {
     @State private var obsidian: ObsidianSyncStatus?
     @State private var obsidianBusy = false
     @State private var obsidianError: String?
+    @Bindable private var theme = ThemeManager.shared
 
     private var origin: String? {
         try? ServerConfiguration(address: draft.address, token: "").origin
@@ -53,6 +54,47 @@ struct ConnectionSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("外观") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("主题色").font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
+                        HStack(spacing: 0) {
+                            ForEach(ThemeAccent.allCases) { option in
+                                let selected = theme.accent == option
+                                Button {
+                                    theme.accent = option
+                                } label: {
+                                    VStack(spacing: 6) {
+                                        ZStack {
+                                            Circle()
+                                                .fill(option.accent)
+                                                .frame(width: 32, height: 32)
+                                            if selected {
+                                                Circle()
+                                                    .strokeBorder(option.accent, lineWidth: 2)
+                                                    .frame(width: 40, height: 40)
+                                                Image(systemName: "checkmark")
+                                                    .font(.system(size: 13, weight: .bold))
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                        .frame(width: 42, height: 42)
+                                        Text(option.label)
+                                            .font(Theme.TypeScale.meta.weight(selected ? .semibold : .regular))
+                                            .foregroundStyle(selected ? Theme.ink : Theme.ink2)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                                .accessibilityLabel("主题色：\(option.label)")
+                                .accessibilityIdentifier("theme-accent-\(option.rawValue)")
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .sensoryFeedback(.selection, trigger: theme.accent)
+                }
                 Section("自托管服务") {
                     TextField("服务器地址", text: Binding(get: { draft.address }, set: {
                         draft.setAddress($0, savedToken: store.savedConnectionToken(for:))

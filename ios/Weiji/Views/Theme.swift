@@ -1,13 +1,100 @@
+import Observation
 import SwiftUI
 import UIKit
 
+enum ThemeAccent: String, CaseIterable, Identifiable, Sendable {
+    case pine, indigo, clay, plum, graphite
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .pine: "松针"
+        case .indigo: "靛青"
+        case .clay: "陶土"
+        case .plum: "暮紫"
+        case .graphite: "石墨"
+        }
+    }
+
+    /// Text, icons, and links (WCAG AA >= 4.5:1 on canvas, paper, and accentSoft).
+    var active: Color {
+        switch self {
+        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x7AD4AA)
+        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x85B0FF)
+        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xF0A07B)
+        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0xC7ADF2)
+        case .graphite: Theme.adaptive(light: 0x363430, dark: 0xDCD9D0)
+        }
+    }
+
+    /// Solid primary CTA fill behind pure white text/icons (WCAG AA >= 4.5:1 in light & dark).
+    var accent: Color {
+        switch self {
+        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x276E50)
+        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x2F62BF)
+        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xA6502C)
+        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0x7755A8)
+        case .graphite: Theme.adaptive(light: 0x363430, dark: 0x57544D)
+        }
+    }
+
+    var accentSoft: Color {
+        switch self {
+        case .pine: Theme.adaptive(light: 0xE7F1EC, dark: 0x1C3127)
+        case .indigo: Theme.adaptive(light: 0xE9EFFB, dark: 0x1A2844)
+        case .clay: Theme.adaptive(light: 0xF6EAE4, dark: 0x352119)
+        case .plum: Theme.adaptive(light: 0xEFEAF7, dark: 0x292038)
+        case .graphite: Theme.adaptive(light: 0xEAE8E1, dark: 0x2E2D29)
+        }
+    }
+
+    /// Mid-tone accent used for activity heatmap cells and quote edge bars.
+    var tone: Color {
+        switch self {
+        case .pine: Theme.adaptive(light: 0x3A8363, dark: 0x5CC295)
+        case .indigo: Theme.adaptive(light: 0x3669C4, dark: 0x6E9EF5)
+        case .clay: Theme.adaptive(light: 0xBA5F38, dark: 0xE08A64)
+        case .plum: Theme.adaptive(light: 0x7F5CAE, dark: 0xB394E6)
+        case .graphite: Theme.adaptive(light: 0x52504A, dark: 0xB5B1A6)
+        }
+    }
+}
+
+@Observable
+final class ThemeManager {
+    static let storageKey = "weiji.accent"
+    static let shared = ThemeManager()
+
+    @ObservationIgnored private let defaults: UserDefaults
+
+    var accent: ThemeAccent {
+        didSet {
+            guard accent != oldValue else { return }
+            defaults.set(accent.rawValue, forKey: Self.storageKey)
+        }
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        accent = defaults.string(forKey: Self.storageKey).flatMap(ThemeAccent.init(rawValue:)) ?? .pine
+    }
+}
+
 enum Theme {
-    /// Accent for text, icons and links (brighter in dark mode for contrast on charcoal).
-    static let active = adaptive(light: 0x147A5B, dark: 0x5CC8A0)
-    /// Solid fill behind white text/icons.
-    static let accent = adaptive(light: 0x147A5B, dark: 0x167E5C)
-    static let accentSoft = adaptive(light: 0xE2F0E9, dark: 0x1D3229)
-    static let green = adaptive(light: 0x1F9D72, dark: 0x3FBF8F)
+    /// Strict shared typography scale across all tabs so font sizes never drift.
+    enum TypeScale {
+        static let pageTitle = Font.system(size: 24, weight: .bold)
+        static let sectionTitle = Font.system(size: 13, weight: .semibold)
+        static let itemTitle = Font.system(size: 16, weight: .semibold)
+        static let body = Font.system(size: 15, weight: .regular)
+        static let meta = Font.system(size: 13, weight: .regular)
+    }
+
+    static var active: Color { ThemeManager.shared.accent.active }
+    static var accent: Color { ThemeManager.shared.accent.accent }
+    static var accentSoft: Color { ThemeManager.shared.accent.accentSoft }
+    static var green: Color { ThemeManager.shared.accent.tone }
+
     static let canvas = adaptive(light: 0xF6F5F0, dark: 0x171614)
     static let paper = adaptive(light: 0xFFFFFF, dark: 0x22211E)
     static let subtle = adaptive(light: 0xEEECE5, dark: 0x2B2A26)
@@ -19,7 +106,7 @@ enum Theme {
         traits.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.08) : UIColor(white: 0, alpha: 0.06)
     })
 
-    private static func adaptive(light: Int, dark: Int) -> Color {
+    static func adaptive(light: Int, dark: Int) -> Color {
         Color(uiColor: UIColor { traits in
             let hex = traits.userInterfaceStyle == .dark ? dark : light
             return UIColor(red: CGFloat((hex >> 16) & 255) / 255, green: CGFloat((hex >> 8) & 255) / 255,
@@ -57,10 +144,10 @@ struct WeijiPrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.subheadline.weight(.semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.white)
             .padding(.horizontal, 18)
-            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 50 : 36)
+            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 36)
             .background {
                 RoundedRectangle(cornerRadius: wide ? 14 : 18)
                     .fill(Theme.accent.opacity(isEnabled ? 1 : 0.35))
@@ -79,10 +166,10 @@ struct WeijiSecondaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.subheadline.weight(.medium))
+            .font(.system(size: 15, weight: .medium))
             .foregroundStyle(Theme.ink.opacity(isEnabled ? 1 : 0.35))
             .padding(.horizontal, 16)
-            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 50 : 36)
+            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 36)
             .background(Theme.subtle, in: .rect(cornerRadius: wide ? 14 : 18))
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.7 : 1)
@@ -106,10 +193,10 @@ struct Chip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            if let symbol { Image(systemName: symbol).font(.caption2.weight(.semibold)).accessibilityHidden(true) }
+            if let symbol { Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).accessibilityHidden(true) }
             Text(text).lineLimit(1)
         }
-        .font(.footnote.weight(.medium))
+        .font(Theme.TypeScale.meta.weight(.medium))
         .foregroundStyle(selected ? Theme.active : Theme.ink2)
         .padding(.horizontal, 10).frame(minHeight: 30)
         .background(selected ? Theme.accentSoft : Theme.subtle, in: Capsule())
@@ -120,7 +207,7 @@ struct SectionLabel: View {
     let title: String
     init(_ title: String) { self.title = title }
     var body: some View {
-        Text(title).font(.footnote.weight(.semibold)).foregroundStyle(Theme.ink3)
+        Text(title).font(Theme.TypeScale.sectionTitle).foregroundStyle(Theme.ink3)
             .padding(.horizontal, 4)
             .accessibilityAddTraits(.isHeader)
     }
@@ -135,6 +222,7 @@ struct IconAction: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44)
+                .foregroundStyle(Theme.ink)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -146,6 +234,6 @@ struct IconAction: View {
 struct InlineError: View {
     let message: String?
     var body: some View {
-        if let message { Text(message).font(.footnote).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading) }
+        if let message { Text(message).font(Theme.TypeScale.meta).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading) }
     }
 }

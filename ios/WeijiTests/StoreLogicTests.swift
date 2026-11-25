@@ -1068,6 +1068,68 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(chat.streamedText, "")
         XCTAssertEqual(chat.draft, "第二个问题")
     }
+
+    func testChatSendClearsDraftImmediatelyAndRestoresOnlyOnFailure() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let attempts = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { _ in
+            let attempt = attempts.withLock { $0 += 1; return $0 }
+            _ = release.wait(timeout: .now() + 8)
+            if attempt <= 2 {
+                return .init(status: 0, body: "", failure: .networkConnectionLost)
+            }
+            return .init(status: 200, body: """
+            event: done
+            data: {"session":{"id":"chat-clear","version":1,"title":"测试","origin":"chat","updatedAt":"2026-11-25","turns":[{"role":"user","text":"立即清空测试"},{"role":"assistant","text":"收到"}]}}
+
+
+            """, headers: ["Content-Type": "text/event-stream"])
+        }
+        defer {
+            for _ in 0..<4 { release.signal() }
+            transport.invalidateAndCancel()
+            StubProtocol.remove(config)
+        }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let chat = AIChatStore()
+        let profile = InsightsStore()
+
+        // 1. In-flight clear + restore on failure when user left composer empty.
+        let initialResets = chat.composerResetCount
+        chat.draft = "立即清空测试"
+        chat.send(api: api, options: .init(), profile: profile)
+        XCTAssertTrue(chat.sending)
+        XCTAssertEqual(chat.draft, "")
+        XCTAssertEqual(chat.pendingQuestion, "立即清空测试")
+        XCTAssertEqual(chat.composerResetCount, initialResets + 1)
+        release.signal()
+        try await waitUntil("首次失败恢复草稿") { !chat.sending }
+        XCTAssertEqual(chat.draft, "立即清空测试")
+        XCTAssertTrue(chat.error?.contains("-1005") == true)
+
+        // 2. If user types a follow-up while in flight, failure must preserve it instead of overwriting.
+        chat.send(api: api, options: .init(), profile: profile)
+        XCTAssertTrue(chat.sending)
+        XCTAssertEqual(chat.draft, "")
+        XCTAssertEqual(chat.composerResetCount, initialResets + 2)
+        chat.draft = "追问"
+        release.signal()
+        try await waitUntil("带新草稿失败") { !chat.sending }
+        XCTAssertEqual(chat.draft, "追问")
+
+        // 3. Clean success keeps draft empty.
+        chat.draft = "立即清空测试"
+        chat.send(api: api, options: .init(), profile: profile)
+        XCTAssertTrue(chat.sending)
+        XCTAssertEqual(chat.draft, "")
+        XCTAssertEqual(chat.composerResetCount, initialResets + 3)
+        release.signal()
+        try await waitUntil("发送成功保持清空") { !chat.sending }
+        XCTAssertNil(chat.error)
+        XCTAssertEqual(chat.draft, "")
+        XCTAssertEqual(chat.pendingQuestion, "")
+        XCTAssertEqual(chat.session?.id, "chat-clear")
+    }
 }
 
 private let sessionFixture = #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":false}"#

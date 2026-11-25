@@ -147,9 +147,15 @@ const server = createServer(async (incoming, outgoing) => {
     if (incoming.method === "HEAD") {
       await response.body?.cancel();
       outgoing.end();
-    } else if (response.body) Readable.fromWeb(response.body).on("error", () => outgoing.destroy()).pipe(outgoing);
+    } else if (response.body) Readable.fromWeb(response.body).on("error", err => {
+      if (!controller.signal.aborted) console.error("Preview stream error", { path: incoming.url?.split("?")[0], name: err?.name, code: err?.code });
+      outgoing.destroy();
+    }).pipe(outgoing);
     else outgoing.end();
-  } catch {
+  } catch (error) {
+    if (!outgoing.destroyed) {
+      console.error("Preview handler failed", { method: incoming.method, path: incoming.url?.split("?")[0], name: error?.name, code: error?.code });
+    }
     if (outgoing.headersSent) outgoing.destroy();
     else if (auth) outgoing.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ error: "暂时无法完成操作，请稍后重试。" }));
     else outgoing.writeHead(500).end("Local preview error");

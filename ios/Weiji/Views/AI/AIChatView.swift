@@ -2,7 +2,7 @@ import SwiftUI
 
 struct AIChatView: View {
     let store: AppStore
-    @State private var showSessions = false
+    @Binding var showSessions: Bool
     @State private var showPins = false
     @State private var showAISettings = false
     @State private var showModels = false
@@ -13,13 +13,21 @@ struct AIChatView: View {
     var body: some View {
         @Bindable var chat = store.chat
         VStack(spacing: 0) {
-            HStack(spacing: 2) {
-                IconAction(symbol: "clock.arrow.circlepath", label: "会话", id: "ai-sessions-button") { showSessions = true }
-                    .disabled(store.api == nil)
-                Text(chat.session?.title ?? "AI 对话").font(.headline).lineLimit(1)
+            HStack(spacing: 4) {
+                IconAction(symbol: "clock.arrow.circlepath", label: "历史会话", id: "ai-sessions-button") {
+                    writing = false
+                    showSessions = true
+                }
+                .disabled(store.api == nil)
+                .padding(.leading, -10)
+                Text(chat.session?.title ?? "AI 对话")
+                    .font(chat.session == nil ? Theme.TypeScale.pageTitle : Theme.TypeScale.itemTitle)
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(1)
                 Spacer()
                 IconAction(symbol: "slider.horizontal.3", label: "AI 设置", id: "ai-settings-button") { showAISettings = true }
                 IconAction(symbol: "square.and.pencil", label: "新建会话", id: "ai-new-button") { chat.start() }
+                    .padding(.trailing, -10)
             }.screenHeader()
             if !chat.pins.isEmpty {
                 ScrollView(.horizontal) {
@@ -57,7 +65,6 @@ struct AIChatView: View {
             InlineError(message: chat.error).padding(.horizontal, 16)
             composer(chat)
         }
-        .sheet(isPresented: $showSessions) { SessionsSheetView(store: store) }
         .sheet(isPresented: $showPins) { PinPickerSheet(store: store) }
         .sheet(isPresented: $showAISettings) { AISettingsView(store: store) }
         .sheet(isPresented: $showModels) { ModelPickerSheet(store: store) }
@@ -72,6 +79,7 @@ struct AIChatView: View {
             && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 4) {
             TextField("问一问你的笔记", text: $chat.draft, axis: .vertical)
+                .id(chat.composerResetCount)
                 .lineLimit(1...6)
                 .focused($writing)
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
@@ -89,9 +97,9 @@ struct AIChatView: View {
                 } else {
                     composerButton(symbol: "arrow.up", label: "发送", id: "ai-send-button", enabled: canSend) {
                         guard let api = store.api else { return }
-                        writing = false
                         sendFeedback += 1
                         chat.send(api: api, options: store.options, profile: store.insights)
+                        writing = false
                     }
                 }
             }
@@ -155,13 +163,9 @@ struct AIChatView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("思考档位：\(effortLabel(store.options.reasoningEffort))")
-            } else if let effort = gatewayModel?.fixedEffort, gatewayModel?.thinking == true {
-                Label(effortLabel(effort), systemImage: "brain")
-                    .foregroundStyle(Theme.ink3).padding(.horizontal, 6)
-                    .accessibilityLabel("固定思考档位：\(effortLabel(effort))")
             }
         }
-        .font(.caption.weight(.medium))
+        .font(Theme.TypeScale.meta.weight(.medium))
         .foregroundStyle(Theme.ink2)
     }
 
@@ -495,17 +499,41 @@ private struct AISettingsView: View {
         @Bindable var chat = store.chat
         NavigationStack {
             Form {
-                Picker("服务", selection: Binding(get: { store.options.provider }, set: store.setProvider)) {
-                    if store.identity?.codexAvailable == true { Text("Codex").tag(AIProvider.codex) }
-                    Text("OpenAI").tag(AIProvider.openai)
+                if store.identity?.codexAvailable == true {
+                    Section {
+                        Picker("连接方式", selection: Binding(get: { store.options.provider }, set: store.setProvider)) {
+                            Text(AIProvider.codex.label).tag(AIProvider.codex)
+                            Text(AIProvider.openai.label).tag(AIProvider.openai)
+                        }
+                        .pickerStyle(.segmented)
+                        Text(store.options.provider == .codex
+                             ? "使用服务器内置 AI 模型，无需配置密钥。"
+                             : "使用个人 OpenAI API Key 直接请求模型。")
+                            .font(Theme.TypeScale.meta)
+                            .foregroundStyle(Theme.ink2)
+                    } header: {
+                        Text("模型来源")
+                    }
+                    .listRowBackground(Theme.paper)
                 }
                 if store.options.provider == .openai {
-                    SecureField("OpenAI API Key", text: $apiKey).autocorrectionDisabled()
-                    TextField("模型", text: Binding(get: { store.options.model }, set: store.setModel))
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Section("OpenAI 接口") {
+                        SecureField("API Key", text: $apiKey).autocorrectionDisabled()
+                        TextField("模型名称", text: Binding(get: { store.options.model }, set: store.setModel))
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    .listRowBackground(Theme.paper)
                 }
-                Toggle("使用个人画像", isOn: $chat.useProfile).tint(Theme.accent)
-                InlineError(message: error)
+                Section("对话偏好") {
+                    Toggle("结合个人画像回答", isOn: $chat.useProfile).tint(Theme.accent)
+                }
+                .listRowBackground(Theme.paper)
+                if let error {
+                    Section {
+                        InlineError(message: error)
+                    }
+                    .listRowBackground(Theme.paper)
+                }
             }
             .weijiSheetBackground()
             .navigationTitle("AI 设置")
@@ -520,6 +548,7 @@ private struct AISettingsView: View {
             }
             .onAppear { apiKey = store.options.apiKey }
         }
+        .tint(Theme.active)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }

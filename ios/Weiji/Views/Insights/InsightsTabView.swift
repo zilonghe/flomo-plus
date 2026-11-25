@@ -17,14 +17,8 @@ struct InsightsTabView: View {
     var body: some View {
         @Bindable var insights = store.insights
         VStack(spacing: 0) {
-            HStack(spacing: 2) {
-                segmentButton(.insights, title: "AI 洞察")
-                segmentButton(.profile, title: "个人画像")
-            }
-            .padding(3)
-            .background(Theme.subtle, in: Capsule())
-            .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 4)
-            if segment == .insights { library(insights) }
+            header.screenHeader()
+            if segment == .insights { studio(insights) }
             else { ProfileWorkspaceView(store: store) }
         }
         .sheet(isPresented: $insights.showReport, onDismiss: {
@@ -46,14 +40,31 @@ struct InsightsTabView: View {
         }
     }
 
+    private var header: some View {
+        HStack(spacing: 12) {
+            Text("洞察")
+                .font(Theme.TypeScale.pageTitle)
+                .foregroundStyle(Theme.ink)
+            Spacer(minLength: 8)
+            HStack(spacing: 2) {
+                segmentButton(.insights, title: "洞察")
+                segmentButton(.profile, title: "画像")
+            }
+            .padding(3)
+            .background(Theme.subtle, in: Capsule())
+        }
+    }
+
     private func segmentButton(_ value: Segment, title: String) -> some View {
         let selected = segment == value
         return Button {
             withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) { segment = value }
         } label: {
-            Text(title).font(.subheadline.weight(selected ? .semibold : .medium))
+            Text(title)
+                .font(Theme.TypeScale.meta.weight(selected ? .semibold : .medium))
                 .foregroundStyle(selected ? Theme.ink : Theme.ink2)
-                .frame(maxWidth: .infinity, minHeight: 34)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 30)
                 .background {
                     if selected {
                         Capsule().fill(Theme.paper)
@@ -68,133 +79,16 @@ struct InsightsTabView: View {
         .accessibilityIdentifier("insights-segment-" + value.rawValue)
     }
 
-    private func library(_ insights: InsightsStore) -> some View {
+    private func studio(_ insights: InsightsStore) -> some View {
         @Bindable var insights = insights
         return ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                SectionLabel("范围").padding(.top, 8)
-                VStack(spacing: 0) {
-                    FormRow("时间") {
-                        Picker("日期范围", selection: $insights.scope.range) {
-                            Text("全部").tag("all")
-                            Text("近 7 天").tag("7d")
-                            Text("本周").tag("week")
-                            Text("本月").tag("month")
-                            Text("自定义").tag("custom")
-                        }
-                        .pickerStyle(.menu).labelsHidden().tint(Theme.active)
-                    }
-                    if insights.scope.range == "custom" {
-                        FormDivider()
-                        FormRow("起始") { DatePicker("起始", selection: $startDate, displayedComponents: .date).labelsHidden() }
-                        FormDivider()
-                        FormRow("结束") {
-                            DatePicker("结束", selection: $endDate, in: startDate..., displayedComponents: .date).labelsHidden()
-                        }
-                    }
-                    if !store.index.exactTags.isEmpty {
-                        FormDivider()
-                        FormRow("标签") { tagMenu(insights) }
-                    }
-                    FormDivider()
-                    FormRow("笔记") {
-                        if let stats = insights.stats {
-                            Text(stats.label).font(.subheadline.monospacedDigit()).foregroundStyle(Theme.ink)
-                                .accessibilityIdentifier("insights-preview-stats")
-                        } else if store.api != nil && insights.error == nil {
-                            ProgressView().controlSize(.small)
-                        }
-                    }
-                }
-                .noteCard(padding: 0)
-
-                HStack {
-                    SectionLabel("视角")
-                    Spacer()
-                    Button("新建") { lensEditor = LensEditorRoute(lens: nil) }
-                        .font(.footnote.weight(.semibold)).foregroundStyle(Theme.active)
-                        .padding(.horizontal, 4)
-                }
-                .padding(.top, 12)
-                VStack(spacing: 0) {
-                    Button { choosingLens = true } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(insights.selectedLens?.name ?? "选择视角")
-                                    .font(.body.weight(.semibold)).foregroundStyle(Theme.ink)
-                                if let lens = insights.selectedLens {
-                                    Text(lens.description).font(.footnote).foregroundStyle(Theme.ink2)
-                                        .lineSpacing(2).multilineTextAlignment(.leading)
-                                }
-                            }
-                            Spacer(minLength: 8)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption.weight(.semibold)).foregroundStyle(Theme.ink3)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("分析视角")
-                    .accessibilityValue(insights.selectedLens?.name ?? "")
-                    .accessibilityIdentifier("insights-lens-picker")
-                    if let lens = insights.selectedLens, !lens.builtin {
-                        FormDivider()
-                        Button { lensEditor = LensEditorRoute(lens: lens) } label: {
-                            FormRow("自定义视角") {
-                                Text("编辑").foregroundStyle(Theme.active)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    FormDivider()
-                    Toggle("结合个人画像", isOn: $insights.useProfile)
-                        .font(.subheadline).foregroundStyle(Theme.ink)
-                        .tint(Theme.accent)
-                        .padding(.horizontal, 14).frame(minHeight: 48)
-                }
-                .noteCard(padding: 0)
-
-                InlineError(message: insights.error).padding(.top, 4)
-                Button {
-                    if let api = store.api { insights.run(api: api, options: store.options) }
-                } label: {
-                    Label("生成洞察", systemImage: "sparkles")
-                }
-                .buttonStyle(.weijiPrimaryWide)
-                .disabled((insights.stats?.noteCount ?? 0) == 0 || insights.selectedLens == nil)
-                .accessibilityIdentifier("insights-run-button")
-                .padding(.top, 12)
-
-                if !insights.reports.isEmpty {
-                    SectionLabel("历史报告").padding(.top, 20)
-                    VStack(spacing: 0) {
-                        ForEach(Array(insights.reports.enumerated()), id: \.element.id) { offset, report in
-                            if offset > 0 { FormDivider() }
-                            Button {
-                                if let api = store.api { insights.openReport(report, api: api) }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(report.title).font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
-                                            .lineLimit(2).multilineTextAlignment(.leading)
-                                        Text(String(report.createdAt.prefix(10)))
-                                            .font(.caption.monospacedDigit()).foregroundStyle(Theme.ink3)
-                                    }
-                                    Spacer(minLength: 8)
-                                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Theme.ink3)
-                                }
-                                .padding(.horizontal, 14).padding(.vertical, 12)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("insight-report-row-\(report.id)")
-                        }
-                    }
-                    .noteCard(padding: 0)
-                }
+            VStack(alignment: .leading, spacing: 20) {
+                studioCard(insights)
+                reportsSection(insights)
             }
-            .padding(.horizontal, 16).padding(.bottom, 24)
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 28)
         }
         .onChange(of: insights.scope.range) { _, _ in updateDates() }
         .onChange(of: startDate) { _, _ in updateDates() }
@@ -202,12 +96,146 @@ struct InsightsTabView: View {
         .onChange(of: insights.scope) { _, _ in if let api = store.api { insights.preview(api: api) } }
     }
 
-    private func tagMenu(_ insights: InsightsStore) -> some View {
+    private func studioCard(_ insights: InsightsStore) -> some View {
+        @Bindable var insights = insights
+        let lens = insights.selectedLens
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                Text(lens?.category ?? "分析视角")
+                    .font(Theme.TypeScale.meta.weight(.medium))
+                    .foregroundStyle(Theme.active)
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 26)
+                    .background(Theme.accentSoft, in: Capsule())
+                Spacer(minLength: 8)
+                if let lens, !lens.builtin {
+                    Button("编辑") { lensEditor = LensEditorRoute(lens: lens) }
+                        .font(Theme.TypeScale.meta.weight(.medium))
+                        .foregroundStyle(Theme.ink2)
+                }
+                Button {
+                    lensEditor = LensEditorRoute(lens: nil)
+                } label: {
+                    Label("新建视角", systemImage: "plus")
+                        .font(Theme.TypeScale.meta.weight(.medium))
+                        .foregroundStyle(Theme.active)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button {
+                choosingLens = true
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(lens?.name ?? "选择视角")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(Theme.ink)
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Theme.ink3)
+                    }
+                    if let description = lens?.description, !description.isEmpty {
+                        Text(description)
+                            .font(Theme.TypeScale.body)
+                            .foregroundStyle(Theme.ink2)
+                            .lineSpacing(4)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("分析视角")
+            .accessibilityValue(lens?.name ?? "")
+            .accessibilityIdentifier("insights-lens-picker")
+
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+
+            VStack(alignment: .leading, spacing: 12) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        rangeMenu(insights)
+                        if !store.index.exactTags.isEmpty {
+                            tagMenu(insights)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+
+                if insights.scope.range == "custom" {
+                    HStack(spacing: 10) {
+                        DatePicker("起始", selection: $startDate, displayedComponents: .date)
+                            .labelsHidden()
+                        Text("至").font(Theme.TypeScale.meta).foregroundStyle(Theme.ink3)
+                        DatePicker("结束", selection: $endDate, in: startDate..., displayedComponents: .date)
+                            .labelsHidden()
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    if let stats = insights.stats {
+                        Text(stats.label)
+                            .font(Theme.TypeScale.meta.monospacedDigit())
+                            .foregroundStyle(Theme.ink2)
+                            .accessibilityIdentifier("insights-preview-stats")
+                    } else if store.api != nil && insights.error == nil {
+                        ProgressView().controlSize(.small)
+                    }
+                    Spacer(minLength: 8)
+                }
+
+                Toggle(isOn: $insights.useProfile) {
+                    Text("结合个人画像")
+                        .font(Theme.TypeScale.body)
+                        .foregroundStyle(Theme.ink)
+                }
+                .tint(Theme.accent)
+            }
+
+            InlineError(message: insights.error)
+
+            Button {
+                if let api = store.api { insights.run(api: api, options: store.options) }
+            } label: {
+                Label("生成洞察", systemImage: "sparkles")
+            }
+            .buttonStyle(.weijiPrimaryWide)
+            .disabled((insights.stats?.noteCount ?? 0) == 0 || lens == nil)
+            .accessibilityIdentifier("insights-run-button")
+        }
+        .noteCard(padding: 18, cornerRadius: 20)
+    }
+
+    private func rangeMenu(_ insights: InsightsStore) -> some View {
         @Bindable var insights = insights
         return Menu {
-            Picker("匹配", selection: $insights.scope.tagMode) {
+            Picker("时间范围", selection: $insights.scope.range) {
+                Text("全部时间").tag("all")
+                Text("近 7 天").tag("7d")
+                Text("本周").tag("week")
+                Text("本月").tag("month")
+                Text("自定义日期").tag("custom")
+            }
+        } label: {
+            filterPill(symbol: "calendar", text: rangeLabel(insights.scope.range), active: insights.scope.range != "all")
+        }
+        .accessibilityLabel("时间范围")
+    }
+
+    private func tagMenu(_ insights: InsightsStore) -> some View {
+        @Bindable var insights = insights
+        let active = !insights.scope.tags.isEmpty
+        let title = active ? insights.scope.tags.map { "#" + $0 }.joined(separator: " · ") : "全部标签"
+        return Menu {
+            Picker("匹配方式", selection: $insights.scope.tagMode) {
                 Text("任一标签").tag("any")
                 Text("全部标签").tag("all")
+            }
+            if active {
+                Button("清除已选标签", role: .destructive) { insights.scope.tags.removeAll() }
             }
             ForEach(store.index.exactTags, id: \.self) { tag in
                 Button {
@@ -219,14 +247,112 @@ struct InsightsTabView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Text(insights.scope.tags.isEmpty ? "全部" : insights.scope.tags.map { "#" + $0 }.joined(separator: " · "))
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
-            }
-            .font(.subheadline).foregroundStyle(Theme.active)
+            filterPill(symbol: "number", text: title, active: active)
         }
         .accessibilityLabel("筛选标签")
+    }
+
+    private func filterPill(symbol: String, text: String, active: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(active ? Theme.active : Theme.ink3)
+            Text(text)
+                .font(Theme.TypeScale.meta.weight(.medium))
+                .foregroundStyle(active ? Theme.active : Theme.ink)
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(active ? Theme.active : Theme.ink3)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 34)
+        .background(active ? Theme.accentSoft : Theme.subtle, in: Capsule())
+    }
+
+    private func reportsSection(_ insights: InsightsStore) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                SectionLabel("历史报告")
+                Spacer()
+                if !insights.reports.isEmpty {
+                    Text("\(insights.reports.count) 篇")
+                        .font(Theme.TypeScale.meta.monospacedDigit())
+                        .foregroundStyle(Theme.ink3)
+                        .padding(.horizontal, 4)
+                }
+            }
+
+            if insights.reports.isEmpty {
+                Text("生成的洞察报告会保存在这里")
+                    .font(Theme.TypeScale.meta)
+                    .foregroundStyle(Theme.ink3)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 28)
+                    .noteCard(padding: 16, cornerRadius: 16)
+            } else {
+                LazyVStack(spacing: 10) {
+                    ForEach(insights.reports) { report in
+                        Button {
+                            if let api = store.api { insights.openReport(report, api: api) }
+                        } label: {
+                            reportCard(report)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("insight-report-row-\(report.id)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func reportCard(_ report: InsightReport) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(report.lensName)
+                    .font(Theme.TypeScale.meta.weight(.medium))
+                    .foregroundStyle(Theme.active)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(String(report.createdAt.prefix(10)))
+                    .font(Theme.TypeScale.meta.monospacedDigit())
+                    .foregroundStyle(Theme.ink3)
+            }
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(report.title)
+                        .font(Theme.TypeScale.itemTitle)
+                        .foregroundStyle(Theme.ink)
+                        .lineSpacing(3)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    if let excerpt = report.excerpt, !excerpt.isEmpty {
+                        Text(excerpt)
+                            .font(Theme.TypeScale.body)
+                            .foregroundStyle(Theme.ink2)
+                            .lineSpacing(3)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.ink3)
+                    .padding(.top, 4)
+            }
+        }
+        .noteCard(padding: 16, cornerRadius: 16)
+    }
+
+    private func rangeLabel(_ value: String) -> String {
+        switch value {
+        case "7d": "近 7 天"
+        case "week": "本周"
+        case "month": "本月"
+        case "custom": "自定义"
+        default: "全部时间"
+        }
     }
 
     private func updateDates() {
@@ -246,31 +372,6 @@ struct InsightsTabView: View {
     }
 }
 
-/// Label-left, value-right row used inside grouped cards.
-private struct FormRow<Trailing: View>: View {
-    let title: String
-    let trailing: Trailing
-
-    init(_ title: String, @ViewBuilder trailing: () -> Trailing) {
-        self.title = title
-        self.trailing = trailing()
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text(title).font(.subheadline).foregroundStyle(Theme.ink2)
-            Spacer(minLength: 12)
-            trailing
-        }
-        .padding(.horizontal, 14).frame(minHeight: 48)
-        .contentShape(Rectangle())
-    }
-}
-
-private struct FormDivider: View {
-    var body: some View { Rectangle().fill(Theme.hairline).frame(height: 1).padding(.leading, 14) }
-}
-
 /// Clean list instead of a system Menu, so each lens shows its description and nothing glassy floats over the run button.
 private struct LensPickerSheet: View {
     @Bindable var insights: InsightsStore
@@ -286,12 +387,19 @@ private struct LensPickerSheet: View {
                 } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(lens.name).font(.body.weight(selected ? .semibold : .regular)).foregroundStyle(Theme.ink)
-                            Text(lens.description).font(.footnote).foregroundStyle(Theme.ink2).lineLimit(3)
+                            Text(lens.name)
+                                .font(Theme.TypeScale.itemTitle.weight(selected ? .semibold : .medium))
+                                .foregroundStyle(Theme.ink)
+                            Text(lens.description)
+                                .font(Theme.TypeScale.meta)
+                                .foregroundStyle(Theme.ink2)
+                                .lineLimit(3)
                         }
                         Spacer(minLength: 8)
                         if selected {
-                            Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Theme.active)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Theme.active)
                         }
                     }
                     .padding(.vertical, 4)

@@ -242,7 +242,51 @@ final class APIClientTests: XCTestCase {
             let request = try await client.request(path)
             XCTAssertEqual(request.timeoutInterval, timeout, path)
         }
+        let streamRequest = try await client.request("/api/ai/chat", method: "POST", stream: true)
+        XCTAssertEqual(streamRequest.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+        XCTAssertEqual(streamRequest.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
+        XCTAssertGreaterThanOrEqual(streamRequest.timeoutInterval, 180)
         await client.cancel()
+    }
+
+    func testNetworkErrorsMapURLErrorCodesAndSurfaceFromStream() async throws {
+        let timedOut = WeijiAPIError.network(URLError(.timedOut))
+        XCTAssertEqual(timedOut.status, 0)
+        XCTAssertTrue(timedOut.message.contains("超时"))
+        XCTAssertTrue(timedOut.message.contains("-1001"))
+
+        let lost = WeijiAPIError.network(URLError(.networkConnectionLost))
+        XCTAssertEqual(lost.status, 0)
+        XCTAssertTrue(lost.message.contains("断开"))
+        XCTAssertTrue(lost.message.contains("-1005"))
+
+        for (code, expectedCode, keyword) in [
+            (URLError.Code.timedOut, "-1001", "超时"),
+            (URLError.Code.networkConnectionLost, "-1005", "断开"),
+        ] {
+            let (config, transport) = try StubProtocol.make { request in
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
+                XCTAssertGreaterThanOrEqual(request.timeoutInterval, 180)
+                return .init(status: 0, body: "", failure: code)
+            }
+            defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+            let client = WeijiAPIClient(configuration: config, transport: transport)
+            do {
+                let _: ChatResponse = try await client.stream("/api/ai/chat", ["message": .string("hi")]) { _ in }
+                XCTFail("Expected stream transport failure for \(code)")
+            } catch let error as WeijiAPIError {
+                XCTAssertEqual(error.status, 0)
+                XCTAssertTrue(error.message.contains(keyword), error.message)
+                XCTAssertTrue(error.message.contains(expectedCode), error.message)
+            }
+        }
+    }
+
+    func testAIProviderLabelsPreserveRawValues() {
+        XCTAssertEqual(AIProvider.codex.label, "内置服务")
+        XCTAssertEqual(AIProvider.openai.label, "自定义 Key")
+        XCTAssertEqual(AIProvider.codex.rawValue, "codex")
+        XCTAssertEqual(AIProvider.openai.rawValue, "openai")
     }
 
     @MainActor

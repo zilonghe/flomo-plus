@@ -109,15 +109,105 @@ final class TagAndCitationTests: XCTestCase {
         }
         for style: UIUserInterfaceStyle in [.light, .dark] {
             let mode = style == .light ? "light" : "dark"
-            XCTAssertGreaterThanOrEqual(contrast(Theme.accent, .white, style: style), 4.5, "primary CTA contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.canvas, style: style), 7.0, "body-on-canvas contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.paper, style: style), 7.0, "body-on-paper contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink2, Theme.canvas, style: style), 4.5, "ink2-on-canvas contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink2, Theme.paper, style: style), 4.5, "ink2-on-paper contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink3, Theme.canvas, style: style), 4.5, "ink3-on-canvas contrast (\(mode))")
             XCTAssertGreaterThanOrEqual(contrast(Theme.ink3, Theme.paper, style: style), 4.5, "ink3-on-paper contrast (\(mode))")
-            XCTAssertGreaterThanOrEqual(contrast(Theme.active, Theme.accentSoft, style: style), 4.5, "active-on-soft contrast (\(mode))")
-            XCTAssertGreaterThanOrEqual(contrast(Theme.active, Theme.paper, style: style), 4.5, "active-on-paper contrast (\(mode))")
+            for accent in ThemeAccent.allCases {
+                let tag = "\(accent.rawValue)/\(mode)"
+                XCTAssertGreaterThanOrEqual(contrast(.white, accent.accent, style: style), 4.5, "white-on-accent (\(tag))")
+                XCTAssertGreaterThanOrEqual(contrast(accent.active, accent.accentSoft, style: style), 4.5, "active-on-soft (\(tag))")
+                XCTAssertGreaterThanOrEqual(contrast(accent.active, Theme.paper, style: style), 4.5, "active-on-paper (\(tag))")
+                XCTAssertGreaterThanOrEqual(contrast(accent.active, Theme.canvas, style: style), 4.5, "active-on-canvas (\(tag))")
+            }
         }
+    }
+
+    func testThemeManagerPersistsSelectedAccent() throws {
+        let suiteName = "weiji.tests.theme.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = ThemeManager(defaults: defaults)
+        XCTAssertEqual(manager.accent, .pine)
+
+        manager.accent = .plum
+        XCTAssertEqual(defaults.string(forKey: ThemeManager.storageKey), ThemeAccent.plum.rawValue)
+
+        let reloaded = ThemeManager(defaults: defaults)
+        XCTAssertEqual(reloaded.accent, .plum)
+
+        defaults.set("unknown-accent", forKey: ThemeManager.storageKey)
+        XCTAssertEqual(ThemeManager(defaults: defaults).accent, .pine)
+    }
+
+    func testActiveTagQueryDetectsValidTriggersAndIgnoresInvalidBoundaries() throws {
+        let bare = try XCTUnwrap(TagParser.activeTagQuery(in: "#"))
+        XCTAssertEqual(bare.query, "")
+        XCTAssertEqual(String("#"[bare.range]), "#")
+
+        let prefixText = "想法 #ar"
+        let prefix = try XCTUnwrap(TagParser.activeTagQuery(in: prefixText))
+        XCTAssertEqual(prefix.query, "ar")
+        XCTAssertEqual(String(prefixText[prefix.range]), "#ar")
+
+        let nestedText = "记录 #工作/复"
+        let nested = try XCTUnwrap(TagParser.activeTagQuery(in: nestedText))
+        XCTAssertEqual(nested.query, "工作/复")
+        XCTAssertEqual(String(nestedText[nested.range]), "#工作/复")
+
+        let midText = "记录 #工作/复 明日继续"
+        let midCursor = try XCTUnwrap(midText.range(of: "#工作/复")?.upperBound)
+        let mid = try XCTUnwrap(TagParser.activeTagQuery(in: midText, cursor: midCursor))
+        XCTAssertEqual(mid.query, "工作/复")
+        XCTAssertEqual(String(midText[mid.range]), "#工作/复")
+
+        for nonTrigger in ["", "word#skip", "123#skip", "_#skip", "汉#跳过", "#tag ", "普通文本"] {
+            XCTAssertNil(TagParser.activeTagQuery(in: nonTrigger), nonTrigger)
+        }
+        XCTAssertNil(TagParser.activeTagQuery(in: "#ar", cursor: "#ar".startIndex))
+    }
+
+    func testSuggestTagsRanksPrefixAheadOfSubstringWithFrequencyTieBreakAndLimit() {
+        let candidates = ["area/思考", "area/产品", "work/area", "bar", "archive", "area/思考"]
+        let counts = ["area/思考": 2, "area/产品": 5, "work/area": 10, "bar": 20, "archive": 1]
+
+        XCTAssertEqual(
+            TagParser.suggestTags(for: "ar", from: candidates, counts: counts, limit: 8),
+            ["area/产品", "area/思考", "archive", "work/area", "bar"]
+        )
+        XCTAssertEqual(
+            TagParser.suggestTags(for: "ar", from: candidates, counts: counts, limit: 2),
+            ["area/产品", "area/思考"]
+        )
+        XCTAssertEqual(
+            TagParser.suggestTags(for: "", from: candidates, counts: counts, limit: 3),
+            ["bar", "work/area", "area/产品"]
+        )
+        XCTAssertEqual(TagParser.suggestTags(for: "ar", from: candidates, counts: counts, limit: 0), [])
+    }
+
+    func testApplyTagSuggestionInsertsSpaceWithoutDoublingExistingWhitespace() throws {
+        let endText = "写点什么 #ar"
+        let endQuery = try XCTUnwrap(TagParser.activeTagQuery(in: endText))
+        let endApplied = TagParser.applyTagSuggestion("area/思考", in: endText, replacing: endQuery.range)
+        XCTAssertEqual(endApplied.text, "写点什么 #area/思考 ")
+        XCTAssertEqual(endApplied.cursor, endApplied.text.endIndex)
+
+        let spacedText = "写点什么 #ar 后续"
+        let spacedCursor = try XCTUnwrap(spacedText.range(of: "#ar")?.upperBound)
+        let spacedQuery = try XCTUnwrap(TagParser.activeTagQuery(in: spacedText, cursor: spacedCursor))
+        let spacedApplied = TagParser.applyTagSuggestion("area/思考", in: spacedText, replacing: spacedQuery.range)
+        XCTAssertEqual(spacedApplied.text, "写点什么 #area/思考 后续")
+        XCTAssertEqual(String(spacedApplied.text[spacedApplied.cursor...]), "后续")
+
+        let tightText = "写点什么 #ar后续"
+        let tightCursor = try XCTUnwrap(tightText.range(of: "#ar")?.upperBound)
+        let tightQuery = try XCTUnwrap(TagParser.activeTagQuery(in: tightText, cursor: tightCursor))
+        let tightApplied = TagParser.applyTagSuggestion("area/思考", in: tightText, replacing: tightQuery.range)
+        XCTAssertEqual(tightApplied.text, "写点什么 #area/思考 后续")
+        XCTAssertEqual(String(tightApplied.text[tightApplied.cursor...]), "后续")
     }
 }

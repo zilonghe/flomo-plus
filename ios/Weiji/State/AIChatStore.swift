@@ -31,6 +31,8 @@ struct ChatRequestID {
 @Observable @MainActor
 final class AIChatStore {
     var draft = ""
+    var recoverableDraft: String { draft.isEmpty ? (inflightDraft ?? "") : draft }
+    private(set) var composerResetCount = 0
     var useProfile = true
     private(set) var pins: [String] = []
     private(set) var session: ChatSession?
@@ -49,6 +51,7 @@ final class AIChatStore {
     private(set) var loadingList = false
     private var source: String?
     @ObservationIgnored private var requestID = ChatRequestID()
+    @ObservationIgnored private var inflightDraft: String?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var listGeneration = 0
     @ObservationIgnored private var pendingDelta = ""
@@ -88,6 +91,9 @@ final class AIChatStore {
     }
 
     func stop() {
+        let wasSending = sending
+        let unsent = inflightDraft
+        inflightDraft = nil
         generation += 1
         task?.cancel()
         sessionTask?.cancel()
@@ -97,6 +103,7 @@ final class AIChatStore {
         streamedText = ""
         pendingQuestion = ""
         requestID.clear()
+        if wasSending, draft.isEmpty, let unsent { draft = unsent }
     }
 
     func loadSource(_ source: String, api: WeijiAPIClient) {
@@ -165,6 +172,10 @@ final class AIChatStore {
     func send(api: WeijiAPIClient, options: AIOptions, profile: InsightsStore) {
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let typed = draft
+        draft = ""
+        composerResetCount += 1
+        inflightDraft = typed
+        pendingQuestion = typed
         generation += 1
         let stamp = generation
         sending = true
@@ -176,6 +187,7 @@ final class AIChatStore {
                     sending = false
                     pendingQuestion = ""
                     streamedText = ""
+                    inflightDraft = nil
                 }
             }
             do {
@@ -195,7 +207,6 @@ final class AIChatStore {
                 if let id = signature.sessionId { fields["sessionId"] = .string(id) }
                 if let id = signature.sourceNoteId { fields["sourceNoteId"] = .string(id) }
                 if let version = signature.expectedVersion { fields["expectedVersion"] = .number(version) }
-                pendingQuestion = typed
                 let response: ChatResponse = try await api.stream("/api/ai/chat", fields) { [weak self] frame in
                     await self?.receive(frame, generation: stamp)
                 }
@@ -203,7 +214,7 @@ final class AIChatStore {
                 session = latest
                 insight = nil
                 requestID.clear()
-                if draft == typed { draft = "" }
+                inflightDraft = nil
             } catch is CancellationError {
             } catch let failure as WeijiAPIError where failure.status == 409 {
                 guard stamp == generation else { return }
@@ -213,9 +224,13 @@ final class AIChatStore {
                     guard stamp == generation else { return }
                     if let updated = latest?.session { session = updated }
                 }
+                if draft.isEmpty, let unsent = inflightDraft { draft = unsent }
                 error = failure.message
             } catch {
-                if stamp == generation { self.error = error.localizedDescription }
+                if stamp == generation {
+                    if draft.isEmpty, let unsent = inflightDraft { draft = unsent }
+                    self.error = error.localizedDescription
+                }
             }
         }
     }

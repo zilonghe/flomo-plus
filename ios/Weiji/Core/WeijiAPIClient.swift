@@ -34,6 +34,20 @@ struct WeijiAPIError: LocalizedError {
     var rejectsAuthentication: Bool { status == 401 || status == 403 }
     static let interrupted = Self(status: 0, message: "连接中断，未收到完整回复。")
 
+    static func network(_ error: URLError) -> Self {
+        let code = error.code.rawValue
+        switch error.code {
+        case .timedOut:
+            return Self(status: 0, message: "AI 响应超时（\(code)），请重试或切换更快的模型。")
+        case .notConnectedToInternet, .dataNotAllowed:
+            return Self(status: 0, message: "当前无网络连接（\(code)），请检查网络后重试。")
+        case .networkConnectionLost:
+            return Self(status: 0, message: "网络连接中途断开（\(code)），请重试。")
+        default:
+            return Self(status: 0, message: "网络连接中断（\(code)），未收到完整回复。")
+        }
+    }
+
     private struct Envelope: Decodable { let error: String; let status: Int? }
 
     static func response(_ status: Int, _ data: Data) -> Self {
@@ -165,7 +179,7 @@ actor WeijiAPIClient {
             session = transport
         } else {
             let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 90
+            config.timeoutIntervalForRequest = 180
             config.timeoutIntervalForResource = 600
             config.httpShouldSetCookies = false
             session = URLSession(configuration: config, delegate: NoRedirect(), delegateQueue: nil)
@@ -178,7 +192,7 @@ actor WeijiAPIClient {
         guard path.hasPrefix("/api/"), let url = URL(string: configuration.origin + path) else {
             throw WeijiAPIError(status: 0, message: "无效的服务路径。")
         }
-        let timeout: TimeInterval = ["/api/session", "/api/auth/providers"].contains(path) ? 10 : 90
+        let timeout: TimeInterval = ["/api/session", "/api/auth/providers"].contains(path) ? 10 : (stream ? 180 : 90)
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         if !configuration.token.isEmpty {
@@ -186,6 +200,9 @@ actor WeijiAPIClient {
         }
         request.setValue(account, forHTTPHeaderField: "X-Journal-Account")
         request.setValue(stream ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
+        if stream {
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        }
         if method == "POST" || method == "DELETE" {
             request.setValue(configuration.origin, forHTTPHeaderField: "Origin")
         }
@@ -283,7 +300,7 @@ actor WeijiAPIClient {
             return try await Self.readStream(bytes, onFrame: onFrame)
         } catch {
             if Task.isCancelled { throw CancellationError() }
-            if error is URLError { throw WeijiAPIError.interrupted }
+            if let urlError = error as? URLError { throw WeijiAPIError.network(urlError) }
             throw error
         }
     }

@@ -86,7 +86,7 @@ struct NotesTabView: View {
         HStack(spacing: 4) {
             IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") { sidebar = true }
                 .padding(.leading, -10)
-            Text("微记").font(.title2.bold())
+            Text("微记").font(Theme.TypeScale.pageTitle).foregroundStyle(Theme.ink)
             Spacer()
             if store.syncing { ProgressView().controlSize(.small).accessibilityLabel("正在同步").padding(.trailing, 4) }
             IconAction(symbol: showSearch ? "xmark" : "magnifyingglass", label: "搜索", id: "notes-search-button") {
@@ -162,55 +162,5 @@ struct NoteCardContent: View {
             rich[start..<end].foregroundColor = Theme.active
         }
         return rich
-    }
-}
-
-struct NotesDrawer: ViewModifier {
-    let store: AppStore
-    @Binding var isOpen: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func body(content: Content) -> some View {
-        content
-            .accessibilityHidden(isOpen)
-            .allowsHitTesting(!isOpen)
-            .simultaneousGesture(DragGesture().onEnded { value in
-                let dx = value.translation.width
-                guard store.tab == .notes, value.startLocation.x <= 28,
-                      dx > 60, dx > abs(value.translation.height) else { return }
-                isOpen = true
-            })
-            .overlay {
-                if isOpen {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Color.black.opacity(0.32)
-                                .ignoresSafeArea()
-                                .onTapGesture { isOpen = false }
-                                .accessibilityHidden(true)
-                                .transition(.opacity)
-                            SidebarSheetView(store: store, onClose: { isOpen = false })
-                                .frame(width: min(320, geo.size.width * 0.84))
-                                .frame(maxHeight: .infinity)
-                                .clipped()
-                                .background {
-                                    // Opaque panel: large surfaces never use translucent glass.
-                                    UnevenRoundedRectangle(bottomTrailingRadius: 24, topTrailingRadius: 24)
-                                        .fill(Theme.canvas)
-                                        .shadow(color: .black.opacity(0.22), radius: 20, x: 6)
-                                        .ignoresSafeArea()
-                                }
-                                .accessibilityAddTraits(.isModal)
-                                .accessibilityAction(.escape) { isOpen = false }
-                                .transition(.move(edge: .leading))
-                        }
-                        .simultaneousGesture(DragGesture().onEnded { value in
-                            let dx = value.translation.width
-                            if dx < -60, -dx > abs(value.translation.height) { isOpen = false }
-                        })
-                    }
-                }
-            }
-            .animation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.86), value: isOpen)
     }
 }

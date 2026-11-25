@@ -2529,7 +2529,24 @@ function drawWalkLinks() {
   const x = value => Math.round((value - bounds.left) / rw.zoom);
   const y = value => Math.round((value - bounds.top) / rw.zoom);
   const from = focus.getBoundingClientRect();
-  const paths = Array.from($('rw-related').querySelectorAll('.rw-related-card'), (card) => {
+  const paths = [];
+  const prev = $('rw-prev-slot').querySelector('.rw-prev-card');
+  if (prev) {
+    const prevRect = prev.getBoundingClientRect();
+    const prevPath = document.createElementNS(SVG_NS, 'path');
+    prevPath.setAttribute('class', 'rw-link-prev');
+    if (prevRect.right <= from.left) {
+      const start = x(prevRect.right), end = x(from.left), middle = (start + end) / 2;
+      const sy = y(prevRect.top + prevRect.height / 2), ey = y(from.top + from.height / 2);
+      prevPath.setAttribute('d', `M ${start} ${sy} C ${middle} ${sy}, ${middle} ${ey}, ${end} ${ey}`);
+    } else {
+      const sx = x(prevRect.left + prevRect.width / 2), ex = x(from.left + from.width / 2);
+      const sy = y(prevRect.bottom), ey = y(from.top), mid = (sy + ey) / 2;
+      prevPath.setAttribute('d', `M ${sx} ${sy} C ${sx} ${mid}, ${ex} ${mid}, ${ex} ${ey}`);
+    }
+    paths.push(prevPath);
+  }
+  for (const card of $('rw-related').querySelectorAll('.rw-related-card')) {
     const to = card.getBoundingClientRect();
     const path = document.createElementNS(SVG_NS, 'path');
     if (to.left >= from.right) {
@@ -2541,9 +2558,38 @@ function drawWalkLinks() {
       const sy = y(from.bottom), ey = y(to.top), mid = (sy + ey) / 2;
       path.setAttribute('d', `M ${sx} ${sy} C ${sx} ${mid}, ${ex} ${mid}, ${ex} ${ey}`);
     }
-    return path;
-  });
+    paths.push(path);
+  }
   svg.replaceChildren(...paths);
+}
+
+function renderWalkPrev() {
+  const slot = $('rw-prev-slot');
+  const prevId = rw.history.length ? rw.history[rw.history.length - 1] : null;
+  const prevNote = prevId ? state.notes.get(prevId) : null;
+  if (!prevNote) {
+    slot.replaceChildren();
+    return;
+  }
+  const card = el('button', 'rw-prev-card');
+  card.type = 'button';
+  card.dataset.action = 'rw-prev';
+  const head = el('div', 'rw-prev-head');
+  head.append(el('span', 'rw-prev-badge', '← 上一跳'));
+  const metaText = prevNote.reading?.bookTitle || dateLong.format(new Date(prevNote.createdAt));
+  if (metaText) head.append(el('span', 'rw-prev-meta', metaText));
+  card.append(head, el('p', 'rw-prev-excerpt', prevNote.body.slice(0, 180)));
+  slot.replaceChildren(card);
+}
+
+function walkBack() {
+  while (rw.history.length) {
+    const previous = rw.history.pop();
+    if (state.notes.has(previous)) { pivotWalk(previous, false); return; }
+  }
+  $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]').disabled = true;
+  renderWalkPrev();
+  drawWalkLinks();
 }
 
 function walkFocusCard(note) {
@@ -2577,7 +2623,8 @@ function pivotWalk(id, remember = true) {
   rw.loading = true;
   if (remember && rw.id && rw.id !== id) rw.history.push(rw.id);
   rw.id = id;
-  $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = !rw.history.length;
+  $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]').disabled = !rw.history.length;
+  renderWalkPrev();
   $('rw-focus').replaceChildren(walkFocusCard(local));
   $('rw-related').replaceChildren();
   drawWalkLinks();
@@ -2616,6 +2663,7 @@ function reconcileWalkFocus(data) {
   rw.history = rw.history.filter(id => id !== data.deleted.id);
   rw.id = null;
   resetWalkRelated();
+  renderWalkPrev();
   $('rw-focus').replaceChildren();
   $('rw-related').replaceChildren();
   drawWalkLinks();
@@ -2640,7 +2688,8 @@ function openRandomWalk(button) {
   applyWalkZoom();
   $('random-walk-overlay').hidden = false;
   $('random-walk-overlay').querySelector('.rw-controls').prepend($('refresh-button'));
-  $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = true;
+  $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]').disabled = true;
+  $('rw-prev-slot').replaceChildren();
   $('random-walk-overlay').querySelector('[data-action="rw-close"]').focus({ preventScroll: true });
   sidebar(false);
   shuffleWalk();
@@ -2653,6 +2702,7 @@ function closeRandomWalk({ restore = true } = {}) {
   resetWalkRelated();
   rw.id = null;
   rw.history = [];
+  $('rw-prev-slot').replaceChildren();
   $('rw-focus').replaceChildren();
   $('rw-related').replaceChildren();
   drawWalkLinks();
@@ -2755,9 +2805,9 @@ function toggleAIUtilityPicker(kind, open, restoreFocus = false) {
   }
 }
 
-function renderModelOptions() {
-  const query = $('ai-model-search').value.trim().toLowerCase();
-  const options = $('ai-model-options');
+function renderModelOptions(prefix = 'ai') {
+  const query = $(prefix + '-model-search').value.trim().toLowerCase();
+  const options = $(prefix + '-model-options');
   options.replaceChildren();
   for (const [vendor, label] of Object.entries(modelVendors)) {
     const models = state.gatewayModelMeta.filter(item => item.vendor === vendor &&
@@ -2783,13 +2833,40 @@ function renderModelOptions() {
       if (selected) option.append(icon('check'));
       option.addEventListener('click', () => {
         setGatewayModel(item.id);
-        toggleAIUtilityPicker('model', false, true);
+        if (prefix === 'ins') toggleInsModelPicker(false, true);
+        else toggleAIUtilityPicker('model', false, true);
       });
       group.append(option);
     }
     options.append(group);
   }
   if (!options.childElementCount) options.append(el('p', 'ai-picker-empty', '未找到模型'));
+}
+
+function toggleInsModelPicker(open, restoreFocus = false) {
+  const trigger = $('ins-model-toggle');
+  const popover = $('ins-model-popover');
+  if (open) toggleInsTags(false);
+  popover.hidden = !open;
+  trigger.setAttribute('aria-expanded', String(open));
+  if (!open) {
+    if (restoreFocus) trigger.focus({ preventScroll: true });
+  } else {
+    $('ins-model-search').value = '';
+    renderModelOptions('ins');
+    $('ins-model-search').focus({ preventScroll: true });
+  }
+}
+
+function renderInsModelPicker() {
+  const item = activeModelMeta();
+  const visible = hasGatewayModels() && Boolean(item);
+  $('ins-model-picker').hidden = !visible;
+  if (!visible) {
+    toggleInsModelPicker(false);
+    return;
+  }
+  $('ins-model-toggle').replaceChildren(vendorBadge(item.vendor), el('span', 'ai-picker-label', item.label));
 }
 
 function renderAIModelPicker() {
@@ -2827,15 +2904,17 @@ function renderAIModelPicker() {
 }
 
 function renderGatewayModels() {
+  const hasModels = hasGatewayModels();
   for (const id of gatewaySelectIds) {
     const select = $(id);
     const rerun = id === 'ins-rerun-model';
-    select.hidden = !hasGatewayModels();
-    if (rerun) $('ins-rerun-controls').hidden = select.hidden;
+    select.hidden = id === 'ins-model-select' ? true : !hasModels;
+    if (rerun) $('ins-rerun-controls').hidden = !hasModels;
     select.replaceChildren(...state.gatewayModels.map(model => new Option(model, model)));
     select.value = state.gatewayModel ?? '';
   }
   renderAIModelPicker();
+  renderInsModelPicker();
 }
 
 let gatewayModelsRevision = 0;
@@ -3820,6 +3899,7 @@ function insPressed(button, on) {
 }
 
 function toggleInsTags(open, focus = false) {
+  if (open) toggleInsModelPicker(false);
   $('ins-tag-popover').hidden = !open;
   $('ins-tag-trigger').setAttribute('aria-expanded', String(open));
   if (focus) $(open ? 'ins-tag-search' : 'ins-tag-trigger').focus();
@@ -4028,6 +4108,7 @@ function closeInsights({ restore = true } = {}) {
   $('notes-topbar').hidden = $('main').hidden = false;
   syncNavActive();
   toggleInsTags(false);
+  toggleInsModelPicker(false);
   if ($('insight-lens-dialog').open) $('insight-lens-dialog').close();
   $('ins-lens-form').reset();
   $('ins-lens-form').querySelector('button[type="submit"]').disabled = false;
@@ -4056,6 +4137,7 @@ function setInsTab(tab) {
   ins.tab = tab;
   ins.report = null;
   toggleInsTags(false);
+  toggleInsModelPicker(false);
   setError('ins-view-error', '');
   ins.reportRevision++;
   $('ins-report-body').replaceChildren();
@@ -4151,6 +4233,7 @@ async function startInsRun(body) {
   view.attempt = body;
   view.reportRevision++;
   toggleInsTags(false);
+  toggleInsModelPicker(false);
   setError('ins-error', '');
   setError('ins-report-error', '');
   $('ins-report-meta').textContent = '';
@@ -4276,7 +4359,32 @@ for (const kind of ['model', 'effort']) {
     }
   });
 }
-$('ai-model-search').addEventListener('input', renderModelOptions);
+$('ai-model-search').addEventListener('input', () => renderModelOptions('ai'));
+{
+  const popover = $('ins-model-popover');
+  const picker = $('ins-model-picker');
+  $('ins-model-toggle').addEventListener('click', () => toggleInsModelPicker(popover.hidden));
+  document.addEventListener('pointerdown', event => {
+    if (!popover.hidden && !picker.contains(event.target)) toggleInsModelPicker(false);
+  });
+  picker.addEventListener('keydown', event => {
+    if (popover.hidden || event.isComposing) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleInsModelPicker(false, true);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || (event.key === 'Enter' && event.target.id === 'ins-model-search')) {
+      const options = [...popover.querySelectorAll('button')];
+      if (!options.length) return;
+      event.preventDefault();
+      const index = options.indexOf(event.target);
+      if (event.key === 'Enter') (options.find(option => option.getAttribute('aria-pressed') === 'true') ?? options[0]).click();
+      else if (event.key === 'ArrowDown') options[(index + 1) % options.length].focus();
+      else options[index <= 0 ? options.length - 1 : index - 1].focus();
+    }
+  });
+  $('ins-model-search').addEventListener('input', () => renderModelOptions('ins'));
+}
 $('ins-range-select').addEventListener('change', event => {
   ins.range = event.target.value;
   previewInsScope();
@@ -4376,13 +4484,7 @@ const actions = {
   'rw-close': () => closeRandomWalk(),
   'rw-shuffle': shuffleWalk,
   'rw-pivot': (button) => pivotWalk(button.dataset.noteId),
-  'rw-prev': () => {
-    while (rw.history.length) {
-      const previous = rw.history.pop();
-      if (state.notes.has(previous)) { pivotWalk(previous, false); return; }
-    }
-    $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = true;
-  },
+  'rw-prev': walkBack,
   'rw-zoom-in': () => { rw.zoom = Math.min(1.8, rw.zoom + 0.15); applyWalkZoom(); },
   'rw-zoom-out': () => { rw.zoom = Math.max(0.55, rw.zoom - 0.15); applyWalkZoom(); },
   'rw-center': () => { rw.zoom = 1; applyWalkZoom(); },
@@ -4718,6 +4820,11 @@ document.addEventListener('keydown', (event) => {
     if (ins && !$('ins-tag-popover').hidden) {
       event.preventDefault();
       toggleInsTags(false, true);
+      return;
+    }
+    if (ins && !$('ins-model-popover').hidden) {
+      event.preventDefault();
+      toggleInsModelPicker(false, true);
       return;
     }
     if (ai.lifecycle || ins || !$('random-walk-overlay').hidden) {

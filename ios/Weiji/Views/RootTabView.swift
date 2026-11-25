@@ -2,7 +2,8 @@ import SwiftUI
 
 struct RootTabView: View {
     @Bindable var store: AppStore
-    @State private var sidebar = false
+    @State private var notesSidebar = false
+    @State private var aiSessionsDrawer = false
     @Namespace private var tabSelection
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -19,22 +20,34 @@ struct RootTabView: View {
             case .online, .offline:
                 Group {
                     switch store.tab {
-                    case .notes: NotesTabView(store: store, sidebar: $sidebar)
+                    case .notes: NotesTabView(store: store, sidebar: $notesSidebar)
                     case .walk: RandomWalkView(store: store)
-                    case .ai: AIChatView(store: store)
+                    case .ai: AIChatView(store: store, showSessions: $aiSessionsDrawer)
                     case .insights: InsightsTabView(store: store)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .safeAreaInset(edge: .bottom, spacing: 0) { tabBar }
-                .modifier(NotesDrawer(store: store, isOpen: $sidebar))
+                .modifier(SideDrawer(isOpen: $notesSidebar, edgeSwipeEnabled: store.tab == .notes && !aiSessionsDrawer) {
+                    SidebarSheetView(store: store, onClose: { notesSidebar = false })
+                })
+                .modifier(SideDrawer(isOpen: $aiSessionsDrawer, edgeSwipeEnabled: store.tab == .ai && store.api != nil && !notesSidebar) {
+                    SessionsDrawerView(store: store, onClose: { aiSessionsDrawer = false })
+                })
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas.ignoresSafeArea())
         .tint(Theme.active)
         .onChange(of: store.authScreenState) { _, state in
-            if state == .needsLogin || state == .restoring { sidebar = false }
+            if state == .needsLogin || state == .restoring {
+                notesSidebar = false
+                aiSessionsDrawer = false
+            }
+        }
+        .onChange(of: store.tab) { _, _ in
+            notesSidebar = false
+            aiSessionsDrawer = false
         }
         .sheet(isPresented: $store.showSettings) { ConnectionSettingsView(store: store) }
         .sheet(item: $store.detail) { detail in
@@ -44,7 +57,27 @@ struct RootTabView: View {
     }
 
     private var tabBar: some View {
-        HStack(spacing: 0) {
+        tabCapsule
+            .frame(maxWidth: 360)
+            .padding(.horizontal, 28)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity)
+            .background {
+                // Softly fades scrolled content below the floating glass bar without blocking taps.
+                LinearGradient(stops: [.init(color: Theme.canvas.opacity(0), location: 0),
+                                       .init(color: Theme.canvas, location: 0.55)],
+                               startPoint: .top, endPoint: .bottom)
+                    .padding(.top, -16)
+                    .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
+            }
+    }
+
+    /// Small floating navigation bar uses native iOS 26 Liquid Glass so it harmonizes with system sheet toolbars.
+    @ViewBuilder
+    private var tabCapsule: some View {
+        let content = HStack(spacing: 0) {
             ForEach(AppStore.Tab.allCases, id: \.self) { tab in
                 let selected = store.tab == tab
                 Button {
@@ -54,11 +87,11 @@ struct RootTabView: View {
                         Image(systemName: icon(tab)).font(.system(size: 17, weight: selected ? .semibold : .regular))
                         Text(title(tab)).font(.system(size: 10, weight: selected ? .semibold : .medium))
                     }
-                    .foregroundStyle(selected ? Theme.active : Theme.ink3)
+                    .foregroundStyle(selected ? Theme.active : Theme.ink2)
                     .frame(maxWidth: .infinity, minHeight: 46)
                     .background {
                         if selected {
-                            Capsule().fill(Theme.accentSoft)
+                            Capsule().fill(Theme.accentSoft.opacity(0.88))
                                 .matchedGeometryEffect(id: "selected-tab", in: tabSelection)
                         }
                     }
@@ -71,24 +104,14 @@ struct RootTabView: View {
         }
         .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: store.tab)
         .padding(4)
-        .background {
-            Capsule().fill(Theme.paper)
-                .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
-        }
-        .overlay { Capsule().strokeBorder(Theme.hairline).allowsHitTesting(false) }
-        .frame(maxWidth: 360)
-        .padding(.horizontal, 28)
-        .padding(.top, 6)
-        .padding(.bottom, 4)
-        .frame(maxWidth: .infinity)
-        .background {
-            // Fades scrolled content out under the floating bar instead of letting it peek around the capsule.
-            LinearGradient(stops: [.init(color: Theme.canvas.opacity(0), location: 0),
-                                   .init(color: Theme.canvas, location: 0.45)],
-                           startPoint: .top, endPoint: .bottom)
-                .padding(.top, -18)
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
+
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: .capsule)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay { Capsule().strokeBorder(Theme.hairline).allowsHitTesting(false) }
+                .shadow(color: .black.opacity(0.08), radius: 14, y: 5)
         }
     }
 
@@ -108,5 +131,57 @@ struct RootTabView: View {
         case .ai: "AI"
         case .insights: "洞察"
         }
+    }
+}
+
+/// Shared solid, strictly clipped left-edge slide-in drawer for both Notes sidebar and AI history.
+struct SideDrawer<DrawerContent: View>: ViewModifier {
+    @Binding var isOpen: Bool
+    let edgeSwipeEnabled: Bool
+    @ViewBuilder let drawer: () -> DrawerContent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityHidden(isOpen)
+            .allowsHitTesting(!isOpen)
+            .simultaneousGesture(DragGesture().onEnded { value in
+                let dx = value.translation.width
+                guard edgeSwipeEnabled, !isOpen, value.startLocation.x <= 28,
+                      dx > 60, dx > abs(value.translation.height) else { return }
+                isOpen = true
+            })
+            .overlay {
+                if isOpen {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Color.black.opacity(0.32)
+                                .ignoresSafeArea()
+                                .onTapGesture { isOpen = false }
+                                .accessibilityHidden(true)
+                                .transition(.opacity)
+                            drawer()
+                                .frame(width: min(320, geo.size.width * 0.84))
+                                .frame(maxHeight: .infinity)
+                                .clipped()
+                                .background {
+                                    // Large drawer panels stay strictly opaque to prevent translucency bleed.
+                                    UnevenRoundedRectangle(bottomTrailingRadius: 24, topTrailingRadius: 24)
+                                        .fill(Theme.canvas)
+                                        .shadow(color: .black.opacity(0.22), radius: 20, x: 6)
+                                        .ignoresSafeArea()
+                                }
+                                .accessibilityAddTraits(.isModal)
+                                .accessibilityAction(.escape) { isOpen = false }
+                                .transition(.move(edge: .leading))
+                        }
+                        .simultaneousGesture(DragGesture().onEnded { value in
+                            let dx = value.translation.width
+                            if dx < -60, -dx > abs(value.translation.height) { isOpen = false }
+                        })
+                    }
+                }
+            }
+            .animation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.86), value: isOpen)
     }
 }
