@@ -842,12 +842,29 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     const noteMap = new Map([[noteA.id, noteA], [noteB.id, noteB], [noteC.id, noteC]]);
     let liveNotes = [noteA, noteB, noteC];
     let deletedNotes = [];
+    let getNotesCount = 0;
+    let postDeleteCount = 0;
     const nextInCycle = new Map([[noteA.id, noteB], [noteB.id, noteC], [noteC.id, noteA]]);
     const json = (res, value, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(value));
     const web = createServer(async (req, res) => {
       const pathname = new URL(req.url, origin).pathname;
       if (pathname === '/api/session') return json(res, { user: { id: 'A', name: 'A' }, authMode: 'oauth', codexAvailable: true, codexMode: 'gateway' });
-      if (pathname === '/api/notes') return json(res, { notes: liveNotes, deleted: deletedNotes });
+      if (pathname === '/api/notes' && req.method === 'POST') {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (body.delete && body.id) {
+          postDeleteCount++;
+          liveNotes = liveNotes.filter(n => n.id !== body.id);
+          const tombstone = { id: body.id, revision: (body.expectedRevision ?? 1) + 1 };
+          deletedNotes = [...deletedNotes.filter(d => d.id !== body.id), tombstone];
+          return json(res, { deleted: tombstone });
+        }
+      }
+      if (pathname === '/api/notes') {
+        getNotesCount++;
+        return json(res, { notes: liveNotes, deleted: deletedNotes });
+      }
       if (pathname === '/api/ai/models') return json(res, {
         models: ['gemini-4-neon-xhigh', 'gemini-3-flash', 'gpt-6.2-sol'],
         defaultModel: 'gemini-4-neon-xhigh',
@@ -996,53 +1013,85 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     assert.equal(afterBack.hasPrevCard, false);
     assert.equal(afterBack.hasPrevLink, false);
 
-    // 3. Random Walk 3-hop sync deletion: deleting previous hop prunes card & falls back to surviving history
+    // 3. Revisit cycle (hop1 -> hop2 -> hop3 -> hop1): sync deleting hop2 must prune right related card & keep earlier hop1 in history
     await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
     await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.relatedId)} && Boolean(document.querySelector('#rw-related .rw-related-card'))`),
       'hopped to second note');
+    const hop1Id = initialWalk.focusId;
     const hop2Id = initialWalk.relatedId;
     const hop3Id = await page.evaluate("document.querySelector('#rw-related .rw-related-card').dataset.noteId");
-    assert.notEqual(hop3Id, initialWalk.focusId);
+    assert.notEqual(hop3Id, hop1Id);
     assert.notEqual(hop3Id, hop2Id);
 
     await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop3Id)} && Boolean(document.querySelector('#rw-prev-slot .rw-prev-card'))`),
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop3Id)} && Boolean(document.querySelector('#rw-related .rw-related-card'))`),
       'hopped to third note');
-    const hop1Body = noteMap.get(initialWalk.focusId).body.slice(0, 12);
-    const hop2Body = noteMap.get(hop2Id).body.slice(0, 12);
-    assert.ok((await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').textContent")).includes(hop2Body));
+    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop1Id)} && Boolean(document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop2Id)} + '"]'))`),
+      'revisited hop1 with hop2 shown on right');
 
-    // Delete hop2 on server and sync inside Random Walk -> previous card must immediately fall back to hop1
+    const hop1Body = noteMap.get(hop1Id).body.slice(0, 12);
+    const hop3Body = noteMap.get(hop3Id).body.slice(0, 12);
+
+    // Delete hop2 on server and sync -> right column must immediately remove hop2, left card keeps hop3
     liveNotes = liveNotes.filter(n => n.id !== hop2Id);
     deletedNotes = [{ id: hop2Id, revision: 2 }];
     await page.evaluate("document.getElementById('refresh-button').click()");
-    await until(() => page.evaluate(`document.getElementById('sync-state')?.dataset.status === 'ok' && !document.getElementById('refresh-button').disabled && !document.querySelector('#rw-prev-slot')?.textContent.includes(${JSON.stringify(hop2Body)})`),
-      'deleted hop2 pruned from previous card after sync');
-    const afterFirstDelete = await page.evaluate(`({
+    await until(() => page.evaluate(`document.getElementById('sync-state')?.dataset.status === 'ok' && !document.getElementById('refresh-button').disabled && !document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop2Id)} + '"]')`),
+      'deleted hop2 pruned from right related column after sync');
+    const afterRevisitSync = await page.evaluate(`({
       focusId: document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId,
+      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
+      relatedCount: document.querySelectorAll('#rw-related .rw-related-card').length,
+      backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
+    })`);
+    assert.equal(afterRevisitSync.focusId, hop1Id);
+    assert.ok(afterRevisitSync.prevText.includes(hop3Body));
+    assert.equal(afterRevisitSync.relatedCount, 0, 'deleted hop2 must be removed from right related column');
+    assert.equal(afterRevisitSync.backDisabled, false);
+
+    // Step back from revisited hop1 to hop3 -> surviving earlier hop1 MUST remain in history (not stripped by id !== rw.id)
+    await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop3Id)} && Boolean(document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop1Id)} + '"]'))`),
+      'stepped back to hop3 with hop1 on both left prev card and right related card');
+    const atHop3 = await page.evaluate(`({
       prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
       backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
       hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
+      hasRightHop1: Boolean(document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop1Id)} + '"]')),
     })`);
-    assert.equal(afterFirstDelete.focusId, hop3Id);
-    assert.ok(afterFirstDelete.prevText.includes(hop1Body), `expected fallback to hop1: ${JSON.stringify(afterFirstDelete)}`);
-    assert.equal(afterFirstDelete.backDisabled, false);
-    assert.equal(afterFirstDelete.hasPrevLink, true);
+    assert.ok(atHop3.prevText.includes(hop1Body), `revisited hop1 must survive in history: ${JSON.stringify(atHop3)}`);
+    assert.equal(atHop3.backDisabled, false);
+    assert.equal(atHop3.hasPrevLink, true);
+    assert.equal(atHop3.hasRightHop1, true);
 
-    // Delete hop1 too and sync -> previous card, link, and back button all clear immediately
-    liveNotes = liveNotes.filter(n => n.id !== initialWalk.focusId);
-    deletedNotes = [{ id: hop2Id, revision: 2 }, { id: initialWalk.focusId, revision: 2 }];
-    await page.evaluate("document.getElementById('refresh-button').click()");
-    await until(() => page.evaluate("document.getElementById('sync-state')?.dataset.status === 'ok' && !document.getElementById('refresh-button').disabled && !document.querySelector('#rw-prev-slot .rw-prev-card')"),
-      'all deleted history pruned after sync');
-    const afterSecondDelete = await page.evaluate(`({
+    // 4. Local POST delete via mutate() (NO GET /api/notes sync!) -> immediately clears both left prev card and right related card
+    const getsBeforeLocalDelete = getNotesCount;
+    await page.evaluate(`(() => {
+      const menuBtn = document.querySelector('[data-action="card-menu"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]');
+      if (!menuBtn) throw new Error('missing card menu button for hop1');
+      menuBtn.click();
+    })()`);
+    await until(() => page.evaluate(`Boolean(document.querySelector('[data-action="card-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]'))`),
+      'card menu inline delete item rendered');
+    await page.evaluate(`document.querySelector('[data-action="card-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]').click()`);
+    await until(() => page.evaluate(`Boolean(document.querySelector('[data-action="confirm-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]'))`),
+      'inline delete confirmation rendered');
+    await page.evaluate(`document.querySelector('[data-action="confirm-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]').click()`);
+    await until(() => page.evaluate(`!document.querySelector('#rw-prev-slot .rw-prev-card') && !document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop1Id)} + '"]')`),
+      'local POST delete pruned both prev card and right related card without sync');
+    const afterLocalDelete = await page.evaluate(`({
       hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
       hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
+      relatedCount: document.querySelectorAll('#rw-related .rw-related-card').length,
       backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
     })`);
-    assert.equal(afterSecondDelete.hasPrevCard, false);
-    assert.equal(afterSecondDelete.hasPrevLink, false);
-    assert.equal(afterSecondDelete.backDisabled, true);
+    assert.equal(postDeleteCount, 1, 'expected local POST /api/notes delete');
+    assert.equal(getNotesCount, getsBeforeLocalDelete, 'local delete cleanup must not rely on a subsequent GET /api/notes sync');
+    assert.equal(afterLocalDelete.hasPrevCard, false);
+    assert.equal(afterLocalDelete.hasPrevLink, false);
+    assert.equal(afterLocalDelete.relatedCount, 0);
+    assert.equal(afterLocalDelete.backDisabled, true);
   });
 
 test('Chat SSE flushes : connected immediately before upstream replies', async t => {

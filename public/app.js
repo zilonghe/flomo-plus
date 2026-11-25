@@ -2617,6 +2617,31 @@ function resetWalkRelated() {
   rw.loading = false;
 }
 
+function pruneWalkHistory() {
+  const pruned = [];
+  for (const id of rw.history) {
+    if (!state.notes.has(id)) continue;
+    if (pruned[pruned.length - 1] === id) continue;
+    pruned.push(id);
+  }
+  while (pruned.length && pruned[pruned.length - 1] === rw.id) pruned.pop();
+  rw.history = pruned;
+}
+
+function renderWalkRelated() {
+  rw.related = rw.related.filter(item => state.notes.has(item.id) && item.id !== rw.id);
+  const cards = rw.related.map(({ note, id: relatedId, relevancePercent }) => {
+    const current = state.notes.get(relatedId) || note;
+    const button = el('button', 'rw-related-card');
+    button.type = 'button';
+    button.dataset.action = 'rw-pivot';
+    button.dataset.noteId = relatedId;
+    button.append(el('span', 'rw-related-text', current.body.slice(0, 140)), el('span', 'rw-score', relevancePercent + '%'));
+    return button;
+  });
+  $('rw-related').replaceChildren(...(cards.length ? cards : [el('p', 'help-text', '暂无相关笔记')]));
+}
+
 function pivotWalk(id, remember = true) {
   const local = state.notes.get(id);
   if (!local) return;
@@ -2626,6 +2651,7 @@ function pivotWalk(id, remember = true) {
   rw.loading = true;
   if (remember && rw.id && rw.id !== id) rw.history.push(rw.id);
   rw.id = id;
+  pruneWalkHistory();
   $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]').disabled = !rw.history.length;
   renderWalkPrev();
   $('rw-focus').replaceChildren(walkFocusCard(local));
@@ -2634,20 +2660,17 @@ function pivotWalk(id, remember = true) {
   setError('rw-status', '正在寻找相关笔记…');
   rw.relatedPromise = request('/api/notes/' + id + '/related?limit=10', undefined, controller.signal).then(result => {
     if (seq !== rw.seq) return;
+    if (!state.notes.has(id)) {
+      rw.loading = false;
+      syncWalkState();
+      return;
+    }
     const wasWaiting = $('rw-focus').querySelector('[data-action="rw-chat-focus"]').disabled;
-    const focus = walkFocusCard(result.focus);
+    const focus = walkFocusCard(state.notes.get(id) || result.focus);
     focus.querySelector('[data-action="rw-chat-focus"]').disabled = wasWaiting;
     $('rw-focus').replaceChildren(focus);
-    const cards = result.related.map(({ note, id: relatedId, relevancePercent }) => {
-      const button = el('button', 'rw-related-card');
-      button.type = 'button';
-      button.dataset.action = 'rw-pivot';
-      button.dataset.noteId = relatedId;
-      button.append(el('span', 'rw-related-text', note.body.slice(0, 140)), el('span', 'rw-score', relevancePercent + '%'));
-      return button;
-    });
     rw.related = result.related;
-    $('rw-related').replaceChildren(...(cards.length ? cards : [el('p', 'help-text', '暂无相关笔记')]));
+    renderWalkRelated();
     $('rw-related').scrollTop = 0;
     setError('rw-status', '');
     drawWalkLinks();
@@ -2662,7 +2685,7 @@ function pivotWalk(id, remember = true) {
 
 function syncWalkState() {
   if ($('random-walk-overlay').hidden) return;
-  rw.history = rw.history.filter(id => state.notes.has(id) && id !== rw.id);
+  pruneWalkHistory();
   const prevBtn = $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]');
   if (prevBtn) prevBtn.disabled = !rw.history.length;
   renderWalkPrev();
@@ -2675,14 +2698,15 @@ function syncWalkState() {
     shuffleWalk();
     return;
   }
+  if (!rw.loading && rw.id) renderWalkRelated();
   drawWalkLinks();
 }
 
 function reconcileWalkFocus(data) {
   if (data.note) { pivotWalk(data.note.id, false); return; }
   if (!data.deleted) return;
-  rw.history = rw.history.filter(id => state.notes.has(id) && id !== data.deleted.id);
   rw.id = null;
+  pruneWalkHistory();
   resetWalkRelated();
   const prevBtn = $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]');
   if (prevBtn) prevBtn.disabled = !rw.history.length;

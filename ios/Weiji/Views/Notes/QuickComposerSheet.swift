@@ -108,7 +108,7 @@ struct QuickComposerSheet: View {
 
     private var bottomAccessory: some View {
         VStack(spacing: 0) {
-            if let activeTag, !suggestions.isEmpty {
+            if activeTag != nil, !suggestions.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         ForEach(suggestions, id: \.self) { tag in
