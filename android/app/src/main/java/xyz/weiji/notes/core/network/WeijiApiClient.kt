@@ -23,7 +23,7 @@ class WeijiApiClient(
     val origin: String,
     private val token: String? = null,
     private val userId: String? = null,
-    private val onAuthInvalid: suspend () -> Unit = {},
+    private val onAuthInvalid: suspend (ApiException) -> Unit = {},
 ) {
     companion object {
         private val http = OkHttpClient.Builder()
@@ -79,7 +79,7 @@ class WeijiApiClient(
                 }
             }
         } catch (error: ApiException) {
-            if (error.status == 401 || error.status == 403) onAuthInvalid()
+            if (error.status == 401 || error.status == 403) onAuthInvalid(error)
             throw error
         }
     }

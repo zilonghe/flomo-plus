@@ -14,7 +14,15 @@ class AiChatState(private val api: WeijiApiClient, val provider: String) {
         private set
     var sourceNoteId by mutableStateOf<String?>(null)
         private set
-    var draft by mutableStateOf("")
+    private var draftState by mutableStateOf("")
+    var draft: String
+        get() = draftState
+        set(value) {
+            if (draftState != value) {
+                draftState = value
+                operationGeneration++
+            }
+        }
     var model by mutableStateOf("")
         private set
     var effort by mutableStateOf("")
@@ -63,7 +71,7 @@ class AiChatState(private val api: WeijiApiClient, val provider: String) {
     private fun select(value: AiSession?, source: String?) {
         session = value
         sourceNoteId = source
-        draft = ""
+        draftState = ""
         references = emptySet()
         retry = null
         resetLive()
@@ -76,9 +84,7 @@ class AiChatState(private val api: WeijiApiClient, val provider: String) {
     }
 
     suspend fun openSource(id: String) = selectSession(id) { api.sourceSession(id) }
-    suspend fun open(id: String) {
-        selectSession { api.aiSession(id) }
-    }
+    suspend fun open(id: String): Boolean = selectSession { api.aiSession(id) }
 
     private suspend fun selectSession(source: String? = null, load: suspend () -> AiSession?): Boolean {
         if (sending) return false
@@ -128,7 +134,7 @@ class AiChatState(private val api: WeijiApiClient, val provider: String) {
         try {
             val done = api.chat(input) { event -> withContext(Dispatchers.Main.immediate) { apply(event) } }
             session = done.session
-            if (draft == message) draft = ""
+            if (draftState == message) draftState = ""
             references = emptySet()
             retry = null
             resetLive()

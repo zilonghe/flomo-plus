@@ -169,7 +169,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
     private fun connect(account: Credentials, validate: Boolean) {
         connectionGeneration++
         credentials = account
-        val client = WeijiApiClient(account.origin, account.token, account.session.user.id) { invalidate(account) }
+        val client = WeijiApiClient(account.origin, account.token, account.session.user.id) { invalidate(account, it.message) }
         api = client
         setSession(client, account.session)
         share?.let { beginNote(it); share = null }
@@ -196,8 +196,9 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
         if (persist) store.credentials = credentials?.copy(session = info)
     }
 
-    private suspend fun invalidate(account: Credentials) {
+    private suspend fun invalidate(account: Credentials, reason: String? = null) {
         if (credentials !== account) return
+        error = reason
         connectionGeneration++
         credentials = null
         api = null

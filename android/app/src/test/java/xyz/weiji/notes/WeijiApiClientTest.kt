@@ -417,6 +417,33 @@ class WeijiApiClientTest {
         assertEquals("", chat.draft)
     }
 
+    @Test
+    fun editingDraftCancelsPendingHistorySelectionAndKeepsTypedText() {
+        val app = connectedApp()
+        val chat = checkNotNull(app.ai)
+        withDelayedJson(AiSessionEnvelope(aiSession), { it.path == "/api/ai/sessions/$SESSION_ID" }) { release ->
+            var applied = true
+            val loadJob = app.work { applied = chat.open(SESSION_ID) }
+            assertEquals("/api/ai/sessions/$SESSION_ID", server.next().path)
+            chat.draft = "收起面板后刚输入的新文字"
+            release()
+            waitFor(loadJob)
+            assertFalse(applied)
+            assertNull(chat.session)
+            assertEquals("收起面板后刚输入的新文字", chat.draft)
+        }
+    }
+
+    @Test
+    fun settingsAuth401PreservesServerReasonAfterLogoutCleanup() {
+        val app = connectedApp()
+        server.enqueue(MockResponse().setResponseCode(401).setHeader("Content-Type", "application/json").setBody("""{"error":"session expired"}"""))
+        app.openSettings()
+        spinUntil { app.session == null && !app.settingsBusy }
+        assertEquals("session expired", app.error)
+        assertNull(store.credentials)
+    }
+
     private fun chatBody(request: RecordedRequest): JsonObject {
         assertEquals("/api/ai/chat", request.path)
         return wireJson.parseToJsonElement(request.body.readUtf8()).jsonObject

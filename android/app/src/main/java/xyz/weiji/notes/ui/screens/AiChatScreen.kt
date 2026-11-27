@@ -83,7 +83,7 @@ import xyz.weiji.notes.ui.components.WeijiPrimaryButton
                     items(chat.history, key = { it.id }) { summary ->
                         Row {
                             Action(summary.title, {
-                                app.work { chat.open(summary.id); panel = null }
+                                app.work { if (chat.open(summary.id) && panel == "history") panel = null }
                             }, Modifier.weight(1f))
                             Action("删除", { confirmDelete = summary.id })
                         }
