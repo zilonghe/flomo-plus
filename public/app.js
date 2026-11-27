@@ -1,5 +1,6 @@
 import { parseWeRead, readWeReadFile } from './weread.js';
 import { parseFlomoFile } from './flomo.js';
+import { parseJoplinFiles } from './joplin.js';
 import { randomUUID } from './crypto.js';
 import { tagsFor, buildTagTree, tokenizeBody, appendCitedText, renderSafeMarkdown, updateStreamingMarkdown,
   clearWeijiCacheDB, notesCacheTransaction, publishWeijiAuthEvent, weijiAuthEvent } from './ux-helpers.js';
@@ -68,6 +69,8 @@ const state = {
   wereadImport: null,
   flomoImport: null,
   flomoWorking: false,
+  joplinImport: null,
+  joplinWorking: false,
   detailWorking: false,
   model: 'gpt-4.1-mini',
   chatProvider: 'openai',
@@ -301,8 +304,9 @@ function resetAccount() {
   $('import-text').value = '';
   importMode(null);
   resetWereadImport();
-  resetFlomoImport(true);
-  for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog']) if ($(id).open) $(id).close();
+  resetFileImport('flomo', true);
+  resetFileImport('joplin', true);
+  for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog', 'joplin-dialog']) if ($(id).open) $(id).close();
   if ($('note-dialog').open) closeNote(true);
   $('detail-body').replaceChildren();
   $('detail-meta').replaceChildren();
@@ -2291,77 +2295,85 @@ const bulkPreviewLimit = 12;
 const importEncoder = new TextEncoder();
 const bulkEnvelopeBytes = importEncoder.encode('{"notes":[]}').length;
 
-function openFlomoImport() {
+function openFileImport(kind) {
   if (!state.loaded || !state.user?.id) {
     notify('请先登录并完成同步');
     return;
   }
-  const select = $('flomo-zone');
+  const select = $(`${kind}-zone`);
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (browserZone && ![...select.options].some((option) => option.value === browserZone)) {
     select.add(new Option('当前设备（' + browserZone + '）', browserZone), 1);
   }
   sidebar(false);
-  $('flomo-dialog').showModal();
+  $(`${kind}-dialog`).showModal();
 }
 
-function resetFlomoImport(clearFile = false) {
-  state.flomoImport = null;
-  $('flomo-edit').hidden = false;
-  $('flomo-preview').hidden = true;
-  $('flomo-back').hidden = true;
-  $('flomo-samples').replaceChildren();
-  $('flomo-submit').textContent = '预览导入';
-  $('flomo-submit').disabled = false;
-  setError('flomo-progress', '');
-  setError('flomo-error', '');
-  if (clearFile) $('flomo-file').value = '';
+function resetFileImport(kind, clearFile = false) {
+  state[kind + 'Import'] = null;
+  $(`${kind}-edit`).hidden = false;
+  $(`${kind}-preview`).hidden = true;
+  $(`${kind}-back`).hidden = true;
+  $(`${kind}-samples`).replaceChildren();
+  $(`${kind}-submit`).textContent = '预览导入';
+  $(`${kind}-submit`).disabled = false;
+  setError(`${kind}-progress`, '');
+  setError(`${kind}-error`, '');
+  if (clearFile) {
+    $(`${kind}-file`).value = '';
+    if (kind === 'joplin') {
+      $('joplin-dir').value = '';
+      setError('joplin-dir-status', '');
+    }
+  }
 }
 
-function renderFlomoPreview() {
-  const preview = state.flomoImport;
+function renderFileImportPreview(kind) {
+  const preview = state[kind + 'Import'];
   const remaining = preview.pending.length;
-  $('flomo-edit').hidden = true;
-  $('flomo-preview').hidden = false;
-  $('flomo-back').hidden = false;
-  $('flomo-summary').textContent = remaining
+  $(`${kind}-edit`).hidden = true;
+  $(`${kind}-preview`).hidden = false;
+  $(`${kind}-back`).hidden = false;
+  $(`${kind}-summary`).textContent = remaining
     ? '待导入 ' + remaining + ' 条笔记。确认后会保存到当前微记账号。'
-    : '没有新的笔记可以导入。';
+    : kind === 'joplin' ? '待导入 0 条笔记。' : '没有新的笔记可以导入。';
   const skipped = [];
   if (preview.duplicated) skipped.push('已存在或此前删除 ' + preview.duplicated + ' 条');
   if (preview.skippedAttachments) skipped.push('跳过 ' + preview.skippedAttachments + ' 个附件');
+  if (preview.skippedEncrypted) skipped.push('跳过 ' + preview.skippedEncrypted + ' 条加密或锁定的笔记');
   if (preview.skippedEmpty) skipped.push('跳过 ' + preview.skippedEmpty + ' 条没有文字的笔记');
   if (preview.skippedInvalidDate) skipped.push('跳过 ' + preview.skippedInvalidDate + ' 条日期无法识别的笔记');
   if (preview.skippedLarge) skipped.push('跳过 ' + preview.skippedLarge + ' 条超出大小限制的笔记');
-  setError('flomo-skipped', skipped.length ? skipped.join('，') + '。' : '');
+  setError(`${kind}-skipped`, skipped.length ? skipped.join('，') + '。' : '');
   const samples = preview.pending.slice(0, bulkPreviewLimit);
   const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
     hourCycle: 'h23', timeZone: preview.timeZone,
   });
-  $('flomo-samples').replaceChildren(...samples.map(({ note }) => renderCard(note, tagsFor(note.body), false, dateFormatter)));
-  setError('flomo-sample-count', remaining > samples.length ? '仅预览前 ' + samples.length + ' 条。' : '');
-  $('flomo-submit').textContent = '导入 ' + remaining + ' 条';
-  $('flomo-submit').disabled = remaining === 0;
+  $(`${kind}-samples`).replaceChildren(...samples.map(({ note }) => renderCard(note, tagsFor(note.body), false, dateFormatter)));
+  setError(`${kind}-sample-count`, remaining > samples.length ? '仅预览前 ' + samples.length + ' 条。' : '');
+  $(`${kind}-submit`).textContent = '导入 ' + remaining + ' 条';
+  $(`${kind}-submit`).disabled = remaining === 0;
 }
 
-async function previewFlomoImport() {
-  const file = $('flomo-file').files?.[0];
-  if (!file) throw new Error('请选择 flomo 导出的 ZIP 或 HTML 文件。');
-  const timeZone = $('flomo-zone').value;
+async function previewFileImport(kind) {
+  const files = $(`${kind}-file`).files;
+  if (kind === 'flomo' && !files.length) throw new Error('请选择 flomo 导出的 ZIP 或 HTML 文件。');
+  const timeZone = $(`${kind}-zone`).value;
   const account = state.user.id;
-  const result = await parseFlomoFile(file, timeZone);
-  if (state.user?.id !== account) return;
+  const result = kind === 'joplin'
+    ? await parseJoplinFiles($('joplin-dir').files.length ? $('joplin-dir').files : files, timeZone)
+    : await parseFlomoFile(files[0], timeZone);
+  if (state.user?.id !== account || !$(`${kind}-dialog`).open) return;
 
   const { pending, duplicated, skippedLarge } = prepareBulkNotes(result.notes);
-  state.flomoImport = {
+  state[kind + 'Import'] = {
     account, timeZone, pending, duplicated, skippedLarge,
+    skippedAttachments: result.skippedAttachments, skippedEncrypted: result.skippedEncrypted,
+    skippedEmpty: result.skippedEmpty, skippedInvalidDate: result.skippedInvalidDate,
     total: pending.length, saved: 0, skippedDuringSave: 0,
-    skippedAttachments: result.skippedAttachments,
-    skippedEmpty: result.skippedEmpty,
-    skippedInvalidDate: result.skippedInvalidDate,
   };
-  renderFlomoPreview();
+  renderFileImportPreview(kind);
 }
 
 function prepareBulkNotes(notes, isDuplicate = () => false) {
@@ -2442,51 +2454,52 @@ async function saveBulkNotes(preview, path, statusId) {
   }
 }
 
-async function saveFlomoImport(preview) {
+async function saveFileImport(kind, preview) {
   try {
-    await saveBulkNotes(preview, '/api/import/flomo', 'flomo-progress');
+    await saveBulkNotes(preview, `/api/import/${kind}`, `${kind}-progress`);
   } catch (error) {
-    if (state.flomoImport === preview) {
-      renderFlomoPreview();
-      $('flomo-submit').textContent = '重试剩余 ' + preview.pending.length + ' 条';
+    if (state[kind + 'Import'] === preview) {
+      renderFileImportPreview(kind);
+      $(`${kind}-submit`).textContent = '重试剩余 ' + preview.pending.length + ' 条';
     }
     throw error;
   }
+  if (state.user?.id !== preview.account || state[kind + 'Import'] !== preview) return;
   state.filter = 'journal';
   clearSearchInput();
   rebuildNoteIndex();
   renderFeedList({ reset: true });
   const skipped = preview.skippedDuringSave ? '，跳过 ' + preview.skippedDuringSave + ' 条已存在或此前删除的笔记' : '';
-  $('flomo-dialog').close();
-  notify('已导入 ' + preview.saved + ' 条 flomo 笔记' + skipped);
+  $(`${kind}-dialog`).close();
+  notify('已导入 ' + preview.saved + ' 条 ' + (kind === 'joplin' ? 'Joplin' : 'flomo') + ' 笔记' + skipped);
 }
 
-async function importFlomoNotes(event) {
+async function importFileNotes(event, kind) {
   event.preventDefault();
-  if (!state.loaded || !state.user?.id || state.flomoWorking) return;
-  state.flomoWorking = true;
-  const submit = $('flomo-submit');
-  const back = $('flomo-back');
-  const close = $('flomo-dialog').querySelector('[data-close="flomo-dialog"]');
-  const file = $('flomo-file');
-  const zone = $('flomo-zone');
-  submit.disabled = back.disabled = close.disabled = file.disabled = zone.disabled = true;
-  setError('flomo-error', '');
+  if (!state.loaded || !state.user?.id || state[kind + 'Working']) return;
+  state[kind + 'Working'] = true;
+  const submit = $(`${kind}-submit`);
+  const back = $(`${kind}-back`);
+  const close = $(`${kind}-dialog`).querySelector(`[data-close="${kind}-dialog"]`);
+  const controls = [back, close, $(`${kind}-file`), $(`${kind}-zone`)];
+  if (kind === 'joplin') controls.push($('joplin-dir'), document.querySelector('[data-action="pick-joplin-dir"]'));
+  for (const control of [submit, ...controls]) control.disabled = true;
+  setError(`${kind}-error`, '');
   try {
-    if (state.flomoImport) {
-      if (state.flomoImport.pending.length) await saveFlomoImport(state.flomoImport);
+    if (state[kind + 'Import']) {
+      if (state[kind + 'Import'].pending.length) await saveFileImport(kind, state[kind + 'Import']);
     } else {
-      setError('flomo-progress', '正在读取导出文件…');
-      await previewFlomoImport();
-      setError('flomo-progress', '');
+      setError(`${kind}-progress`, '正在读取导出文件…');
+      await previewFileImport(kind);
+      setError(`${kind}-progress`, '');
     }
   } catch (error) {
-    if (!state.flomoImport) setError('flomo-progress', '');
-    setError('flomo-error', error.message);
+    if (!state[kind + 'Import']) setError(`${kind}-progress`, '');
+    setError(`${kind}-error`, error.message);
   } finally {
-    state.flomoWorking = false;
-    submit.disabled = state.flomoImport?.pending.length === 0;
-    back.disabled = close.disabled = file.disabled = zone.disabled = false;
+    state[kind + 'Working'] = false;
+    submit.disabled = state[kind + 'Import']?.pending.length === 0;
+    for (const control of controls) control.disabled = false;
   }
 }
 
@@ -4567,7 +4580,9 @@ const actions = {
     renderAIThread();
   },
   'open-import': openImport,
-  'open-flomo-import': openFlomoImport,
+  'open-flomo-import': () => openFileImport('flomo'),
+  'open-joplin-import': () => openFileImport('joplin'),
+  'pick-joplin-dir': () => $('joplin-dir').click(),
   'open-settings': openSettings,
   'focus-compose': focusCompose,
   'insert-tag': () => {
@@ -4681,7 +4696,8 @@ const actions = {
   'weread-book': previewWereadBook,
   'weread-back': backToWereadBooks,
   'weread-save': saveWereadNotes,
-  'flomo-back': () => { if (!state.flomoWorking) resetFlomoImport(); },
+  'flomo-back': () => { if (!state.flomoWorking) resetFileImport('flomo'); },
+  'joplin-back': () => { if (!state.joplinWorking) resetFileImport('joplin'); },
 };
 
 document.addEventListener('click', (event) => {
@@ -4746,6 +4762,7 @@ document.addEventListener('click', (event) => {
     if (button.dataset.close === 'settings-dialog') $('settings-dialog').close();
     if (button.dataset.close === 'import-dialog' && !state.importWorking && !state.wereadImport?.saving) $('import-dialog').close();
     if (button.dataset.close === 'flomo-dialog' && !state.flomoWorking) $('flomo-dialog').close();
+    if (button.dataset.close === 'joplin-dialog' && !state.joplinWorking) $('joplin-dialog').close();
   }
   if (button.dataset.action && actions[button.dataset.action]) actions[button.dataset.action](button);
   if (button.dataset.openNote) {
@@ -4781,8 +4798,22 @@ $('import-dialog').addEventListener('cancel', (event) => {
   if (state.importWorking || state.wereadImport?.saving) event.preventDefault();
 });
 $('import-dialog').addEventListener('close', resetWereadImport);
-$('flomo-dialog').addEventListener('cancel', (event) => { if (state.flomoWorking) event.preventDefault(); });
-$('flomo-dialog').addEventListener('close', () => resetFlomoImport(true));
+for (const kind of ['flomo', 'joplin']) {
+  $(`${kind}-dialog`).addEventListener('cancel', event => { if (state[kind + 'Working']) event.preventDefault(); });
+  $(`${kind}-dialog`).addEventListener('close', () => resetFileImport(kind, true));
+  $(`${kind}-form`).addEventListener('submit', event => importFileNotes(event, kind));
+}
+$('joplin-file').addEventListener('change', () => {
+  if (!$('joplin-file').files.length) return;
+  $('joplin-dir').value = '';
+  setError('joplin-dir-status', '');
+});
+$('joplin-dir').addEventListener('change', () => {
+  const files = $('joplin-dir').files;
+  if (files.length) $('joplin-file').value = '';
+  const root = files[0]?.webkitRelativePath.split('/')[0];
+  setError('joplin-dir-status', root ? '已选择：' + root : '');
+});
 $('settings-dialog').addEventListener('close', () => {
   $('openai-key').value = '';
   $('admin-invite-created').textContent = '';
@@ -4817,7 +4848,6 @@ $('weread-key').addEventListener('input', () => {
   renderWereadBooks();
   setError('weread-error', '');
 });
-$('flomo-form').addEventListener('submit', importFlomoNotes);
 $('import-file').addEventListener('change', pickImportFile);
 $('edit-form').addEventListener('submit', submitEdit);
 $('composer').addEventListener('submit', createNote);

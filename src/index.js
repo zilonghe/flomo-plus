@@ -1336,7 +1336,7 @@ async function api(request, url, env) {
   }
   if (request.method === "POST") {
     if (path === "/api/notes") return mutateNote(env.DB, account, await readJSON(request), env.SEMANTIC);
-    if (path === "/api/import/flomo" || path === "/api/import/weread") {
+    if (path === "/api/import/flomo" || path === "/api/import/weread" || path === "/api/import/joplin") {
       return importNotes(env.DB, account, await readJSON(request), env.SEMANTIC);
     }
     if (path === "/api/weread/books") return json(await listWeReadBooks(await readJSON(request)));

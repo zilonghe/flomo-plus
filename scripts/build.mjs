@@ -9,6 +9,7 @@ const paths = {
   "/ux-helpers.js": ["ux-helpers.js", "text/javascript; charset=utf-8"],
   "/crypto.js": ["crypto.js", "text/javascript; charset=utf-8"],
   "/flomo.js": ["flomo.js", "text/javascript; charset=utf-8"],
+  "/joplin.js": ["joplin.js", "text/javascript; charset=utf-8"],
   "/weread.js": ["weread.js", "text/javascript; charset=utf-8"],
   "/styles.css": ["styles.css", "text/css; charset=utf-8"],
   "/relay/server.mjs": ["../relay/server.mjs", "application/octet-stream"],

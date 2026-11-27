@@ -74,6 +74,7 @@
       <div class="side-footer">
         <div class="side-section side-tools">
           <button class="nav-item" type="button" data-action="open-flomo-import"><svg><use href="#i-import"></use></svg><span>导入 flomo</span></button>
+          <button class="nav-item" type="button" data-action="open-joplin-import"><svg><use href="#i-import"></use></svg><span>导入 Joplin</span></button>
           <button class="nav-item" type="button" data-action="open-import"><svg><use href="#i-import"></use></svg><span>导入微信读书</span></button>
         </div>
       </div>
@@ -492,6 +493,41 @@
       <div class="dialog-actions">
         <button class="button button-secondary" id="flomo-back" type="button" data-action="flomo-back" hidden>返回</button>
         <button class="button button-primary" id="flomo-submit" type="submit">预览导入</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="joplin-dialog" class="dialog" aria-labelledby="joplin-title">
+    <div class="dialog-header">
+      <div><div class="date-line"><svg aria-hidden="true"><use href="#i-import"></use></svg>笔记迁移</div><h2 id="joplin-title">导入 Joplin</h2></div>
+      <button class="icon-button" type="button" data-close="joplin-dialog" aria-label="关闭 Joplin 导入"><svg><use href="#i-close"></use></svg></button>
+    </div>
+    <form id="joplin-form" class="dialog-scroll">
+      <div id="joplin-edit">
+        <p class="help-text">选择 Joplin 导出的 JEX 文件，或 Markdown + Front Matter 文件与目录。预览会列出跳过的附件。</p>
+        <label class="field-label" for="joplin-file">Joplin 导出文件</label>
+        <input id="joplin-file" class="field flomo-file" type="file" accept=".jex,.md,.markdown,text/markdown,application/x-tar" multiple>
+        <button class="button button-secondary" type="button" data-action="pick-joplin-dir">选择 Markdown 导出目录</button>
+        <input id="joplin-dir" type="file" webkitdirectory multiple hidden>
+        <p id="joplin-dir-status" class="help-text flomo-zone-help" role="status" hidden></p>
+        <label class="field-label" for="joplin-zone">导出时区</label>
+        <select id="joplin-zone" class="field" aria-describedby="joplin-zone-help">
+          <option value="Asia/Shanghai">北京时间</option>
+          <option value="UTC">协调世界时 UTC</option>
+        </select>
+        <p class="help-text flomo-zone-help" id="joplin-zone-help">若导出的时间没有标注时区，会按这里选择的时区读取。</p>
+      </div>
+      <div id="joplin-preview" hidden>
+        <p id="joplin-summary" class="help-text"></p>
+        <p id="joplin-skipped" class="help-text" hidden></p>
+        <div id="joplin-samples" class="import-preview"></div>
+        <p id="joplin-sample-count" class="help-text flomo-zone-help" hidden></p>
+      </div>
+      <p id="joplin-progress" class="help-text flomo-zone-help" role="status" hidden></p>
+      <p id="joplin-error" class="inline-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" id="joplin-back" type="button" data-action="joplin-back" hidden>返回</button>
+        <button class="button button-primary" id="joplin-submit" type="submit">预览导入</button>
       </div>
     </form>
   </dialog>
