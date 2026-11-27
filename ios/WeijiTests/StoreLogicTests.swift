@@ -442,6 +442,8 @@ final class StoreLogicTests: XCTestCase {
             ("note", .notes, true, { store.askAbout(note) }, {
                 XCTAssertNil(store.detail)
                 XCTAssertEqual(store.tab, .ai)
+                XCTAssertEqual(store.chat.sourceNoteId, note.id)
+                XCTAssertEqual(store.chat.session?.id, "reader-session")
             }),
             ("walk", .walk, false, { store.askAbout(walk) }, {
                 XCTAssertEqual(store.tab, .ai)
@@ -454,6 +456,7 @@ final class StoreLogicTests: XCTestCase {
             }),
             ("session", .walk, false, { store.requestSelectChatSession("reader-session") }, {
                 XCTAssertEqual(store.tab, .ai)
+                XCTAssertEqual(store.chat.session?.id, "reader-session")
             }),
             ("new", .ai, false, { store.requestNewChat() }, {
                 XCTAssertEqual(store.tab, .ai)
@@ -484,8 +487,8 @@ final class StoreLogicTests: XCTestCase {
             store.confirmChatSwitch()
             XCTAssertNil(store.pendingChatSwitch, "\(item.name): confirm clears pending switch")
             XCTAssertFalse(store.chat.sending, "\(item.name): confirm stops previous stream")
-            item.assertConfirmed()
             try await waitUntil("\(item.name): 会话加载完成") { !store.chat.loadingSession }
+            item.assertConfirmed()
         }
     }
 
