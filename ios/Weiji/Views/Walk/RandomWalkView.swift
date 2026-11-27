@@ -9,43 +9,58 @@ struct RandomWalkView: View {
     private var focusAnimation: Animation? { reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header.screenHeader()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        if let result = walk.result {
-                            constellation(result)
-                                .id(result.focus.id)
-                                .transition(.opacity)
-                        } else if !walk.loading && walk.error == nil {
-                            if store.index.entries.isEmpty {
-                                Text("暂无可漫步的笔记").foregroundStyle(Theme.ink3)
+        NavigationStack {
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            if let result = walk.result {
+                                constellation(result)
+                                    .id(result.focus.id)
+                                    .transition(.opacity)
+                            } else if !walk.loading && walk.error == nil {
+                                if store.index.entries.isEmpty {
+                                    Text("暂无可漫步的笔记").foregroundStyle(Theme.ink3)
+                                        .padding(.top, 48)
+                                } else {
+                                    VStack(spacing: 12) {
+                                        Text("当前焦点已移除").font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
+                                        Button("换一条继续漫步", action: shuffle)
+                                            .buttonStyle(.weijiSecondary)
+                                            .disabled(store.api == nil)
+                                    }
                                     .padding(.top, 48)
-                            } else {
-                                VStack(spacing: 12) {
-                                    Text("当前焦点已移除").font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
-                                    Button("换一条继续漫步", action: shuffle)
-                                        .buttonStyle(.weijiSecondary)
-                                        .disabled(store.api == nil)
                                 }
-                                .padding(.top, 48)
                             }
+                            InlineError(message: walk.error)
                         }
-                        InlineError(message: walk.error)
+                        .frame(maxWidth: 640)
+                        .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
+                        .frame(maxWidth: .infinity)
+                        .id("walk-canvas")
                     }
-                    .frame(maxWidth: 640)
-                    .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 24)
-                    .frame(maxWidth: .infinity)
-                    .id("walk-canvas")
+                    .background {
+                        RadialGradient(colors: [Theme.active.opacity(0.08), .clear], center: .init(x: 0.5, y: 0.38),
+                                       startRadius: 10, endRadius: 290)
+                        .allowsHitTesting(false)
+                    }
+                    .onChange(of: walk.result?.focus.id) { _, _ in
+                        withAnimation(focusAnimation) { proxy.scrollTo("walk-canvas", anchor: .top) }
+                    }
                 }
-                .background {
-                    RadialGradient(colors: [Theme.active.opacity(0.08), .clear], center: .init(x: 0.5, y: 0.38),
-                                   startRadius: 10, endRadius: 290)
-                    .allowsHitTesting(false)
-                }
-                .onChange(of: walk.result?.focus.id) { _, _ in
-                    withAnimation(focusAnimation) { proxy.scrollTo("walk-canvas", anchor: .top) }
+            }
+            .background(Theme.canvas.ignoresSafeArea())
+            .navigationTitle("漫步")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if walk.loading { ProgressView().controlSize(.small).accessibilityLabel("正在寻找关联笔记") }
+                    Button("换一条", action: shuffle)
+                        .disabled(store.index.entries.isEmpty || walk.loading || store.api == nil)
+                        .accessibilityIdentifier("walk-shuffle-button")
+                    Button("聊这组") { if let result = walk.result { store.askAbout(result) } }
+                        .disabled(walk.result == nil || walk.loading)
+                        .accessibilityIdentifier("walk-chat-button")
                 }
             }
         }
@@ -55,23 +70,6 @@ struct RandomWalkView: View {
         }
         .task(id: store.index.entries.isEmpty) {
             if walk.result == nil && !walk.loading { shuffle() }
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text("漫步").font(Theme.TypeScale.pageTitle).foregroundStyle(Theme.ink)
-                .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 0)
-            if walk.loading { ProgressView().controlSize(.small).accessibilityLabel("正在寻找关联笔记") }
-            Button("换一条", action: shuffle)
-                .buttonStyle(.weijiSecondary)
-                .disabled(store.index.entries.isEmpty || walk.loading || store.api == nil)
-                .accessibilityIdentifier("walk-shuffle-button")
-            Button("聊这组") { if let result = walk.result { store.askAbout(result) } }
-                .buttonStyle(.weijiSecondary)
-                .disabled(walk.result == nil || walk.loading)
-                .accessibilityIdentifier("walk-chat-button")
         }
     }
 
@@ -87,7 +85,7 @@ struct RandomWalkView: View {
             focusCard(result.focus)
         }
         .buttonStyle(.plain)
-        .matchedTransitionSource(id: result.focus.id, in: noteZoom)
+        .matchedTransitionSource(id: NoteZoomID(source: .walk, id: result.focus.id), in: noteZoom)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("walk-focus-card")
         .accessibilityValue(result.focus.id)

@@ -14,20 +14,20 @@ struct SessionsDrawerView: View {
                     .foregroundStyle(Theme.ink2)
                     .padding(.trailing, -10)
             }
-            .screenHeader()
+            .padding(.horizontal, 16).frame(minHeight: 52)
 
             Button {
                 chat.start()
                 onClose()
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "plus").font(.system(size: 14, weight: .semibold))
+                    Image(systemName: "plus").font(.subheadline.weight(.semibold))
                     Text("新建对话").font(Theme.TypeScale.body.weight(.semibold))
                     Spacer()
                 }
                 .foregroundStyle(Theme.active)
                 .padding(.horizontal, 14)
-                .frame(minHeight: 42)
+                .frame(minHeight: 44)
                 .background(Theme.accentSoft, in: .rect(cornerRadius: 12))
                 .contentShape(Rectangle())
             }
@@ -98,9 +98,9 @@ struct SessionsDrawerView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(Theme.ink3)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

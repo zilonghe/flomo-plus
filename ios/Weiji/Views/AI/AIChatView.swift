@@ -12,58 +12,61 @@ struct AIChatView: View {
 
     var body: some View {
         @Bindable var chat = store.chat
-        VStack(spacing: 0) {
-            HStack(spacing: 4) {
-                IconAction(symbol: "clock.arrow.circlepath", label: "历史会话", id: "ai-sessions-button") {
-                    writing = false
-                    showSessions = true
-                }
-                .disabled(store.api == nil)
-                .padding(.leading, -10)
-                Text(chat.session?.title ?? "AI 对话")
-                    .font(chat.session == nil ? Theme.TypeScale.pageTitle : Theme.TypeScale.itemTitle)
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(1)
-                Spacer()
-                IconAction(symbol: "slider.horizontal.3", label: "AI 设置", id: "ai-settings-button") { showAISettings = true }
-                IconAction(symbol: "square.and.pencil", label: "新建会话", id: "ai-new-button") { chat.start() }
-                    .padding(.trailing, -10)
-            }.screenHeader()
-            if !chat.pins.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack {
-                        ForEach(chat.pins, id: \.self) { id in
-                            Button {
-                                writing = false
-                                Task { await store.openNote(id, from: .ai) }
-                            } label: {
-                                Chip(text: store.notesById[id].map { String($0.body.prefix(25)) } ?? "引用笔记",
-                                     symbol: "pin.fill", selected: true)
+        NavigationStack {
+            VStack(spacing: 0) {
+                if !chat.pins.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack {
+                            ForEach(chat.pins, id: \.self) { id in
+                                Button {
+                                    writing = false
+                                    Task { await store.openNote(id, from: .ai) }
+                                } label: {
+                                    Chip(text: store.notesById[id].map { String($0.body.prefix(25)) } ?? "引用笔记",
+                                         symbol: "pin.fill", selected: true)
+                                        .minTapHeight()
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("ai-pin-chip-" + id)
+                                .contextMenu { Button("移除引用", role: .destructive) { chat.togglePin(id) } }
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("ai-pin-chip-" + id)
-                            .contextMenu { Button("移除引用", role: .destructive) { chat.togglePin(id) } }
                         }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("ai-pin-chip-list")
+                        .padding(.horizontal, 16)
                     }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("ai-pin-chip-list")
-                    .padding(.horizontal, 16)
+                    .scrollIndicators(.hidden)
+                    .padding(.bottom, 8)
                 }
-                .scrollIndicators(.hidden)
-                .padding(.bottom, 8)
+                if let insight = chat.insight {
+                    Label(insight.title, systemImage: "chart.bar").font(.footnote.weight(.medium)).foregroundStyle(Theme.ink2)
+                        .lineLimit(1).padding(.horizontal, 16).padding(.bottom, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if chat.session == nil && chat.pendingQuestion.isEmpty && !chat.sending && !chat.loadingSession {
+                    emptyState(chat)
+                } else {
+                    messages(chat)
+                }
+                InlineError(message: chat.error).padding(.horizontal, 16)
+                composer(chat)
             }
-            if let insight = chat.insight {
-                Label(insight.title, systemImage: "chart.bar").font(.footnote.weight(.medium)).foregroundStyle(Theme.ink2)
-                    .lineLimit(1).padding(.horizontal, 16).padding(.bottom, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.canvas.ignoresSafeArea())
+            .navigationTitle(chat.session?.title ?? "AI 对话")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    IconAction(symbol: "clock.arrow.circlepath", label: "历史会话", id: "ai-sessions-button") {
+                        writing = false
+                        showSessions = true
+                    }
+                    .disabled(store.api == nil)
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    IconAction(symbol: "slider.horizontal.3", label: "AI 设置", id: "ai-settings-button") { showAISettings = true }
+                    IconAction(symbol: "square.and.pencil", label: "新建会话", id: "ai-new-button") { chat.start() }
+                }
             }
-            if chat.session == nil && chat.pendingQuestion.isEmpty && !chat.sending && !chat.loadingSession {
-                emptyState(chat)
-            } else {
-                messages(chat)
-            }
-            InlineError(message: chat.error).padding(.horizontal, 16)
-            composer(chat)
         }
         .sheet(isPresented: $showPins) { PinPickerSheet(store: store) }
         .sheet(isPresented: $showAISettings) { AISettingsView(store: store) }
@@ -116,7 +119,7 @@ struct AIChatView: View {
     private func composerButton(symbol: String, label: String, id: String, enabled: Bool,
                                 action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
+            Image(systemName: symbol).font(.subheadline.weight(.bold)).foregroundStyle(.white)
                 .frame(width: 34, height: 34)
                 .background(Theme.accent.opacity(enabled ? 1 : 0.3), in: Circle())
                 .frame(width: 44, height: 44)
@@ -140,7 +143,7 @@ struct AIChatView: View {
                 HStack(spacing: 5) {
                     vendor.badge.font(.caption2)
                     Text(model?.label ?? store.options.provider.label).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.ink3)
+                    Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(Theme.ink3)
                 }
                 .padding(.horizontal, 10).frame(minHeight: 30)
                 .background(Theme.subtle, in: Capsule())
@@ -217,7 +220,7 @@ struct AIChatView: View {
             .overlay(alignment: .bottomTrailing) {
                 if !nearBottom {
                     Button { proxy.scrollTo("chat-bottom", anchor: .bottom) } label: {
-                        Image(systemName: "arrow.down").font(.system(size: 14, weight: .semibold))
+                        Image(systemName: "arrow.down").font(.subheadline.weight(.semibold))
                             .foregroundStyle(Theme.ink2)
                             .frame(width: 36, height: 36)
                             .background(Theme.paper, in: Circle())
@@ -255,7 +258,7 @@ struct AIChatView: View {
         VStack(spacing: 18) {
             Spacer(minLength: 0)
             Image(systemName: "sparkles")
-                .font(.system(size: 24, weight: .medium)).foregroundStyle(Theme.active)
+                .font(.title2.weight(.medium)).foregroundStyle(Theme.active)
                 .frame(width: 56, height: 56)
                 .background(Theme.accentSoft, in: Circle())
                 .accessibilityHidden(true)
@@ -271,7 +274,8 @@ struct AIChatView: View {
                         Text(prompt).font(.subheadline).foregroundStyle(Theme.ink2)
                             .padding(.horizontal, 14).frame(minHeight: 38)
                             .background(Theme.paper, in: Capsule())
-                            .overlay { Capsule().strokeBorder(Theme.hairline) }
+                            .overlay { Capsule().strokeBorder(Theme.hairline).allowsHitTesting(false) }
+                            .minTapHeight()
                     }
                     .buttonStyle(.plain)
                 }
@@ -353,7 +357,7 @@ private struct StepsTimelineView: View {
         } label: {
             HStack(spacing: 8) {
                 if running {
-                    Image(systemName: "circle.fill").font(.system(size: 7)).foregroundStyle(Theme.active)
+                    Circle().fill(Theme.active).frame(width: 7, height: 7)
                         .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
                         .accessibilityHidden(true)
                 } else {

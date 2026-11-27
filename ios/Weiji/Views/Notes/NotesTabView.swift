@@ -3,15 +3,49 @@ import SwiftUI
 struct NotesTabView: View {
     @Bindable var store: AppStore
     let noteZoom: Namespace.ID
-    @State private var showSearch = false
     @Binding var sidebar: Bool
+
+    var body: some View {
+        NavigationStack {
+            NotesList(store: store, noteZoom: noteZoom, sidebar: sidebar)
+                .background(Theme.canvas.ignoresSafeArea())
+                .navigationTitle(navigationTitle)
+                .navigationBarTitleDisplayMode(.large)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") {
+                            sidebar = true
+                        }
+                    }
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        if store.syncing {
+                            ProgressView().controlSize(.small).accessibilityLabel("正在同步")
+                        }
+                        IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
+                            .disabled(store.syncing)
+                    }
+                }
+        }
+        .searchable(text: $store.query, prompt: "搜索笔记、书名、作者")
+    }
+
+    private var navigationTitle: String {
+        if let tag = store.filter.tag { return "#" + tag }
+        if let day = store.filter.day { return day }
+        return store.filter == NoteFilter() ? "笔记" : store.filter.kind.rawValue
+    }
+}
+
+private struct NotesList: View {
+    let store: AppStore
+    let noteZoom: Namespace.ID
+    let sidebar: Bool
     @State private var composer = false
-    @FocusState private var searching: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isSearching) private var isSearching
+    @Environment(\.dismissSearch) private var dismissSearch
 
     var body: some View {
         VStack(spacing: 0) {
-            header.screenHeader()
             if store.isOffline {
                 Label("离线 · 仅可浏览已同步笔记", systemImage: "wifi.slash")
                     .font(.footnote).foregroundStyle(Theme.ink2)
@@ -19,13 +53,13 @@ struct NotesTabView: View {
                     .background(Theme.subtle, in: .rect(cornerRadius: 10))
                     .padding(.horizontal, 16).padding(.bottom, 6)
             }
-            if showSearch { searchField.transition(.move(edge: .top).combined(with: .opacity)) }
             if store.filter != NoteFilter() {
                 Button {
                     store.filter = NoteFilter()
                 } label: {
                     Chip(text: store.filter.tag.map { "#" + $0 } ?? store.filter.day ?? store.filter.kind.rawValue,
                          symbol: "xmark", selected: true)
+                        .minTapHeight()
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("清除筛选")
@@ -40,13 +74,12 @@ struct NotesTabView: View {
                     }
                     ForEach(store.results.prefix(store.pageSize)) { note in
                         Button {
-                            searching = false
                             Task { await store.openNote(note.id, from: .notes) }
                         } label: {
                             NoteCardContent(note: note).noteCard(padding: 16)
                         }
                         .buttonStyle(.plain)
-                        .matchedTransitionSource(id: note.id, in: noteZoom)
+                        .matchedTransitionSource(id: NoteZoomID(source: .notes, id: note.id), in: noteZoom)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("note-card-" + note.id)
                         .onAppear { store.loadMore(after: note.id) }
@@ -59,11 +92,11 @@ struct NotesTabView: View {
             .scrollDismissesKeyboard(.interactively)
             .refreshable { store.refresh() }
             .overlay(alignment: .bottomTrailing) {
-                if !searching && store.api != nil {
+                if !isSearching && store.api != nil {
                     Button {
                         composer = true
                     } label: {
-                        Image(systemName: "plus").font(.system(size: 22, weight: .semibold))
+                        Image(systemName: "plus").font(.title2.weight(.semibold))
                             .foregroundStyle(.white)
                             .frame(width: 56, height: 56)
                             .background {
@@ -79,54 +112,10 @@ struct NotesTabView: View {
                 }
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: showSearch)
-        .onChange(of: sidebar) { _, open in if open { searching = false } }
+        .onChange(of: sidebar) { _, open in if open && isSearching { dismissSearch() } }
         .sheet(isPresented: $composer) { QuickComposerSheet(store: store) }
     }
 
-    private var header: some View {
-        HStack(spacing: 4) {
-            IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") { sidebar = true }
-                .padding(.leading, -10)
-            Text("微记").font(Theme.TypeScale.pageTitle).foregroundStyle(Theme.ink)
-            Spacer()
-            if store.syncing { ProgressView().controlSize(.small).accessibilityLabel("正在同步").padding(.trailing, 4) }
-            IconAction(symbol: showSearch ? "xmark" : "magnifyingglass", label: "搜索", id: "notes-search-button") {
-                showSearch.toggle()
-                searching = showSearch
-                if !showSearch { store.query = "" }
-            }
-            IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
-                .disabled(store.syncing)
-                .padding(.trailing, -10)
-        }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(.subheadline).foregroundStyle(Theme.ink3).accessibilityHidden(true)
-            TextField("搜索笔记、书名、作者", text: $store.query)
-                .focused($searching)
-                .submitLabel(.search)
-                .onSubmit { searching = false }
-                .onChange(of: store.query) { previous, current in
-                    if !previous.isEmpty && current.isEmpty { searching = false }
-                }
-                .accessibilityIdentifier("notes-search-field")
-            if !store.query.isEmpty {
-                Button { store.query = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.ink3)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除搜索")
-            }
-        }
-        .padding(.horizontal, 12).frame(minHeight: 42)
-        .background(Theme.paper, in: .rect(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.hairline).allowsHitTesting(false) }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-    }
 }
 
 struct NoteCardContent: View {

@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
-import { applyMigrations } from '../src/auth.js';
+import { applyMigrations, createAuth } from '../src/auth.js';
 import { metaOverlapScore, rankNoteIds } from '../src/retrieval.js';
 import worker from '../dist/server/index.js';
 import * as ux from '../public/ux-helpers.js';
@@ -1196,3 +1196,202 @@ test('Chat SSE flushes : connected immediately before upstream replies', async t
   assert.ok(rest.includes('event: delta') && rest.includes('实时回答'), 'expected streamed delta after releasing upstream');
   assert.ok(rest.includes('event: done'), 'expected terminal done frame');
 });
+
+async function materialFixture(t) {
+  assert.ok(chrome, 'Chromium binary is required (set WEIJI_TEST_CHROME)');
+  const newPage = await headless(t);
+  const { db, call, put } = await fixture(t);
+  const auth = createAuth(db, { origin, providers: new Map([['github', { id: 'github', name: 'GitHub' }]]) });
+  const today = new Date();
+  const monday = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - today.getUTCDay() - 6, 12);
+  for (const [i, noteID] of [id, anotherId].entries()) {
+    const date = new Date(monday + i * 86400_000).toISOString();
+    put('A', { ...note('主题验收正文 #设计/规范', noteID), createdAt: date, updatedAt: date });
+  }
+  const session = { id, title: '设计规范对话', version: 1, origin: 'global', createdAt, turns: [
+    { role: 'user', text: '看看设计笔记' },
+    { role: 'assistant', text: '原笔记 `[N1]`', citations: [{ ref: 'N1', noteId: id, excerpt: '主题验收正文', createdAt }],
+      steps: [{ id: 'retrieve', kind: 'retrieve', status: 'done', label: '检索相关笔记', durationMs: 20 }] },
+  ] };
+  const { turns, ...summary } = session;
+  const api = new Map([
+    ['/api/session', { user: { id: 'A', name: 'A' }, authMode: 'oauth', codexAvailable: true, codexMode: 'gateway' }],
+    ['/api/ai/models', { models: ['gemini-3-flash'], defaultModel: 'gemini-3-flash',
+      modelMeta: [{ id: 'gemini-3-flash', vendor: 'gemini', label: 'Gemini 3 Flash', efforts: [] }] }],
+    ['/api/ai/sessions', { sessions: [summary] }],
+    ['/api/ai/sessions/' + id, { session }],
+    ['/api/insights/lenses', { lenses: [], categories: [] }],
+    ['/api/insights/preview', { noteCount: 2, tagCount: 2, dayCount: 2 }],
+  ]);
+  const web = createServer(async (req, res) => {
+    const url = new URL(req.url, origin);
+    const response = url.pathname === '/login'
+      ? await auth.handle(new Request(url), url, '127.0.0.1')
+      : api.has(url.pathname) ? Response.json(api.get(url.pathname))
+        : await call(req.url, { headers: req.headers['if-none-match']
+          ? { 'if-none-match': req.headers['if-none-match'] } : {} });
+    res.writeHead(response.status, Object.fromEntries(response.headers)).end(await response.text());
+  });
+  web.listen(0, '127.0.0.1');
+  await once(web, 'listening');
+  t.after(() => new Promise(resolve => { web.closeAllConnections(); web.close(resolve); }));
+  const base = 'http://127.0.0.1:' + web.address().port;
+  return async ({ scheme = 'light', width = 1280, height = 800, mobile = false } = {}) => {
+    const page = await newPage();
+    await page.send('Emulation.setEmulatedMedia', { features: [
+      { name: 'prefers-color-scheme', value: scheme }, { name: 'prefers-reduced-motion', value: 'reduce' },
+    ] });
+    await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
+    await page.send('Emulation.setTimezoneOverride', { timezoneId: 'UTC' });
+    await page.navigate(base + '/');
+    await until(() => page.evaluate("document.querySelector('.card-body')?.textContent.includes('主题验收正文')"), 'notes rendered');
+    return { ...page, login: () => page.navigate(base + '/login') };
+  };
+}
+
+async function measureMaterial(page, targets) {
+  return page.evaluate(`(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const pixel = () => [...ctx.getImageData(0, 0, 1, 1).data];
+    const paint = color => {
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, 1, 1);
+    };
+    const luminance = rgb => rgb.slice(0, 3).map(v => {
+      const c = v / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+    return Object.fromEntries(${JSON.stringify(targets)}.map(([selector, pseudo]) => {
+      const node = document.querySelector(selector);
+      if (!node?.getBoundingClientRect().height) throw new Error('Missing visible target ' + selector);
+      const style = getComputedStyle(node, pseudo || null);
+      const layers = [];
+      for (let ancestor = node; ancestor; ancestor = ancestor.parentElement) {
+        layers.unshift(getComputedStyle(ancestor).backgroundColor);
+      }
+      ctx.clearRect(0, 0, 1, 1);
+      layers.forEach(paint);
+      const bg = pixel();
+      ctx.globalAlpha = Number(style.opacity);
+      paint(style.color);
+      ctx.globalAlpha = 1;
+      const fg = pixel();
+      const bright = luminance(bg), ink = luminance(fg);
+      return [selector, { bg, bright, ratio: (Math.max(ink, bright) + 0.05) / (Math.min(ink, bright) + 0.05) }];
+    }));
+  })()`);
+}
+
+test('Material Design 3 light and dark theme maintains unified surfaces and readable contrast',
+  { timeout: 30_000 }, async t => {
+    const open = await materialFixture(t);
+    for (const scheme of ['light', 'dark']) {
+      const page = await open({ scheme });
+      const notes = await measureMaterial(page, [
+        ['body'], ['.topbar h1'], ['.nav-item.active'], ['.activity-numbers span'],
+        ['.card-body'], ['.card-time'], ['.inline-tag'], ['#note-body', '::placeholder'],
+      ]);
+      assert.equal(await page.evaluate("document.querySelector('.topbar').getBoundingClientRect().height"), 64);
+      const primary = await page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-primary').trim()");
+      assert.equal(primary, scheme === 'light' ? '#2d6a4f' : '#7ad4aa');
+      assert.deepEqual(notes.body.bg, scheme === 'light' ? [246, 245, 240, 255] : [23, 22, 20, 255]);
+
+      await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
+      await until(() => page.evaluate("!!document.querySelector('[data-action=ai-select-session]')"), 'AI session listed');
+      await page.evaluate("document.querySelector('[data-action=ai-select-session]').click()");
+      await until(() => page.evaluate("!!document.querySelector('.ai-steps-card') && document.querySelector('#ai-model-toggle').textContent.includes('Gemini')"), 'AI transcript and model loaded');
+      await page.evaluate("document.querySelector('.ai-steps-card summary').click(); document.querySelector('#ai-model-toggle').click()");
+      const chat = await measureMaterial(page, [
+        ['#ai-chat-view'], ['.ai-session-title'], ['.ai-msg-user'], ['.ai-msg-assistant p'], ['.citation-chip'],
+        ['.ai-steps-card summary'], ['.ai-step-heading strong'], ['#ai-chat-input', '::placeholder'],
+        ['#ai-model-options [aria-pressed=true] .ai-picker-label'],
+      ]);
+      assert.deepEqual(chat['#ai-chat-view'].bg, notes.body.bg);
+
+      await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
+      await until(() => page.evaluate("document.querySelector('#ins-model-toggle').textContent.includes('Gemini')"), 'insights filters loaded');
+      const insights = await measureMaterial(page, [
+        ['#ai-insights-view'], ['#ins-scope'], ['#ins-range-select'], ['#ins-tag-trigger'], ['#ins-model-toggle'], ['.ins-profile-toggle'],
+      ]);
+      assert.deepEqual(await page.evaluate(`['#ins-range-select', '#ins-tag-trigger', '#ins-model-toggle', '.ins-profile-toggle']
+        .map(selector => document.querySelector(selector).getBoundingClientRect().height)`), [40, 40, 40, 40]);
+      await page.login();
+      await until(() => page.evaluate("location.pathname === '/login' && document.readyState === 'complete' && !!document.querySelector('.auth-shell')"), 'real login page loaded');
+      const login = await measureMaterial(page, [['.auth-shell'], ['.auth-page h1'], ['.auth-providers a'], ['.auth-footer a']]);
+      assert.deepEqual(login['.auth-shell'].bg, notes.body.bg);
+
+      for (const [selector, sample] of Object.entries({ ...notes, ...chat, ...insights, ...login })) {
+        assert.equal(sample.bg[3], 255, `${scheme} ${selector} should resolve to an opaque surface`);
+        assert.ok(sample.ratio >= 4.5, `${scheme} ${selector} contrast ${sample.ratio.toFixed(3)}:1`);
+        if (scheme === 'dark') {
+          assert.ok(sample.bright < 0.12, `dark ${selector} background luminance ${sample.bright}`);
+          assert.ok(sample.bg[0] >= sample.bg[2] || ['.inline-tag', '.citation-chip', '#ai-model-options [aria-pressed=true] .ai-picker-label', '.nav-item.active', '.ai-msg-user'].includes(selector),
+            `dark ${selector} should use a warm neutral or a branded container: ${sample.bg}`);
+        }
+      }
+    }
+  });
+
+test('Material Design 3 mobile 375px layout enforces 48px touch targets without overflow',
+  { timeout: 30_000 }, async t => {
+    const open = await materialFixture(t);
+    const page = await open({ width: 375, height: 812, mobile: true });
+    const layout = selectors => page.evaluate(`(() => {
+      const targets = ${JSON.stringify(selectors)}.flatMap(([selector, square]) => {
+        const matches = [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length);
+        if (!matches.length) throw new Error('Missing visible target ' + selector);
+        return matches.map(el => {
+          const { width, height } = el.getBoundingClientRect();
+          return { selector, square, width, height };
+        });
+      });
+      return { width: document.documentElement.scrollWidth, targets };
+    })()`);
+    const check = ({ width, targets }) => {
+      assert.ok(width <= 375, 'page overflows 375px: ' + width);
+      for (const { selector, square, height, width } of targets) {
+        assert.ok(height >= 48 && (!square || width >= 48), `${selector} has a ${width}×${height}px hit box`);
+      }
+    };
+    check(await layout([
+      ['#mobile-toggle', true], ['#sort-button', true], ['#refresh-button', true],
+      ['.topbar .icon-button', true], ['#search'], ['#save-note', true], ['.composer-footer button'],
+    ]));
+    const bar = await page.evaluate(`(() => {
+      const first = document.querySelector('.topbar-left').getBoundingClientRect();
+      const search = document.querySelector('.search-field').getBoundingClientRect();
+      return { right: Math.max(...[...document.querySelectorAll('.topbar > *, .topbar-left > *')].map(el => el.getBoundingClientRect().right)),
+        firstBottom: first.bottom, searchTop: search.top, searchWidth: search.width };
+    })()`);
+    assert.ok(bar.right <= 375, 'top bar overflows: ' + bar.right);
+    assert.ok(bar.searchTop >= bar.firstBottom && bar.searchWidth >= 350, 'search needs its own full-width row');
+
+    await page.evaluate("document.querySelector('#mobile-toggle').click()");
+    check(await layout([['.nav-item'], ['.tag-toggle', true], ['button.heatmap-square', true]]));
+    const cells = await page.evaluate(`(() => {
+      const heatmap = document.querySelector('.heatmap');
+      const buttons = [...heatmap.querySelectorAll('button.heatmap-square')];
+      buttons[0].scrollIntoView({ block: 'center', inline: 'center' });
+      return { gridWidth: heatmap.clientWidth, scrollWidth: heatmap.scrollWidth,
+        drawerTop: document.querySelector('.sidebar').getBoundingClientRect().top,
+        drawerHeight: document.querySelector('.sidebar').getBoundingClientRect().height,
+        cells: buttons.map(button => {
+          const { left, top, right, bottom } = button.getBoundingClientRect();
+          const hit = [left + 2, right - 2].every(x => [top + 2, bottom - 2].every(y => document.elementFromPoint(x, y) === button));
+          return { left, top, right, bottom, hit };
+        }) };
+    })()`);
+    assert.equal(cells.drawerTop, 0);
+    assert.equal(cells.drawerHeight, 812);
+    assert.ok(cells.scrollWidth > cells.gridWidth, 'heatmap must scroll within the drawer');
+    assert.equal(cells.cells.length, 2, 'two adjacent dates have matching notes');
+    const [a, b] = cells.cells;
+    assert.equal(b.top - a.bottom, 4, 'adjacent date cells must have a 4px gap');
+    assert.ok(a.hit && b.hit, 'all four corners inset by 2px must hit their own date button');
+
+    await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
+    await until(() => page.evaluate("document.querySelector('#ins-model-toggle').textContent.includes('Gemini')"), 'mobile insights filters loaded');
+    check(await layout([['#ins-range-select'], ['#ins-tag-trigger'], ['#ins-model-toggle'], ['.ins-profile-toggle']]));
+  });

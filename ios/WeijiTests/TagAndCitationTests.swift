@@ -159,6 +159,41 @@ final class TagAndCitationTests: XCTestCase {
         }
     }
 
+    func testThemeContrastMeetsWCAGInHighContrastMode() {
+        for style: UIUserInterfaceStyle in [.light, .dark] {
+            let traits = UITraitCollection(traitsFrom: [
+                UITraitCollection(userInterfaceStyle: style),
+                UITraitCollection(accessibilityContrast: .high)
+            ])
+            func luminance(_ color: Color) -> Double {
+                let resolved = UIColor(color).resolvedColor(with: traits)
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                XCTAssertTrue(resolved.getRed(&r, green: &g, blue: &b, alpha: &a))
+                XCTAssertEqual(a, 1)
+                func linear(_ channel: CGFloat) -> Double {
+                    let c = Double(channel)
+                    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+                }
+                return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+            }
+            func assertContrast(_ foreground: Color, _ background: Color, _ role: String, line: UInt = #line) {
+                let fg = luminance(foreground), bg = luminance(background)
+                let ratio = (max(fg, bg) + 0.05) / (min(fg, bg) + 0.05)
+                XCTAssertGreaterThanOrEqual(ratio, 7, "\(role), \(style == .dark ? "dark" : "light")", line: line)
+            }
+            for (ink, name) in [(Theme.ink, "ink"), (Theme.ink2, "ink2"), (Theme.ink3, "ink3")] {
+                assertContrast(ink, Theme.canvas, "\(name)-on-canvas")
+                assertContrast(ink, Theme.paper, "\(name)-on-paper")
+            }
+            for accent in ThemeAccent.allCases {
+                assertContrast(.white, accent.accent, "\(accent.rawValue) white-on-accent")
+                assertContrast(accent.active, accent.accentSoft, "\(accent.rawValue) active-on-soft")
+                assertContrast(accent.active, Theme.paper, "\(accent.rawValue) active-on-paper")
+                assertContrast(accent.active, Theme.canvas, "\(accent.rawValue) active-on-canvas")
+            }
+        }
+    }
+
     func testThemeManagerPersistsSelectedAccent() throws {
         let suiteName = "weiji.tests.theme.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

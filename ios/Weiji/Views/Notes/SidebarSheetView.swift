@@ -13,7 +13,7 @@ struct SidebarSheetView: View {
                     .foregroundStyle(Theme.ink2)
                     .padding(.trailing, -10)
             }
-            .screenHeader()
+            .padding(.horizontal, 16).frame(minHeight: 52)
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     HStack(spacing: 10) {
@@ -21,6 +21,7 @@ struct SidebarSheetView: View {
                         metric("读书笔记", store.index.readingCount)
                     }
                     heatmap
+                    dateFilter
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             SectionLabel("筛选")
@@ -28,6 +29,7 @@ struct SidebarSheetView: View {
                             if store.filter != NoteFilter() {
                                 Button("清除") { store.filter = NoteFilter(); onClose() }
                                     .font(.footnote.weight(.medium))
+                                    .minTouchTarget()
                             }
                         }
                         Picker("类型", selection: $store.filter.kind) {
@@ -78,26 +80,65 @@ struct SidebarSheetView: View {
             ForEach(columns.indices, id: \.self) { column in
                 VStack(spacing: 3) {
                     ForEach(columns[column]) { day in
-                        Button {
-                            store.filter.day = store.filter.day == day.id ? nil : day.id
-                            onClose()
-                        } label: {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(day.count == 0 ? Theme.subtle : Theme.green.opacity(0.28 + 0.72 * Double(day.count) / Double(peak)))
-                                .overlay {
-                                    if store.filter.day == day.id {
-                                        RoundedRectangle(cornerRadius: 3).strokeBorder(Theme.ink, lineWidth: 1.5)
-                                    }
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(day.count == 0 ? Theme.subtle : Theme.green.opacity(0.28 + 0.72 * Double(day.count) / Double(peak)))
+                            .overlay {
+                                if store.filter.day == day.id {
+                                    RoundedRectangle(cornerRadius: 3).strokeBorder(Theme.ink, lineWidth: 1.5)
                                 }
-                                .aspectRatio(1, contentMode: .fit)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(day.id)，\(day.count) 条笔记")
+                            }
+                            .aspectRatio(1, contentMode: .fit)
                     }
                 }
             }
         }
         .noteCard(padding: 12, cornerRadius: 14)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("最近 \(days.count) 天有 \(days.filter { $0.count > 0 }.count) 天记录，共 \(days.reduce(0) { $0 + $1.count }) 条笔记")
+    }
+
+    private var dateFilter: some View {
+        let currentDay = store.filter.day
+        let fallback = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
+        let selection = Binding(
+            get: { currentDay.flatMap { Self.dayFormatter.date(from: $0) } ?? fallback },
+            set: applyDate
+        )
+        return VStack(alignment: .leading, spacing: 0) {
+            DatePicker("按日期筛选", selection: selection, displayedComponents: .date)
+                .datePickerStyle(.compact)
+                .minTapHeight()
+                .accessibilityIdentifier("notes-filter-date")
+            if currentDay != nil {
+                Button {
+                    store.filter.day = nil
+                    onClose()
+                } label: {
+                    Text("清除日期").minTapHeight()
+                }
+            } else {
+                // The compact picker may not emit a change when the displayed date is selected again.
+                Button {
+                    applyDate(selection.wrappedValue)
+                } label: {
+                    Text("筛选所选日期").minTapHeight()
+                }
+            }
+        }
+    }
+
+    private func applyDate(_ date: Date) {
+        store.filter.day = Self.dayFormatter.string(from: date)
+        onClose()
+    }
+
+    private static var dayFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = Calendar.current.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
     }
 
     private func applyTag(_ tag: String) {
@@ -121,17 +162,16 @@ private struct TagBranch: View {
                         Spacer(minLength: 8)
                         Text(node.count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(Theme.ink3)
                     }
-                    .frame(minHeight: 36)
-                    .contentShape(Rectangle())
+                    .minTapHeight()
                 }
                 .buttonStyle(.plain)
                 if node.children.isEmpty {
-                    Color.clear.frame(width: 32)
+                    Color.clear.frame(width: 44)
                 } else {
                     Button { expanded.toggle() } label: {
                         Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Theme.ink3)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
-                            .frame(width: 32, height: 36).contentShape(Rectangle())
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(expanded ? "收起 #\(node.name)" : "展开 #\(node.name)")

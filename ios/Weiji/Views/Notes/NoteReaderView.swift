@@ -11,6 +11,7 @@ struct NoteReaderView: View {
     var onAsk: (() -> Void)? = nil
     var onOpenTag: ((String) -> Void)? = nil
 
+    @ScaledMetric(relativeTo: .body) private var readerFontSize: CGFloat = 18
     @Environment(\.dismiss) private var dismiss
     @State private var draft: NoteDraft?
     @State private var selection: TextSelection?
@@ -34,7 +35,7 @@ struct NoteReaderView: View {
                 if let draft {
                     if draft.conflict { conflictCard }
                     TextEditor(text: draftBodyBinding, selection: $selection)
-                        .font(.system(size: 18, design: .serif))
+                        .font(.system(size: readerFontSize, design: .serif))
                         .lineSpacing(8)
                         .foregroundStyle(Theme.ink)
                         .scrollContentBackground(.hidden)
@@ -91,7 +92,7 @@ struct NoteReaderView: View {
 
     private var readingText: some View {
         Text(NoteCardContent.highlightingTags(current.body, limit: nil, linkTags: true))
-            .font(.system(size: 18, design: .serif))
+            .font(.system(size: readerFontSize, design: .serif))
             .lineSpacing(8)
             .foregroundStyle(Theme.ink)
             .textSelection(.enabled)

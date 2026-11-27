@@ -73,7 +73,7 @@ struct ConnectionSettingsView: View {
                                                     .strokeBorder(option.accent, lineWidth: 2)
                                                     .frame(width: 40, height: 40)
                                                 Image(systemName: "checkmark")
-                                                    .font(.system(size: 13, weight: .bold))
+                                                    .font(.footnote.weight(.bold))
                                                     .foregroundStyle(.white)
                                             }
                                         }
