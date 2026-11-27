@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 
 const minute = 60_000;
 const day = 1440 * minute;
-const iosCallback = "weiji://auth/callback";
+const appCallback = "weiji://auth/callback";
 const pkceString = /^[A-Za-z0-9_-]{43,128}$/;
 const randomToken = () => randomBytes(32).toString("base64url");
 const stamp = (offset = 0) => new Date(Date.now() + offset).toISOString();
@@ -283,15 +283,16 @@ export function createAuth(db, { origin, providers, trustProxy }, { obsidian } =
     return { sessionId, token, expiresAt };
   }
   function appRedirect(params) {
-    return iosCallback + "?" + new URLSearchParams(params);
+    return appCallback + "?" + new URLSearchParams(params);
   }
   function complete(user, flow, cookies = []) {
-    const clientState = flow.client === "ios" ? openClientState(providers.get(flow.provider), flow.sealedClientState) : null;
+    const isNativeClient = flow.client === "ios" || flow.client === "android";
+    const clientState = isNativeClient ? openClientState(providers.get(flow.provider), flow.sealedClientState) : null;
     if (user.status !== "active") {
       if (clientState !== null) return redirect(appRedirect({ error: "account_disabled", state: clientState }), cookies);
       reject(403, "该账号已停用。");
     }
-    if (flow.client === "ios") {
+    if (isNativeClient) {
       const code = saveState("app_code", { userID: user.id, codeChallenge: flow.codeChallenge }, 2 * minute);
       return redirect(appRedirect({ code, state: clientState }), cookies);
     }
@@ -305,11 +306,12 @@ export function createAuth(db, { origin, providers, trustProxy }, { obsidian } =
   function start(provider, query) {
     const client = query.get("client") ?? "web";
     const flow = { provider: provider.id, client };
-    if (client === "ios") {
+    const isNativeClient = client === "ios" || client === "android";
+    if (isNativeClient) {
       flow.codeChallenge = query.get("code_challenge");
       const clientState = query.get("state");
-      if (query.get("redirect_uri") !== iosCallback || !pkceString.test(flow.codeChallenge || "") ||
-          !clientState || clientState.length > 256) reject(400, "iOS 登录参数无效。");
+      if (query.get("redirect_uri") !== appCallback || !pkceString.test(flow.codeChallenge || "") ||
+          !clientState || clientState.length > 256) reject(400, "客户端登录参数无效。");
       flow.sealedClientState = sealClientState(provider, clientState);
     } else if (client !== "web") reject(400, "不支持的登录客户端。");
     const nonce = client === "web" ? randomToken() : null;
