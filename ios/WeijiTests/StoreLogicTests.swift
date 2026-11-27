@@ -140,7 +140,7 @@ final class StoreLogicTests: XCTestCase {
         try await waitUntil("旧笔记无正式会话") { !chat.loadingSession }
         XCTAssertNil(chat.session)
         XCTAssertEqual(displayed(), ["旧回答"])
-        XCTAssertEqual(AIChatView.pinChipTitle(for: note), "1234567890 1234567890 123")
+        XCTAssertEqual(AIChatView.pinChipTitle(for: note), "1234567890 1234567890 12")
         let book = Note(id: "book", body: " \n ", createdAt: "2025-02-01", reading: .init(bookTitle: " Silo \n"), revision: 1)
         XCTAssertEqual(AIChatView.pinChipTitle(for: book), "Silo")
         XCTAssertEqual(AIChatView.pinChipTitle(for: nil), "引用笔记")
@@ -187,6 +187,10 @@ final class StoreLogicTests: XCTestCase {
         let store = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
         store.start()
         try await waitUntil("同步可引用笔记") { !store.syncing && store.notesById["note"] != nil }
+        await store.openNote("note", from: .notes)
+        let note = try XCTUnwrap(store.detail?.note)
+        XCTAssertTrue(store.canPerformReaderPrimaryAction(for: note.id, source: .notes))
+        XCTAssertTrue(store.canPerformReaderPrimaryAction(for: note.id, source: .ai))
         let api = try XCTUnwrap(store.api)
         let chat = store.chat
         let other = Note(id: "other", body: "另一个引用", createdAt: "2025-02-01", revision: 1)
@@ -203,8 +207,11 @@ final class StoreLogicTests: XCTestCase {
         try await waitUntil("恢复来源引用") { !chat.loadingSession }
         XCTAssertEqual(chat.pins, ["note"])
         XCTAssertEqual(chat.sourceNoteId, "note")
-        await store.applyRecord(nil, id: "note")
+        await store.applyRecord(nil, id: note.id)
+        XCTAssertEqual(store.detail?.id, note.id)
         XCTAssertTrue(chat.pins.isEmpty)
+        XCTAssertFalse(store.canPerformReaderPrimaryAction(for: note.id, source: .notes))
+        XCTAssertFalse(store.canPerformReaderPrimaryAction(for: note.id, source: .ai))
         XCTAssertNil(chat.sourceNoteId)
         XCTAssertEqual(chat.session?.id, "s1")
 

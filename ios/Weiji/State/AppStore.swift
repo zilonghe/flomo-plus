@@ -495,8 +495,10 @@ final class AppStore {
     }
 
     func canPerformReaderPrimaryAction(for noteId: String, source: DetailSource) -> Bool {
-        if source == .ai { return chat.pins.contains(noteId) || chat.pins.count < 10 }
-        return api != nil
+        if source == .ai {
+            return chat.pins.contains(noteId) || (chat.canReference(noteId) && chat.pins.count < 10)
+        }
+        return api != nil && chat.canReference(noteId)
     }
 
     func performReaderPrimaryAction(for note: Note, source: DetailSource) {

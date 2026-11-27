@@ -124,6 +124,8 @@ final class AIChatStore {
         sourceNoteId = validSource(sourceNoteId)
     }
 
+    func canReference(_ id: String) -> Bool { isValidNote(id) }
+
     private func isValidNote(_ id: String) -> Bool { validNoteIds?.contains(id) ?? true }
 
     private func validSource(_ id: String?) -> String? { id.flatMap { isValidNote($0) ? $0 : nil } }

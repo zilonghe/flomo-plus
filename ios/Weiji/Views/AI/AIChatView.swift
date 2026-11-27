@@ -12,7 +12,7 @@ struct AIChatView: View {
 
     static func pinChipTitle(for note: Note?) -> String {
         let text = note?.body.split(whereSeparator: \.isWhitespace).joined(separator: " ") ?? ""
-        if !text.isEmpty { return String(text.prefix(25)) }
+        if !text.isEmpty { return String(text.prefix(24)) }
         if let book = note?.reading?.bookTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !book.isEmpty { return book }
         return "引用笔记"
     }

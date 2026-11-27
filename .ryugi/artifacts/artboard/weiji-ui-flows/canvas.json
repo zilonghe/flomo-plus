@@ -210,7 +210,7 @@
       "y": 420,
       "w": 402,
       "h": 874,
-      "title": "10 跨 Tab · 聊这条进 AI",
+      "title": "10 跨 Tab · 问 AI",
       "props": {
         "state": "thread"
       }
@@ -567,7 +567,7 @@
     "e-reader-ai": {
       "from": "ios-reader",
       "to": "entry-to-ai",
-      "label": "点「聊这条」→ AI Tab"
+      "label": "点「问 AI」→ AI Tab"
     },
     "e-reader-tag": {
       "from": "ios-reader",
