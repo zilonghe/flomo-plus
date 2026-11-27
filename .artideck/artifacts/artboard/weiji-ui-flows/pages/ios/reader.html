@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .reader-wrap {
+      flex: 1;
+      padding: 20px 24px 96px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow: hidden;
+    }
+    .quote-row { display: flex; gap: 14px; align-items: stretch; }
+    .quote-bar { width: 2px; border-radius: 2px; background: var(--color-accent-tone); flex-shrink: 0; }
+    .attr-rule { width: 32px; height: 1px; background: var(--color-separator); margin-top: 6px; }
+    .edit-box {
+      flex: 1;
+      font: var(--type-reader);
+      color: var(--color-text);
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: var(--color-surface);
+      border: 1px solid var(--color-accent-text);
+    }
+    .edit-bar {
+      position: absolute; left: 0; right: 0; bottom: 26px;
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      background: var(--color-surface);
+      border-top: 1px solid var(--color-hairline);
+    }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen" id="root"></div>
+  </ryugi-ios-shell>
+  <script>
+    const mode = (window.ryugiProps || {}).mode || "read";
+    const root = document.getElementById("root");
+    const isEdit = mode === "edit";
+    const isPush = mode === "insight-push";
+    const isAICite = mode === "ai-cite";
+    const isWalk = mode === "walk-read";
+
+    const leadingBtn = isEdit
+      ? `<span class="ios-glass-btn">取消</span>`
+      : isPush
+        ? `<span class="ios-glass-btn"><ryugi-icon symbol="chevron.left" name="chevron-left" size="18"></ryugi-icon><span>返回报告</span></span>`
+        : `<span class="ios-glass-btn" aria-label="关闭"><ryugi-icon symbol="xmark" name="x" size="17"></ryugi-icon></span>`;
+
+    const trailingBtn = isEdit
+      ? `<span class="ios-glass-btn" style="color:var(--color-accent-text);font-weight:600">保存</span>`
+      : `<span class="ios-glass-btn" aria-label="更多操作"><ryugi-icon symbol="ellipsis" name="ellipsis" size="17"></ryugi-icon></span>`;
+
+    const primaryLabel = isAICite ? "移出引用" : "聊这条";
+    const primaryIcon = isAICite
+      ? `<ryugi-icon symbol="pin.slash" name="pin" size="16"></ryugi-icon>`
+      : `<ryugi-icon symbol="bubble.left" name="message-circle" size="16"></ryugi-icon>`;
+
+    const dateText = isWalk ? "2026年11月24日 周二 14:20" : "2026年11月27日 周五 16:10";
+    const contentHTML = isEdit
+      ? `<div class="edit-box">今天按照 Apple HIG 重构了 iOS 导航层，原生 TabView 和 NavigationStack 让 Liquid Glass 效果自然融入系统。<span class="tag">#设计/HIG</span> <span class="tag">#工作/复盘</span>|</div>`
+      : isWalk
+        ? `<div class="quote-row"><div class="quote-bar"></div><div class="reader-body">Material Design 3 的 tonal surface 层级非常适合阅读类 Web 应用，在浅色暖纸和深色炭灰下都能保持清晰的卡片层次。<span class="tag">#设计/M3</span></div></div>
+           <div class="attr-rule"></div>
+           <div style="font:400 14px/20px var(--font-body);color:var(--color-text-secondary)">《设计系统实践》 · 第 4 章</div>`
+        : `<div class="reader-body">今天按照 Apple HIG 重构了 iOS 导航层，原生 TabView 和 NavigationStack 让 Liquid Glass 效果自然融入系统。<span class="tag">#设计/HIG</span> <span class="tag">#工作/复盘</span></div>`;
+
+    const bottomHTML = isEdit
+      ? `<div class="edit-bar">
+           <span class="chip selected"><ryugi-icon symbol="number" name="hash" size="13"></ryugi-icon>标签</span>
+           <span class="chip">#设计/HIG</span>
+           <span class="chip">#阅读/交互</span>
+           <span style="margin-left:auto;font:var(--type-meta);color:var(--color-text-tertiary)">68 字</span>
+         </div>`
+      : `<div class="reader-bottom-bar">
+           <span class="ios-glass-btn" aria-label="编辑"><ryugi-icon symbol="pencil" name="pen" size="17"></ryugi-icon></span>
+           <span class="ios-glass-btn" style="padding:0 16px;">${primaryIcon}<span>${primaryLabel}</span></span>
+         </div>`;
+
+    root.innerHTML = `
+      <div class="ios-nav">
+        ${leadingBtn}
+        ${trailingBtn}
+      </div>
+      <div class="reader-wrap">
+        <div style="font:var(--type-meta);color:var(--color-text-tertiary);font-variant-numeric:tabular-nums;">${dateText}</div>
+        ${contentHTML}
+      </div>
+      ${bottomHTML}
+    `;
+  </script>
+</body>
+</html>

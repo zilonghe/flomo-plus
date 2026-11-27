@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .login-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px 24px 48px;
+    }
+    .login-card {
+      width: 100%;
+      background: var(--color-surface);
+      border: 1px solid var(--color-hairline);
+      border-radius: 28px;
+      padding: 26px 24px;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 22px;
+    }
+    .brand-mark {
+      width: 58px; height: 58px; border-radius: 18px;
+      background: var(--color-accent-soft);
+      color: var(--color-accent-text);
+      display: grid; place-items: center;
+    }
+    .brand-title { font: 700 30px/36px var(--font-display); }
+    .provider-stack { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+    .disclosure {
+      width: 100%;
+      border-top: 1px solid var(--color-hairline);
+      padding-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .disc-head {
+      display: flex; align-items: center; justify-content: space-between;
+      font: 500 14px/20px var(--font-body); color: var(--color-accent-text);
+    }
+    .field {
+      width: 100%; height: 42px; border-radius: 10px;
+      border: 1px solid var(--color-separator);
+      background: var(--color-bg);
+      padding: 0 12px;
+      display: flex; align-items: center;
+      font: 400 14px/20px var(--font-body); color: var(--color-text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="login-wrap">
+        <section class="login-card">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+            <div class="brand-mark">
+              <ryugi-icon symbol="text.alignleft" name="text-align-start" size="26"></ryugi-icon>
+            </div>
+            <div class="brand-title">微记</div>
+          </div>
+          <div class="provider-stack">
+            <div class="btn-primary wide">用 GitHub 登录</div>
+            <div class="btn-primary wide">用 Google 登录</div>
+          </div>
+          <div class="disclosure">
+            <div class="disc-head">
+              <span>高级连接</span>
+              <ryugi-icon symbol="chevron.right" name="chevron-right" size="15"></ryugi-icon>
+            </div>
+            <div class="field">https://weiji.18818888.xyz</div>
+            <div class="field" style="color:var(--color-text-tertiary)">手动访问令牌（可选）</div>
+            <div class="btn-secondary" style="width:100%;">使用令牌连接</div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

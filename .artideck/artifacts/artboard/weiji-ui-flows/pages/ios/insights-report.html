@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .rep-body { flex: 1; padding: 10px 20px 24px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+    .rep-h2 { font: 700 18px/24px var(--font-display); color: var(--color-text); margin-top: 4px; }
+    .rep-p { font: 400 15px/24px var(--font-body); color: var(--color-text); }
+    .cite {
+      display: inline-block; padding: 0 6px; border-radius: 6px;
+      background: var(--color-accent-soft); color: var(--color-accent-text);
+      font: 600 12px/18px var(--font-body);
+    }
+    .rep-rule { height: 1px; background: var(--color-separator); margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="sheet-backdrop">
+        <div class="sheet-card full">
+          <div class="sheet-grabber"></div>
+          <div class="sheet-bar">
+            <span class="action muted">关闭</span>
+            <span class="ios-nav-title">近 7 天设计重构洞察</span>
+            <span class="action bold">继续追问</span>
+          </div>
+          <div class="rep-body">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font:var(--type-meta);color:var(--color-danger)">删除报告</span>
+              <span style="font:var(--type-meta);color:var(--color-text-tertiary)">2026-11-27 · 默认洞察</span>
+            </div>
+            <div class="rep-h2">一、核心关注主题</div>
+            <div class="rep-p">
+              本周记录高度聚焦于<strong>原生规范落地与可访问性</strong>。你在 iOS 端把自绘导航收敛回原生 TabView / NavigationStack，消除了玻璃透色与触控热区缩水问题 <span class="cite">[1]</span>。
+            </div>
+            <div class="rep-rule"></div>
+            <div class="rep-h2">二、观念演进</div>
+            <div class="rep-p">
+              从早期偏重视觉微调，转向以<strong>自动化测试 + 模拟器真机实测</strong>守住设计底线：包括 WCAG 7:1 高对比度与 48px 移动端真实命中率 <span class="cite">[2]</span>。
+            </div>
+            <div class="rep-rule"></div>
+            <div class="rep-h2">三、下一步建议</div>
+            <div class="rep-p">
+              • 用 Ryugi 画板把每一跳 UI 路径沉淀为仓库文件，评审改版时先对齐画板再动代码 <span class="cite">[3]</span>。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

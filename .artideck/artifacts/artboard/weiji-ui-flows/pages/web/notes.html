@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+  <style>
+    .composer-card {
+      background: var(--color-surface); border: 1px solid var(--color-separator);
+      border-radius: 16px; padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 12px;
+      box-shadow: var(--shadow-card);
+    }
+    .note-stream { display: flex; flex-direction: column; gap: 12px; }
+  </style>
+</head>
+<body>
+  <div class="web-shell">
+    <aside class="web-sidebar">
+      <div class="web-brand">
+        <div class="web-brand-left">
+          <span class="web-brand-mark"><ryugi-icon name="text-align-start" size="17"></ryugi-icon></span>
+          <span>微记</span>
+        </div>
+        <span class="faint" style="font-size:12px;">128 条</span>
+      </div>
+
+      <div class="hm-mini" aria-label="活跃热力图">
+        <span></span><span class="l1"></span><span></span><span class="l2"></span><span class="l1"></span><span></span><span class="l3"></span><span></span><span class="l2"></span><span></span><span class="l4"></span><span class="l3"></span>
+        <span class="l1"></span><span></span><span class="l2"></span><span></span><span class="l1"></span><span class="l2"></span><span></span><span class="l3"></span><span></span><span class="l2"></span><span class="l1"></span><span class="l4"></span>
+        <span></span><span class="l2"></span><span class="l1"></span><span></span><span class="l3"></span><span></span><span class="l1"></span><span class="l2"></span><span></span><span class="l3"></span><span></span><span class="l2"></span>
+        <span class="l2"></span><span></span><span class="l3"></span><span class="l1"></span><span></span><span class="l2"></span><span class="l4"></span><span></span><span class="l2"></span><span></span><span class="l3"></span><span class="l4"></span>
+      </div>
+
+      <nav class="web-nav">
+        <div class="web-nav-item active"><ryugi-icon name="text-align-start" size="16"></ryugi-icon><span>全部笔记</span><span class="count">128</span></div>
+        <div class="web-nav-item"><ryugi-icon name="book-open" size="16"></ryugi-icon><span>读书摘录</span><span class="count">42</span></div>
+        <div class="web-nav-item"><ryugi-icon name="waypoints" size="16"></ryugi-icon><span>随机漫步</span></div>
+        <div class="web-nav-item"><ryugi-icon name="message-circle" size="16"></ryugi-icon><span>AI 对话</span></div>
+        <div class="web-nav-item"><ryugi-icon name="chart-no-axes-column-increasing" size="16"></ryugi-icon><span>洞察与画像</span></div>
+      </nav>
+
+      <div style="border-top:1px solid var(--color-separator);padding-top:10px;display:flex;flex-direction:column;gap:4px;">
+        <div class="faint" style="font-size:12px;font-weight:600;padding:0 10px 4px;">标签</div>
+        <div class="web-nav-item"><ryugi-icon name="hash" size="14"></ryugi-icon><span>设计</span><span class="count">24</span></div>
+        <div class="web-nav-item"><ryugi-icon name="hash" size="14"></ryugi-icon><span>工作</span><span class="count">38</span></div>
+        <div class="web-nav-item"><ryugi-icon name="hash" size="14"></ryugi-icon><span>阅读</span><span class="count">42</span></div>
+      </div>
+
+      <div style="margin-top:auto;border-top:1px solid var(--color-separator);padding-top:10px;display:flex;flex-direction:column;gap:4px;">
+        <div class="web-nav-item"><ryugi-icon name="upload" size="15"></ryugi-icon><span>导入微信读书 / Joplin</span></div>
+        <div class="web-nav-item"><ryugi-icon name="settings" size="15"></ryugi-icon><span>账号与同步设置</span></div>
+      </div>
+    </aside>
+
+    <main class="web-main">
+      <header class="web-topbar">
+        <strong style="font:600 16px/22px var(--font-display)">全部笔记</strong>
+        <div class="web-search"><ryugi-icon name="search" size="15"></ryugi-icon><span>搜索笔记、标签、书名或作者…</span></div>
+        <div style="display:flex;gap:8px;">
+          <span class="web-btn"><ryugi-icon name="upload" size="14"></ryugi-icon>导入</span>
+          <span class="web-btn soft"><ryugi-icon name="sparkles" size="14"></ryugi-icon>问 AI</span>
+        </div>
+      </header>
+
+      <div class="web-content" style="max-width:860px;">
+        <section class="composer-card">
+          <div class="faint" style="min-height:54px;font:400 15px/24px var(--font-body);">现在的想法是… 输入 # 添加标签，⌘ + Enter 保存</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span class="web-btn" style="height:32px;padding:0 10px;"><ryugi-icon name="hash" size="14"></ryugi-icon>标签</span>
+            <span class="web-btn primary" style="height:34px;">记一条</span>
+          </div>
+        </section>
+
+        <div class="note-stream">
+          <article class="web-card">
+            <div style="display:flex;justify-content:space-between;font-size:12px;" class="faint">
+              <span>2026-11-27 16:10</span><span>随记</span>
+            </div>
+            <p style="margin:8px 0 0;font:400 15px/24px var(--font-body);">
+              今天按照 Apple HIG 重构了 iOS 导航层，原生 TabView 和 NavigationStack 让 Liquid Glass 效果自然融入系统。<span class="tag">#设计/HIG</span> <span class="tag">#工作/复盘</span>
+            </p>
+          </article>
+          <article class="web-card">
+            <div style="display:flex;justify-content:space-between;font-size:12px;" class="faint">
+              <span><ryugi-icon name="book-open" size="12" style="color:var(--color-accent-text)"></ryugi-icon> 《设计心理学》 · 2026-11-26</span><span>读书摘录</span>
+            </div>
+            <p style="margin:8px 0 0;font:400 15px/24px var(--font-body);">
+              好的设计规范不是限制创造力，而是把触控热区、动态字号和高对比度这些底层体验变成默认能力。<span class="tag">#设计/HIG</span> <span class="tag">#阅读/交互</span>
+            </p>
+          </article>
+          <article class="web-card">
+            <div style="display:flex;justify-content:space-between;font-size:12px;" class="faint">
+              <span>2026-11-24 14:20</span><span>随记</span>
+            </div>
+            <p style="margin:8px 0 0;font:400 15px/24px var(--font-body);">
+              Material Design 3 的 tonal surface 层级非常适合阅读类 Web 应用，在浅色暖纸和深色炭灰下都能保持清晰的卡片层次。<span class="tag">#设计/M3</span> <span class="tag">#工作/复盘</span>
+            </p>
+          </article>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

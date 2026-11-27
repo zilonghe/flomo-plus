@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="sheet-backdrop">
+        <div class="sheet-card short">
+          <div class="sheet-grabber"></div>
+          <div class="sheet-bar">
+            <span style="width:44px"></span>
+            <span class="ios-nav-title">AI 设置</span>
+            <span class="action bold">完成</span>
+          </div>
+
+          <div class="form-section-title">模型来源</div>
+          <div class="form-group">
+            <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;">
+              <ryugi-ios-segmented value="codex" size="sm" block>
+                <ryugi-ios-segment value="codex">服务器内置</ryugi-ios-segment>
+                <ryugi-ios-segment value="openai">自定义 OpenAI</ryugi-ios-segment>
+              </ryugi-ios-segmented>
+              <div style="font:var(--type-meta);color:var(--color-text-secondary);">
+                使用服务器内置 AI 模型，无需配置个人密钥。
+              </div>
+            </div>
+          </div>
+
+          <div class="form-section-title">对话偏好</div>
+          <div class="form-group">
+            <div class="form-row">
+              <span>结合个人画像回答</span>
+              <ryugi-ios-switch checked></ryugi-ios-switch>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

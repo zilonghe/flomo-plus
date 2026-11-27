@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .recipe-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+      padding: 4px 16px 96px; overflow: hidden; flex: 1; align-content: start;
+    }
+    .recipe-card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-hairline);
+      border-radius: 18px;
+      padding: 13px 13px 12px;
+      box-shadow: var(--shadow-card);
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .recipe-card.tint-pine { background: linear-gradient(150deg, #eff6f2 0%, var(--color-surface) 58%); }
+    .recipe-card.tint-plum { background: linear-gradient(150deg, #f3effa 0%, var(--color-surface) 58%); }
+    .recipe-card.tint-indigo { background: linear-gradient(150deg, #eef3fc 0%, var(--color-surface) 58%); }
+    .r-icon {
+      width: 30px; height: 30px; border-radius: 9px;
+      display: grid; place-items: center;
+    }
+    .r-title { font: 600 15px/20px var(--font-body); color: var(--color-text); }
+    .r-desc { font: 400 12px/17px var(--font-body); color: var(--color-text-secondary); min-height: 34px; }
+    .r-foot { display: flex; justify-content: space-between; font: 500 11px/15px var(--font-body); }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="ios-nav">
+        <span style="width:40px"></span>
+        <ryugi-ios-segmented value="insights" size="sm" style="width:154px;">
+          <ryugi-ios-segment value="insights">洞察</ryugi-ios-segment>
+          <ryugi-ios-segment value="profile">画像</ryugi-ios-segment>
+        </ryugi-ios-segmented>
+        <div class="ios-glass-pill">
+          <span class="pill-item"><ryugi-icon symbol="clock.arrow.circlepath" name="history" size="16"></ryugi-icon></span>
+          <span class="pill-item"><ryugi-icon symbol="plus" name="plus" size="17"></ryugi-icon></span>
+        </div>
+      </div>
+
+      <div class="chip-row" style="padding-top:6px;">
+        <span class="chip selected">全部</span>
+        <span class="chip">复盘整理</span>
+        <span class="chip">自我觉察</span>
+        <span class="chip">思维决策</span>
+        <span class="chip">大师视角</span>
+      </div>
+
+      <div class="recipe-grid">
+        <article class="recipe-card tint-pine">
+          <span class="r-icon" style="background:var(--color-accent-soft);color:var(--color-accent-text)"><ryugi-icon symbol="sparkles" name="sparkles" size="15"></ryugi-icon></span>
+          <div class="r-title">默认洞察</div>
+          <div class="r-desc">找出笔记里的主题、变化与下一步</div>
+          <div class="r-foot"><span style="color:var(--color-accent-text)">复盘整理</span><span style="color:var(--color-text-tertiary)">近 7 天</span></div>
+        </article>
+        <article class="recipe-card tint-plum">
+          <span class="r-icon" style="background:var(--color-plum-soft);color:var(--color-plum)"><ryugi-icon symbol="compass.drawing" name="compass" size="15"></ryugi-icon></span>
+          <div class="r-title">价值澄清</div>
+          <div class="r-desc">从选择中看见你在意的事</div>
+          <div class="r-foot"><span style="color:var(--color-plum)">自我觉察</span><span style="color:var(--color-text-tertiary)">本月</span></div>
+        </article>
+        <article class="recipe-card tint-indigo">
+          <span class="r-icon" style="background:var(--color-indigo-soft);color:var(--color-indigo)"><ryugi-icon symbol="waypoints" name="waypoints" size="15"></ryugi-icon></span>
+          <div class="r-title">逆向思考</div>
+          <div class="r-desc">从失败路径反推行动</div>
+          <div class="r-foot"><span style="color:var(--color-indigo)">思维决策</span><span style="color:var(--color-text-tertiary)">本月</span></div>
+        </article>
+        <article class="recipe-card tint-indigo">
+          <span class="r-icon" style="background:var(--color-indigo-soft);color:var(--color-indigo)"><ryugi-icon symbol="waypoints" name="waypoints" size="15"></ryugi-icon></span>
+          <div class="r-title">二阶思考</div>
+          <div class="r-desc">看见选择的后续影响</div>
+          <div class="r-foot"><span style="color:var(--color-indigo)">思维决策</span><span style="color:var(--color-text-tertiary)">本月</span></div>
+        </article>
+        <article class="recipe-card tint-plum">
+          <span class="r-icon" style="background:var(--color-plum-soft);color:var(--color-plum)"><ryugi-icon symbol="brain" name="brain" size="15"></ryugi-icon></span>
+          <div class="r-title">CBT 疗法</div>
+          <div class="r-desc">梳理情境、念头和反应</div>
+          <div class="r-foot"><span style="color:var(--color-plum)">自我觉察</span><span style="color:var(--color-text-tertiary)">近 7 天</span></div>
+        </article>
+        <article class="recipe-card tint-pine">
+          <span class="r-icon" style="background:var(--color-accent-soft);color:var(--color-accent-text)"><ryugi-icon symbol="chart.bar.xaxis" name="chart-no-axes-column-increasing" size="15"></ryugi-icon></span>
+          <div class="r-title">周期复盘</div>
+          <div class="r-desc">梳理进展、阻力与计划</div>
+          <div class="r-foot"><span style="color:var(--color-accent-text)">复盘整理</span><span style="color:var(--color-text-tertiary)">本周</span></div>
+        </article>
+      </div>
+
+      <nav class="ios-tabbar" aria-label="主导航">
+        <div class="ios-tab"><ryugi-icon symbol="text.alignleft" name="text-align-start" size="19"></ryugi-icon><span>笔记</span></div>
+        <div class="ios-tab"><ryugi-icon symbol="point.topleft.down.to.point.bottomright.curvepath" name="waypoints" size="19"></ryugi-icon><span>漫步</span></div>
+        <div class="ios-tab"><ryugi-icon symbol="bubble.left" name="message-circle" size="19"></ryugi-icon><span>AI</span></div>
+        <div class="ios-tab active"><ryugi-icon symbol="chart.bar.xaxis" name="chart-no-axes-column-increasing" size="19"></ryugi-icon><span>洞察</span></div>
+      </nav>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

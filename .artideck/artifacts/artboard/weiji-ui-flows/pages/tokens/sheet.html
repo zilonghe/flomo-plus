@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <style>
+    html, body { margin: 0; padding: 0; background: var(--color-bg); }
+    .wrap { padding: 24px; }
+    .accent-bar {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;
+      margin-top: 20px; padding: 16px;
+      background: var(--color-surface); border: 1px solid var(--color-separator);
+      border-radius: 16px; font-family: var(--font-body);
+    }
+    .acc { display: flex; align-items: center; gap: 10px; }
+    .acc-dot { width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0; }
+    .acc-name { font: 600 14px/18px var(--font-body); color: var(--color-text); }
+    .acc-hex { font: 400 12px/16px var(--font-mono); color: var(--color-text-secondary); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <ryugi-token-sheet>
+      <script type="application/json">
+        {
+          "groups": [
+            {
+              "name": "Surface",
+              "kind": "color",
+              "tokens": [
+                { "name": "--color-bg", "use": "主画布底色（浅暖纸 / 深炭灰）" },
+                { "name": "--color-surface", "use": "笔记与面板实底表面" },
+                { "name": "--color-surface-low", "use": "侧边栏低一级表面" },
+                { "name": "--color-fill", "use": "搜索框、分段底槽与次要胶囊" },
+                { "name": "--color-separator", "use": "边框与分隔线" }
+              ]
+            },
+            {
+              "name": "Text & Contrast",
+              "kind": "color",
+              "tokens": [
+                { "name": "--color-text", "use": "正文与标题主墨", "on": "--color-surface" },
+                { "name": "--color-text-secondary", "use": "次要说明与书名", "on": "--color-surface" },
+                { "name": "--color-text-tertiary", "use": "日期与辅助信息", "on": "--color-surface" },
+                { "name": "--color-accent-text", "use": "标签、链接与激活态文字", "on": "--color-surface" },
+                { "name": "--color-on-accent", "use": "主 CTA 按钮文字", "on": "--color-accent" }
+              ]
+            },
+            {
+              "name": "Accent & Semantic",
+              "kind": "color",
+              "tokens": [
+                { "name": "--color-accent", "use": "主按钮与 FAB 实心底色" },
+                { "name": "--color-accent-soft", "use": "选中胶囊与引用背景" },
+                { "name": "--color-indigo", "use": "跨书呼应与思维决策", "on": "--color-indigo-soft" },
+                { "name": "--color-clay", "use": "随记呼应标识", "on": "--color-clay-soft" },
+                { "name": "--color-plum", "use": "自我觉察洞察视角", "on": "--color-plum-soft" },
+                { "name": "--color-danger", "use": "破坏性操作提示", "on": "--color-surface" }
+              ]
+            },
+            {
+              "name": "Typography",
+              "kind": "type",
+              "tokens": [
+                { "name": "--type-large-title", "use": "iOS 导航大标题", "sample": "笔记 · 漫步" },
+                { "name": "--type-page-title", "use": "页面/分区标题", "sample": "近 7 天设计重构洞察" },
+                { "name": "--type-reader", "use": "精读衬线正文", "sample": "好的设计规范把触控热区与高对比度变成默认能力。" },
+                { "name": "--type-body", "use": "卡片列表正文", "sample": "原生 TabView 和 NavigationStack 让材质自然融入系统。" },
+                { "name": "--type-meta", "use": "元数据与时间戳", "sample": "2026-11-27 · #设计/HIG" }
+              ]
+            },
+            {
+              "name": "Shape & Touch Targets",
+              "kind": "radius",
+              "tokens": [
+                { "name": "--radius-sm", "use": "输入与次级控件" },
+                { "name": "--radius-card", "use": "标准笔记卡片" },
+                { "name": "--radius-focus", "use": "漫步焦点卡" }
+              ]
+            },
+            {
+              "name": "Hit Targets",
+              "kind": "size",
+              "tokens": [
+                { "name": "--tap-ios", "use": "Apple HIG 最小热区 (44pt)" },
+                { "name": "--tap-web", "use": "Material Design 3 移动最小热区 (48px)" }
+              ]
+            }
+          ]
+        }
+      </script>
+    </ryugi-token-sheet>
+
+    <div class="accent-bar" aria-label="iOS 五套可选主题色">
+      <div class="acc"><span class="acc-dot" style="background:#2d6a4f"></span><div><div class="acc-name">松针 Pine</div><div class="acc-hex">#2D6A4F / #7AD4AA</div></div></div>
+      <div class="acc"><span class="acc-dot" style="background:#2553a6"></span><div><div class="acc-name">靛青 Indigo</div><div class="acc-hex">#2553A6 / #85B0FF</div></div></div>
+      <div class="acc"><span class="acc-dot" style="background:#9e4b28"></span><div><div class="acc-name">陶土 Clay</div><div class="acc-hex">#9E4B28 / #F0A07B</div></div></div>
+      <div class="acc"><span class="acc-dot" style="background:#6a4a96"></span><div><div class="acc-name">暮紫 Plum</div><div class="acc-hex">#6A4A96 / #C7ADF2</div></div></div>
+      <div class="acc"><span class="acc-dot" style="background:#363430"></span><div><div class="acc-name">石墨 Graphite</div><div class="acc-hex">#363430 / #DCD9D0</div></div></div>
+    </div>
+  </div>
+</body>
+</html>

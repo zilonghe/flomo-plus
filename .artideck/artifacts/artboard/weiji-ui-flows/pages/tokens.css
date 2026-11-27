@@ -1,0 +1,121 @@
+/* Weiji Design Tokens — Single source of truth mirroring ios/Weiji/Views/Theme.swift & public/styles.css */
+:root,
+[data-appearance="light"] {
+  color-scheme: light;
+  /* Core Ryugi shell + Weiji semantic roles */
+  --color-bg: #f6f5f0;
+  --color-surface: #ffffff;
+  --color-surface-low: #f1efe8;
+  --color-fill: #eeece5;
+  --color-surface-high: #e6e3da;
+  --color-text: #1c1b18;
+  --color-text-secondary: #55524a;
+  --color-text-tertiary: #6f6b63;
+  --color-separator: #e6e3da;
+  --color-hairline: rgba(0, 0, 0, 0.06);
+  --color-glass: rgba(255, 255, 255, 0.78);
+  --color-glass-border: rgba(255, 255, 255, 0.9);
+  --color-scrim: rgba(0, 0, 0, 0.32);
+
+  /* Primary Pine accent (default) */
+  --color-accent: #2d6a4f;
+  --color-on-accent: #ffffff;
+  --color-accent-text: #2d6a4f;
+  --color-accent-soft: #e7f1ec;
+  --color-accent-tone: #3a8363;
+
+  /* Secondary / semantic accents */
+  --color-indigo: #2553a6;
+  --color-indigo-soft: #e9effb;
+  --color-clay: #9e4b28;
+  --color-clay-soft: #f6eae4;
+  --color-plum: #6a4a96;
+  --color-plum-soft: #efeaf7;
+  --color-graphite: #363430;
+  --color-graphite-soft: #eae8e1;
+  --color-danger: #a8322a;
+  --color-danger-soft: #fce3de;
+
+  /* Heatmap ramp */
+  --heatmap-0: #eeece5;
+  --heatmap-1: #d6e9df;
+  --heatmap-2: #a8cdb8;
+  --heatmap-3: #6aa786;
+  --heatmap-4: #2d6a4f;
+
+  /* Typography */
+  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", system-ui, sans-serif;
+  --font-serif: "New York", "Songti SC", "Noto Serif CJK SC", Georgia, serif;
+  --font-mono: "SF Mono", "Geist Mono", ui-monospace, Menlo, monospace;
+
+  --type-large-title: 700 32px/38px var(--font-display);
+  --type-page-title: 700 22px/28px var(--font-display);
+  --type-item-title: 600 17px/22px var(--font-body);
+  --type-reader: 400 18px/30px var(--font-serif);
+  --type-body: 400 15px/22px var(--font-body);
+  --type-meta: 400 13px/18px var(--font-body);
+
+  /* Spacing & Shape */
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-card: 16px;
+  --radius-focus: 22px;
+  --radius-pill: 9999px;
+  --tap-ios: 44px;
+  --tap-web: 48px;
+
+  /* Elevation & Motion */
+  --shadow-card: 0 3px 10px rgba(0, 0, 0, 0.04);
+  --shadow-fab: 0 5px 14px rgba(45, 106, 79, 0.32);
+  --shadow-sheet: 0 18px 44px rgba(0, 0, 0, 0.16);
+  --motion-spring: 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-fast: 150ms ease-out;
+}
+
+[data-appearance="dark"] {
+  color-scheme: dark;
+  --color-bg: #171614;
+  --color-surface: #22211e;
+  --color-surface-low: #1d1c19;
+  --color-fill: #2b2a26;
+  --color-surface-high: #36342e;
+  --color-text: #edebe5;
+  --color-text-secondary: #b5b0a6;
+  --color-text-tertiary: #8f8a80;
+  --color-separator: #3a3833;
+  --color-hairline: rgba(255, 255, 255, 0.08);
+  --color-glass: rgba(34, 33, 30, 0.78);
+  --color-glass-border: rgba(255, 255, 255, 0.12);
+  --color-scrim: rgba(0, 0, 0, 0.52);
+
+  --color-accent: #276e50;
+  --color-on-accent: #ffffff;
+  --color-accent-text: #7ad4aa;
+  --color-accent-soft: #1c3127;
+  --color-accent-tone: #5cc295;
+
+  --color-indigo: #85b0ff;
+  --color-indigo-soft: #1a2844;
+  --color-clay: #f0a07b;
+  --color-clay-soft: #352119;
+  --color-plum: #c7adf2;
+  --color-plum-soft: #292038;
+  --color-graphite: #dcd9d0;
+  --color-graphite-soft: #2e2d29;
+  --color-danger: #ffb4a9;
+  --color-danger-soft: #4d2923;
+
+  --heatmap-0: #2b2a26;
+  --heatmap-1: #29463a;
+  --heatmap-2: #3d6d55;
+  --heatmap-3: #559c7a;
+  --heatmap-4: #7ad4aa;
+
+  --shadow-card: 0 3px 12px rgba(0, 0, 0, 0.24);
+  --shadow-fab: 0 6px 16px rgba(0, 0, 0, 0.42);
+  --shadow-sheet: 0 20px 50px rgba(0, 0, 0, 0.45);
+}

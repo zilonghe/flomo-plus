@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+  <style>
+    .walk-stage {
+      flex: 1; display: grid; grid-template-columns: 220px 1fr; gap: 22px;
+      align-items: start; padding-top: 10px;
+    }
+    .prev-box {
+      padding: 14px; border-radius: 14px;
+      background: var(--color-surface); border: 1px dashed var(--color-accent-text);
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .focus-box {
+      background: var(--color-surface);
+      border: 1.5px solid rgba(45, 106, 79, 0.35);
+      border-radius: 20px; padding: 22px 24px;
+      box-shadow: var(--shadow-card);
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .rel-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 18px; }
+    .badge { display:inline-block; align-self:flex-start; padding:3px 9px; border-radius:999px; font:500 12px/16px var(--font-body); }
+  </style>
+</head>
+<body>
+  <div class="web-shell">
+    <aside class="web-sidebar">
+      <div class="web-brand"><div class="web-brand-left"><span class="web-brand-mark"><ryugi-icon name="text-align-start" size="17"></ryugi-icon></span><span>微记</span></div></div>
+      <nav class="web-nav">
+        <div class="web-nav-item"><ryugi-icon name="text-align-start" size="16"></ryugi-icon><span>全部笔记</span></div>
+        <div class="web-nav-item active"><ryugi-icon name="waypoints" size="16"></ryugi-icon><span>随机漫步</span></div>
+        <div class="web-nav-item"><ryugi-icon name="message-circle" size="16"></ryugi-icon><span>AI 对话</span></div>
+        <div class="web-nav-item"><ryugi-icon name="chart-no-axes-column-increasing" size="16"></ryugi-icon><span>洞察与画像</span></div>
+      </nav>
+    </aside>
+
+    <main class="web-main">
+      <header class="web-topbar">
+        <strong style="font:600 16px/22px var(--font-display)">随机漫步 · 语义引力图谱</strong>
+        <div style="display:flex;gap:8px;">
+          <span class="web-btn"><ryugi-icon name="refresh-cw" size="14"></ryugi-icon>换一条</span>
+          <span class="web-btn primary"><ryugi-icon name="message-circle" size="14"></ryugi-icon>聊这组</span>
+        </div>
+      </header>
+
+      <div class="web-content">
+        <div class="walk-stage">
+          <div class="prev-box">
+            <span style="font:600 12px/16px var(--font-body);color:var(--color-accent-text)">← 上一跳 · 随记</span>
+            <span class="muted" style="font-size:13px;line-height:20px;">今天按照 Apple HIG 重构了 iOS 导航层，原生 TabView…</span>
+            <span class="faint" style="font-size:11px;">点击回退上一节点</span>
+          </div>
+
+          <div>
+            <article class="focus-box">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font:600 13px/18px var(--font-body);color:var(--color-accent-text)">当前焦点 · 《设计系统实践》</span>
+                <span class="faint" style="font-size:12px;">2026-11-24</span>
+              </div>
+              <div style="font:400 18px/30px var(--font-serif);">
+                Material Design 3 的 tonal surface 层级非常适合阅读类 Web 应用，在浅色暖纸和深色炭灰下都能保持清晰的卡片层次。<span class="tag">#设计/M3</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;">
+                <span style="color:var(--color-accent-text);font-weight:500;">点击精读全文 →</span>
+                <span class="faint">语义召回 3 条跨书 / 随记呼应</span>
+              </div>
+            </article>
+
+            <div class="rel-row">
+              <article class="web-card" style="display:flex;flex-direction:column;gap:8px;">
+                <span class="badge" style="background:var(--color-indigo-soft);color:var(--color-indigo)">跨书呼应</span>
+                <div style="font-size:13px;line-height:20px;">好的设计规范不是限制创造力，而是把触控热区、动态字号变成默认能力…</div>
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:auto;"><span class="muted">24%</span><span style="color:var(--color-accent-text);font-weight:500;">跃迁 →</span></div>
+              </article>
+              <article class="web-card" style="display:flex;flex-direction:column;gap:8px;">
+                <span class="badge" style="background:var(--color-clay-soft);color:var(--color-clay)">随记呼应</span>
+                <div style="font-size:13px;line-height:20px;">阅读类应用在深色模式下必须控制文本与占位符对比度，避免纯白刺眼…</div>
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:auto;"><span class="muted">19%</span><span style="color:var(--color-accent-text);font-weight:500;">跃迁 →</span></div>
+              </article>
+              <article class="web-card" style="display:flex;flex-direction:column;gap:8px;">
+                <span class="badge" style="background:var(--color-graphite-soft);color:var(--color-graphite)">同书呼应</span>
+                <div style="font-size:13px;line-height:20px;">设计 Token 的价值在于语义层与色板层分离，换主题无需改组件…</div>
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:auto;"><span class="muted">16%</span><span style="color:var(--color-accent-text);font-weight:500;">跃迁 →</span></div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

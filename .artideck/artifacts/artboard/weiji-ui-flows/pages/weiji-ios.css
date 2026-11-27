@@ -1,0 +1,373 @@
+/* Shared iOS 26 HIG Mockup Styles for Weiji */
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 402px;
+  height: 874px;
+  overflow: hidden;
+  font-family: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.screen {
+  position: relative;
+  width: 100%;
+  height: calc(874px - 62px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Native iOS 26 navigation bar */
+.ios-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 16px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ios-nav-title {
+  font: 600 17px/22px var(--font-body);
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ios-large-title {
+  font: var(--type-large-title);
+  color: var(--color-text);
+  padding: 2px 16px 8px;
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+.ios-glass-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: 20px;
+  background: var(--color-glass);
+  border: 1px solid var(--color-glass-border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  color: var(--color-text);
+  font: 500 15px/20px var(--font-body);
+  gap: 6px;
+  white-space: nowrap;
+}
+.ios-glass-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 6px;
+  border-radius: 20px;
+  background: var(--color-glass);
+  border: 1px solid var(--color-glass-border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  gap: 2px;
+}
+.ios-glass-pill .pill-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 18px;
+  font: 500 15px/20px var(--font-body);
+  color: var(--color-text);
+}
+.ios-glass-pill .pill-item.accent { color: var(--color-accent-text); font-weight: 600; }
+
+/* Native .searchable field */
+.ios-search {
+  margin: 0 16px 10px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 19px;
+  background: var(--color-fill);
+  color: var(--color-text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 400 15px/20px var(--font-body);
+  flex-shrink: 0;
+}
+
+/* Scroll body */
+.ios-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px 16px 94px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ios-scroll.no-tab { padding-bottom: 24px; }
+
+/* Solid opaque card (HIG + Weiji redline) */
+.note-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-card);
+  padding: 15px 16px;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.note-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 12px/16px var(--font-body);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.note-meta .book { color: var(--color-text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-body {
+  font: 400 15px/23px var(--font-body);
+  color: var(--color-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tag { color: var(--color-accent-text); }
+
+/* Chips */
+.chip-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 16px 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  background: var(--color-fill);
+  color: var(--color-text-secondary);
+  font: 500 13px/18px var(--font-body);
+  white-space: nowrap;
+}
+.chip.selected {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+
+/* Buttons */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 46px;
+  padding: 0 18px;
+  border-radius: 14px;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font: 600 15px/20px var(--font-body);
+  box-shadow: 0 4px 12px rgba(45, 106, 79, 0.22);
+}
+.btn-primary.wide { width: 100%; }
+.btn-primary.sm { height: 36px; border-radius: 18px; font-size: 14px; padding: 0 14px; }
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 14px;
+  background: var(--color-fill);
+  color: var(--color-text);
+  font: 500 15px/20px var(--font-body);
+}
+.btn-secondary.sm { height: 36px; border-radius: 18px; font-size: 14px; padding: 0 14px; }
+
+/* FAB */
+.ios-fab {
+  position: absolute;
+  right: 20px;
+  bottom: 98px;
+  width: 56px;
+  height: 56px;
+  border-radius: 28px;
+  background: var(--color-accent);
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  box-shadow: var(--shadow-fab);
+}
+
+/* Native iOS 26 floating liquid-glass TabBar */
+.ios-tabbar {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 24px;
+  height: 60px;
+  border-radius: 30px;
+  background: var(--color-glass);
+  border: 1px solid var(--color-glass-border);
+  backdrop-filter: blur(20px) saturate(1.8);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  padding: 4px;
+  align-items: center;
+}
+.ios-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 50px;
+  border-radius: 25px;
+  color: var(--color-text-secondary);
+  font: 500 10px/12px var(--font-body);
+}
+.ios-tab.active {
+  background: var(--color-fill);
+  color: var(--color-accent-text);
+  font-weight: 600;
+}
+
+/* Opaque side drawer overlay */
+.drawer-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--color-scrim);
+  display: flex;
+}
+.drawer-panel {
+  width: 318px;
+  height: 100%;
+  background: var(--color-bg);
+  border-radius: 0 24px 24px 0;
+  box-shadow: 6px 0 24px rgba(0, 0, 0, 0.24);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: 4px;
+}
+
+/* Sheet container over dimmed backdrop */
+.sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--color-scrim);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.sheet-card {
+  width: 100%;
+  background: var(--color-bg);
+  border-radius: 26px 26px 0 0;
+  box-shadow: var(--shadow-sheet);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 26px;
+}
+.sheet-card.full { height: 95%; }
+.sheet-card.medium { height: 68%; }
+.sheet-card.short { height: 54%; }
+.sheet-grabber {
+  width: 38px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--color-separator);
+  margin: 8px auto 4px;
+  flex-shrink: 0;
+}
+.sheet-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px 10px;
+  flex-shrink: 0;
+}
+.sheet-bar .action {
+  font: 500 15px/20px var(--font-body);
+  color: var(--color-accent-text);
+  padding: 6px 8px;
+}
+.sheet-bar .action.bold { font-weight: 600; }
+.sheet-bar .action.muted { color: var(--color-text-secondary); }
+
+/* Grouped form rows */
+.form-section-title {
+  font: 600 12px/16px var(--font-body);
+  color: var(--color-text-tertiary);
+  padding: 12px 20px 6px;
+}
+.form-group {
+  margin: 0 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 10px 14px;
+  gap: 10px;
+  font: 400 15px/20px var(--font-body);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.form-row:last-child { border-bottom: none; }
+.form-val { color: var(--color-text-secondary); font-size: 14px; }
+
+/* Heatmap overview grid */
+.heatmap {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 3px;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+}
+.hm-cell {
+  aspect-ratio: 1;
+  border-radius: 3px;
+  background: var(--heatmap-0);
+}
+.hm-1 { background: var(--heatmap-1); }
+.hm-2 { background: var(--heatmap-2); }
+.hm-3 { background: var(--heatmap-3); }
+.hm-4 { background: var(--heatmap-4); }
+
+/* Reader serif */
+.reader-body {
+  font: var(--type-reader);
+  color: var(--color-text);
+  white-space: pre-wrap;
+}
+.reader-bottom-bar {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}

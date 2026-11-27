@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+</head>
+<body>
+  <div class="web-shell">
+    <aside class="web-sidebar" style="opacity:0.45">
+      <div class="web-brand"><div class="web-brand-left"><span class="web-brand-mark"><ryugi-icon name="text-align-start" size="17"></ryugi-icon></span><span>微记</span></div></div>
+    </aside>
+    <main class="web-main" style="opacity:0.45"></main>
+
+    <div class="web-scrim">
+      <div class="web-dialog" role="dialog" aria-label="笔记详情">
+        <div class="web-dialog-head">
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:2px;">2026-11-27 16:10 · 随记</div>
+            <strong style="font:600 17px/22px var(--font-display)">笔记详情与编辑</strong>
+          </div>
+          <span class="web-btn" style="width:36px;padding:0;justify-content:center;"><ryugi-icon name="x" size="16"></ryugi-icon></span>
+        </div>
+        <div class="web-dialog-body">
+          <div style="min-height:180px;padding:16px;border-radius:12px;background:var(--color-bg);border:1px solid var(--color-separator);font:400 16px/28px var(--font-serif);">
+            今天按照 Apple HIG 重构了 iOS 导航层，原生 TabView 和 NavigationStack 让 Liquid Glass 效果自然融入系统。<span class="tag">#设计/HIG</span> <span class="tag">#工作/复盘</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span class="web-btn soft" style="height:30px;border-radius:999px;">#设计/HIG</span>
+            <span class="web-btn soft" style="height:30px;border-radius:999px;">#工作/复盘</span>
+            <span class="faint" style="margin-left:auto;font-size:12px;">可切换编辑态或直接发往 AI 对话</span>
+          </div>
+        </div>
+        <div class="web-dialog-foot">
+          <span class="web-btn" style="margin-right:auto;color:var(--color-danger)">删除</span>
+          <span class="web-btn"><ryugi-icon name="copy" size="14"></ryugi-icon>复制</span>
+          <span class="web-btn soft"><ryugi-icon name="message-circle" size="14"></ryugi-icon>聊这条</span>
+          <span class="web-btn primary"><ryugi-icon name="pen" size="14"></ryugi-icon>编辑保存</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

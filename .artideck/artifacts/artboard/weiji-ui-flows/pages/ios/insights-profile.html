@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .prof-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 14px; border-radius: 16px;
+      background: var(--color-surface); border: 1px solid var(--color-hairline);
+      box-shadow: var(--shadow-card);
+    }
+    .prof-md {
+      background: var(--color-surface); border: 1px solid var(--color-hairline);
+      border-radius: 20px; padding: 18px; box-shadow: var(--shadow-card);
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .prof-md h3 { margin: 4px 0 0; font: 700 16px/22px var(--font-display); }
+    .prof-md p { margin: 0; font: 400 14px/22px var(--font-body); color: var(--color-text); }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="ios-nav">
+        <span style="width:40px"></span>
+        <ryugi-ios-segmented value="profile" size="sm" style="width:154px;">
+          <ryugi-ios-segment value="insights">洞察</ryugi-ios-segment>
+          <ryugi-ios-segment value="profile">画像</ryugi-ios-segment>
+        </ryugi-ios-segmented>
+        <span style="width:40px"></span>
+      </div>
+
+      <div class="ios-scroll" style="padding-top:8px;">
+        <div class="prof-bar">
+          <span class="chip selected">
+            <ryugi-icon symbol="checkmark.circle.fill" name="circle-check" size="13"></ryugi-icon>
+            已启用
+          </span>
+          <span style="flex:1"></span>
+          <span class="btn-secondary sm">编辑</span>
+          <span class="btn-primary sm">生成</span>
+        </div>
+
+        <article class="prof-md">
+          <h3>长期关注领域</h3>
+          <p>• <strong>AI 工程工作流与个人知识系统</strong>：偏好自托管、本地优先、结构清晰的极简工具，反感冗余配置与视觉噪音。</p>
+          <h3>思考与决策风格</h3>
+          <p>• <strong>第一性原理与长期主义</strong>：优先投入能降低长期维护成本的底层架构（统一 Token、自动化验收门禁），拒绝一次性补丁。</p>
+          <h3>审美偏好</h3>
+          <p>• <strong>暖纸阅读质感</strong>：浅色暖纸 + 深色炭灰，克制使用强调色（松针绿），重视排版呼吸感与无障碍可读性。</p>
+        </article>
+      </div>
+
+      <nav class="ios-tabbar" aria-label="主导航">
+        <div class="ios-tab"><ryugi-icon symbol="text.alignleft" name="text-align-start" size="19"></ryugi-icon><span>笔记</span></div>
+        <div class="ios-tab"><ryugi-icon symbol="point.topleft.down.to.point.bottomright.curvepath" name="waypoints" size="19"></ryugi-icon><span>漫步</span></div>
+        <div class="ios-tab"><ryugi-icon symbol="bubble.left" name="message-circle" size="19"></ryugi-icon><span>AI</span></div>
+        <div class="ios-tab active"><ryugi-icon symbol="chart.bar.xaxis" name="chart-no-axes-column-increasing" size="19"></ryugi-icon><span>洞察</span></div>
+      </nav>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

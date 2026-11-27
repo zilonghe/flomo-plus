@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+  <style>
+    html, body { width: 402px; height: 874px; overflow: hidden; }
+    .m-shell {
+      width: 402px; height: 874px;
+      background: var(--color-bg);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .m-bar-1 {
+      height: 56px; padding: 0 12px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--color-separator);
+      background: var(--color-surface-low);
+    }
+    .m-tap {
+      min-width: 48px; height: 48px; border-radius: 12px;
+      display: inline-flex; align-items: center; justify-content: center;
+      color: var(--color-text);
+    }
+    .m-bar-2 { padding: 8px 14px; border-bottom: 1px solid var(--color-separator); }
+    .m-search {
+      width: 100%; height: 48px; padding: 0 14px; border-radius: 12px;
+      background: var(--color-surface); border: 1px solid var(--color-separator);
+      display: flex; align-items: center; gap: 8px;
+      font-size: 14px; color: var(--color-text-tertiary);
+    }
+    .m-body { flex: 1; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+    .m-hm-scroll {
+      display: flex; gap: 4px; overflow: hidden;
+      padding: 10px; border-radius: 14px;
+      background: var(--color-surface); border: 1px solid var(--color-separator);
+    }
+    .m-hm-btn {
+      width: 48px; height: 48px; flex-shrink: 0; border-radius: 10px;
+      display: grid; place-items: center;
+      font: 500 12px/16px var(--font-body); color: var(--color-text);
+    }
+    .m-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 10px; border-radius: 999px;
+      background: var(--color-accent-soft); color: var(--color-accent-text);
+      font: 600 12px/16px var(--font-body);
+    }
+  </style>
+</head>
+<body>
+  <div class="m-shell" data-appearance="dark">
+    <div class="m-bar-1">
+      <span class="m-tap" aria-label="展开侧栏"><ryugi-icon name="menu" size="20"></ryugi-icon></span>
+      <strong style="font:600 16px/22px var(--font-display)">微记 · Web 移动端</strong>
+      <span class="m-tap" aria-label="同步"><ryugi-icon name="refresh-cw" size="18"></ryugi-icon></span>
+    </div>
+    <div class="m-bar-2">
+      <div class="m-search">
+        <ryugi-icon name="search" size="17"></ryugi-icon>
+        <span>搜索笔记（真实 48px 高度）</span>
+      </div>
+    </div>
+
+    <div class="m-body">
+      <div><span class="m-badge">M3 深色炭灰 · 48×48px 触控热区</span></div>
+
+      <div class="m-hm-scroll" aria-label="横向滚动 48x48 热力图日期按钮">
+        <span class="m-hm-btn" style="background:var(--heatmap-0)">11/22</span>
+        <span class="m-hm-btn" style="background:var(--heatmap-2)">11/23</span>
+        <span class="m-hm-btn" style="background:var(--heatmap-3)">11/24</span>
+        <span class="m-hm-btn" style="background:var(--heatmap-1)">11/25</span>
+        <span class="m-hm-btn" style="background:var(--heatmap-2)">11/26</span>
+        <span class="m-hm-btn" style="background:var(--heatmap-4);color:#063824;font-weight:700">11/27</span>
+      </div>
+
+      <div class="web-card" style="display:flex;flex-direction:column;gap:10px;">
+        <div class="faint" style="font-size:14px;">现在的想法是…</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span class="m-tap" style="background:var(--color-fill);width:48px;"><ryugi-icon name="hash" size="18"></ryugi-icon></span>
+          <span class="web-btn primary" style="height:48px;padding:0 20px;border-radius:12px;">记一条</span>
+        </div>
+      </div>
+
+      <article class="web-card">
+        <div class="faint" style="font-size:12px;margin-bottom:6px;">2026-11-27 · 随记</div>
+        <div style="font-size:14px;line-height:22px;">
+          Material Design 3 的 tonal surface 层级非常适合阅读类 Web 应用，在浅色暖纸和深色炭灰下都能保持清晰的卡片层次。<span class="tag">#设计/M3</span>
+        </div>
+      </article>
+
+      <article class="web-card">
+        <div class="faint" style="font-size:12px;margin-bottom:6px;">2026-11-26 · 《设计心理学》</div>
+        <div style="font-size:14px;line-height:22px;">
+          375px 移动端下搜索框、热力图方格、标签展开箭头与洞察 4 控件均保证真实 48×48px 热区且零横向溢出。<span class="tag">#设计/HIG</span>
+        </div>
+      </article>
+    </div>
+  </div>
+</body>
+</html>

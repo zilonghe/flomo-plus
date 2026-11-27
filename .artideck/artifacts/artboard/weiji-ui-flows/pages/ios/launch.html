@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .launch-center {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 22px;
+      padding-bottom: 48px;
+    }
+    .brand-mark {
+      width: 58px; height: 58px; border-radius: 18px;
+      background: var(--color-accent-soft);
+      color: var(--color-accent-text);
+      display: grid; place-items: center;
+    }
+    .brand-title { font: 700 32px/38px var(--font-display); letter-spacing: -0.02em; }
+    .spinner {
+      width: 24px; height: 24px; border-radius: 50%;
+      border: 2.5px solid var(--color-separator);
+      border-top-color: var(--color-accent-text);
+    }
+    .hint { font: var(--type-meta); color: var(--color-text-tertiary); }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="launch-center">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+          <div class="brand-mark">
+            <ryugi-icon symbol="text.alignleft" name="text-align-start" size="26"></ryugi-icon>
+          </div>
+          <div class="brand-title">微记</div>
+        </div>
+        <div class="spinner" aria-label="正在恢复连接"></div>
+        <div class="hint">正在恢复云端会话与本地缓存…</div>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

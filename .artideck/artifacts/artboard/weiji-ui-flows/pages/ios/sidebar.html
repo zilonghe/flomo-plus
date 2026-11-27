@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .bg-notes { padding: 48px 16px 0; opacity: 0.55; }
+    .drawer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 14px 8px 16px; min-height: 48px;
+    }
+    .drawer-body {
+      flex: 1; overflow: hidden; padding: 4px 16px 16px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .metric-card {
+      background: var(--color-surface); border: 1px solid var(--color-hairline);
+      border-radius: 14px; padding: 10px 12px;
+    }
+    .metric-num { font: 600 22px/26px var(--font-display); font-variant-numeric: tabular-nums; }
+    .metric-lbl { font: 400 12px/16px var(--font-body); color: var(--color-text-secondary); }
+    .date-btn {
+      min-height: 52px; padding: 10px 12px; border-radius: 14px;
+      background: var(--color-surface); border: 1px solid var(--color-hairline);
+      display: flex; align-items: center; justify-content: space-between;
+      font: 400 15px/20px var(--font-body);
+    }
+    .tag-row {
+      display: flex; align-items: center; justify-content: space-between;
+      min-height: 44px; padding: 0 4px;
+      font: 400 15px/20px var(--font-body);
+    }
+    .drawer-foot {
+      border-top: 1px solid var(--color-hairline);
+      padding: 8px 16px 26px;
+      display: flex; align-items: center; gap: 10px;
+      font: 500 15px/20px var(--font-body);
+    }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="bg-notes">
+        <div class="ios-large-title" style="padding:0 0 10px">笔记</div>
+        <div class="note-card"><div class="note-body">今天按照 Apple HIG 重构了 iOS 导航层…</div></div>
+      </div>
+
+      <div class="drawer-scrim">
+        <aside class="drawer-panel">
+          <div class="drawer-head">
+            <span style="font:700 20px/24px var(--font-display)">微记</span>
+            <ryugi-icon symbol="xmark" name="x" size="18" style="color:var(--color-text-secondary)"></ryugi-icon>
+          </div>
+          <div class="drawer-body">
+            <div class="metrics">
+              <div class="metric-card"><div class="metric-num">128</div><div class="metric-lbl">全部笔记</div></div>
+              <div class="metric-card"><div class="metric-num">42</div><div class="metric-lbl">读书笔记</div></div>
+            </div>
+
+            <div class="heatmap" aria-label="最近 84 天活跃热力图概览">
+              <span class="hm-cell"></span><span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell"></span><span class="hm-cell hm-1"></span><span class="hm-cell hm-3"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell"></span><span class="hm-cell hm-4"></span><span class="hm-cell hm-3"></span>
+              <span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell"></span><span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-3"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-1"></span><span class="hm-cell hm-4"></span>
+              <span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-3"></span><span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-1"></span><span class="hm-cell hm-3"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span>
+              <span class="hm-cell hm-2"></span><span class="hm-cell"></span><span class="hm-cell hm-3"></span><span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-4"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell"></span><span class="hm-cell hm-3"></span><span class="hm-cell hm-4"></span>
+              <span class="hm-cell"></span><span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-1"></span><span class="hm-cell"></span><span class="hm-cell hm-1"></span><span class="hm-cell hm-2"></span><span class="hm-cell"></span><span class="hm-cell hm-1"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-3"></span>
+            </div>
+
+            <div class="date-btn">
+              <span>按日期筛选</span>
+              <span style="display:inline-flex;align-items:center;gap:4px;color:var(--color-text-secondary);font-size:14px;">
+                <span>选择日期</span>
+                <ryugi-icon symbol="chevron.right" name="chevron-right" size="14"></ryugi-icon>
+              </span>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              <div style="font:600 12px/16px var(--font-body);color:var(--color-text-tertiary);padding-left:4px;">筛选</div>
+              <ryugi-ios-segmented value="all" size="sm" block>
+                <ryugi-ios-segment value="all">全部</ryugi-ios-segment>
+                <ryugi-ios-segment value="memo">随记</ryugi-ios-segment>
+                <ryugi-ios-segment value="reading">读书</ryugi-ios-segment>
+              </ryugi-ios-segmented>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <div style="font:600 12px/16px var(--font-body);color:var(--color-text-tertiary);padding:0 4px 4px;">标签</div>
+              <div class="tag-row"><span>#设计</span><span style="display:inline-flex;align-items:center;gap:10px;color:var(--color-text-tertiary);font-size:13px;"><span>24</span><ryugi-icon symbol="chevron.right" name="chevron-right" size="13"></ryugi-icon></span></div>
+              <div class="tag-row"><span>#工作</span><span style="display:inline-flex;align-items:center;gap:10px;color:var(--color-text-tertiary);font-size:13px;"><span>38</span><ryugi-icon symbol="chevron.right" name="chevron-right" size="13"></ryugi-icon></span></div>
+              <div class="tag-row"><span>#阅读</span><span style="display:inline-flex;align-items:center;gap:10px;color:var(--color-text-tertiary);font-size:13px;"><span>42</span><ryugi-icon symbol="chevron.right" name="chevron-right" size="13"></ryugi-icon></span></div>
+            </div>
+          </div>
+
+          <div class="drawer-foot">
+            <ryugi-icon symbol="gearshape" name="settings" size="18"></ryugi-icon>
+            <span>连接设置</span>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

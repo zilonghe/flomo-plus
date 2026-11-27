@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+  <style>
+    .ai-layout { flex: 1; display: grid; grid-template-columns: 248px 1fr; min-height: 0; }
+    .sess-rail {
+      background: var(--color-surface-low); border-right: 1px solid var(--color-separator);
+      padding: 14px 12px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .sess-item { padding: 10px 12px; border-radius: 10px; font-size: 13px; color: var(--color-text-secondary); }
+    .sess-item.active { background: var(--color-surface); color: var(--color-text); font-weight: 600; border: 1px solid var(--color-separator); }
+    .chat-col { display: flex; flex-direction: column; min-width: 0; padding: 18px 28px 20px; gap: 14px; }
+    .step-card {
+      background: var(--color-surface); border: 1px solid var(--color-separator);
+      border-radius: 12px; padding: 11px 14px; font-size: 13px; color: var(--color-text-secondary);
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .cite { display:inline-block; padding:0 6px; border-radius:6px; background:var(--color-accent-soft); color:var(--color-accent-text); font:600 12px/18px var(--font-body); }
+    .chat-box {
+      margin-top: auto; background: var(--color-surface); border: 1px solid var(--color-separator);
+      border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="web-shell">
+    <aside class="web-sidebar">
+      <div class="web-brand"><div class="web-brand-left"><span class="web-brand-mark"><ryugi-icon name="text-align-start" size="17"></ryugi-icon></span><span>微记</span></div></div>
+      <nav class="web-nav">
+        <div class="web-nav-item"><ryugi-icon name="text-align-start" size="16"></ryugi-icon><span>全部笔记</span></div>
+        <div class="web-nav-item"><ryugi-icon name="waypoints" size="16"></ryugi-icon><span>随机漫步</span></div>
+        <div class="web-nav-item active"><ryugi-icon name="message-circle" size="16"></ryugi-icon><span>AI 对话</span></div>
+        <div class="web-nav-item"><ryugi-icon name="chart-no-axes-column-increasing" size="16"></ryugi-icon><span>洞察与画像</span></div>
+      </nav>
+    </aside>
+
+    <main class="web-main">
+      <header class="web-topbar">
+        <strong style="font:600 16px/22px var(--font-display)">AI 对话 · HIG 与 M3 对比复盘</strong>
+        <span class="web-btn soft"><ryugi-icon name="plus" size="14"></ryugi-icon>新建会话</span>
+      </header>
+
+      <div class="ai-layout">
+        <aside class="sess-rail">
+          <div class="web-btn primary" style="justify-content:center;"><ryugi-icon name="plus" size="14"></ryugi-icon>新建对话</div>
+          <div class="sess-item active">HIG 与 M3 对比复盘</div>
+          <div class="sess-item">这周的读书摘录梳理</div>
+          <div class="sess-item">设计系统 Token 分层讨论</div>
+          <div class="sess-item">关于长期主义与工程取舍</div>
+        </aside>
+
+        <section class="chat-col">
+          <div style="align-self:flex-end;background:var(--color-accent);color:#fff;padding:10px 16px;border-radius:16px 16px 4px 16px;font-size:14px;">
+            帮我总结这周关于 Apple HIG 与 Material Design 3 的落地原则。
+          </div>
+
+          <div class="step-card">
+            <div style="font-weight:600;color:var(--color-text);display:flex;align-items:center;gap:6px;">
+              <ryugi-icon name="sparkles" size="14" style="color:var(--color-accent-text)"></ryugi-icon>
+              <span>已完成检索与推理 · 命中 4 条笔记</span>
+            </div>
+            <div>1. 检索笔记：Apple HIG 导航重构、M3 Tonal Surface、深色对比度</div>
+          </div>
+
+          <div class="web-card" style="font-size:14px;line-height:24px;">
+            结合你本周的笔记，核心收敛为三条规范：<br/>
+            • <strong>iOS 原生导航优先</strong>：采用 `TabView` / `NavigationStack` / `.searchable`，大面积抽屉与卡片保持实底 <span class="cite">[1]</span>。<br/>
+            • <strong>Web M3 表面与对比度</strong>：深色炭灰五级表面 + 全角色 WCAG AA ≥ 4.5:1 <span class="cite">[2]</span>。<br/>
+            • <strong>移动端真实热区</strong>：44pt / 48px 必须覆盖真实可点按钮本身。
+          </div>
+
+          <div class="chat-box">
+            <div class="faint" style="font-size:14px;">问问你的笔记… 输入 @ 引用指定笔记</div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="web-btn" style="height:30px;padding:0 10px;"><ryugi-icon name="at-sign" size="13"></ryugi-icon>引用笔记</span>
+              <span class="web-btn" style="height:30px;padding:0 10px;"><ryugi-icon name="brain" size="13" style="color:var(--color-accent-text)"></ryugi-icon>GPT-4.1 Mini ▾</span>
+              <span class="web-btn" style="height:30px;padding:0 10px;">思考：中 ▾</span>
+              <span class="web-btn primary" style="margin-left:auto;height:32px;"><ryugi-icon name="send" size="13"></ryugi-icon>发送</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

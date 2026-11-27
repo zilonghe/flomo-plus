@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+  <style>
+    .filter-bar {
+      display: grid; grid-template-columns: 1.3fr 1fr 1fr auto; gap: 10px;
+      align-items: center;
+    }
+    .f-ctrl {
+      height: 40px; padding: 0 12px; border-radius: 10px;
+      background: var(--color-surface); border: 1px solid var(--color-separator);
+      display: flex; align-items: center; justify-content: space-between;
+      font: 500 13px/18px var(--font-body);
+    }
+    .ins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; flex: 1; min-height: 0; }
+    .lens-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
+  </style>
+</head>
+<body>
+  <div class="web-shell">
+    <aside class="web-sidebar">
+      <div class="web-brand"><div class="web-brand-left"><span class="web-brand-mark"><ryugi-icon name="text-align-start" size="17"></ryugi-icon></span><span>微记</span></div></div>
+      <nav class="web-nav">
+        <div class="web-nav-item"><ryugi-icon name="text-align-start" size="16"></ryugi-icon><span>全部笔记</span></div>
+        <div class="web-nav-item"><ryugi-icon name="waypoints" size="16"></ryugi-icon><span>随机漫步</span></div>
+        <div class="web-nav-item"><ryugi-icon name="message-circle" size="16"></ryugi-icon><span>AI 对话</span></div>
+        <div class="web-nav-item active"><ryugi-icon name="chart-no-axes-column-increasing" size="16"></ryugi-icon><span>洞察与画像</span></div>
+      </nav>
+    </aside>
+
+    <main class="web-main">
+      <header class="web-topbar">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong style="font:600 16px/22px var(--font-display)">洞察与画像</strong>
+          <span class="web-btn soft" style="height:30px;">洞察</span>
+          <span class="web-btn" style="height:30px;">个人画像</span>
+        </div>
+        <span class="web-btn"><ryugi-icon name="plus" size="14"></ryugi-icon>新建视角</span>
+      </header>
+
+      <div class="web-content">
+        <div class="filter-bar" aria-label="40px 等高洞察筛选栏">
+          <div class="f-ctrl"><span>视角：默认洞察</span><span class="faint">▾</span></div>
+          <div class="f-ctrl"><span>范围：近 7 天</span><span class="faint">▾</span></div>
+          <div class="f-ctrl"><span>标签：全部标签</span><span class="faint">▾</span></div>
+          <span class="web-btn primary" style="height:40px;padding:0 18px;"><ryugi-icon name="sparkles" size="14"></ryugi-icon>生成洞察</span>
+        </div>
+
+        <div class="ins-grid">
+          <div class="lens-grid">
+            <article class="web-card" style="border-color:var(--color-accent-text);">
+              <div style="font:600 15px/20px var(--font-body);">默认洞察</div>
+              <div class="muted" style="font-size:13px;margin:6px 0 10px;">找出笔记里的主题、变化与下一步</div>
+              <div style="display:flex;justify-content:space-between;font-size:12px;"><span class="tag">复盘整理</span><span class="faint">近 7 天</span></div>
+            </article>
+            <article class="web-card">
+              <div style="font:600 15px/20px var(--font-body);">价值澄清</div>
+              <div class="muted" style="font-size:13px;margin:6px 0 10px;">从选择中看见你在意的事</div>
+              <div style="display:flex;justify-content:space-between;font-size:12px;"><span style="color:var(--color-plum)">自我觉察</span><span class="faint">本月</span></div>
+            </article>
+            <article class="web-card">
+              <div style="font:600 15px/20px var(--font-body);">逆向思考</div>
+              <div class="muted" style="font-size:13px;margin:6px 0 10px;">从失败路径反推行动</div>
+              <div style="display:flex;justify-content:space-between;font-size:12px;"><span style="color:var(--color-indigo)">思维决策</span><span class="faint">本月</span></div>
+            </article>
+            <article class="web-card">
+              <div style="font:600 15px/20px var(--font-body);">二阶思考</div>
+              <div class="muted" style="font-size:13px;margin:6px 0 10px;">看见选择的后续影响</div>
+              <div style="display:flex;justify-content:space-between;font-size:12px;"><span style="color:var(--color-indigo)">思维决策</span><span class="faint">本月</span></div>
+            </article>
+          </div>
+
+          <article class="web-card" style="display:flex;flex-direction:column;gap:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong style="font:600 16px/22px var(--font-display)">近 7 天设计重构洞察</strong>
+              <span class="web-btn soft" style="height:30px;">继续追问</span>
+            </div>
+            <div style="font-size:14px;line-height:24px;">
+              <strong>一、核心主题</strong>：你本周重点把 iOS 和 Web 两端分别对齐到 Apple HIG 与 Material Design 3，建立了一套可自动化验证的 UI 红线。<br/><br/>
+              <strong>二、下一步行动</strong>：将现状 UI/UX 纳入 Ryugi 画板文件管理，后续每次改版先在画板上确认每一跳的布局与状态变化。
+            </div>
+          </article>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

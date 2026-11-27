@@ -1,0 +1,146 @@
+/* Shared Web Material Design 3 Mockup Styles for Weiji */
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.web-shell {
+  width: 1280px;
+  height: 800px;
+  display: grid;
+  grid-template-columns: 268px 1fr;
+  background: var(--color-bg);
+  overflow: hidden;
+  position: relative;
+}
+
+.web-sidebar {
+  background: var(--color-surface-low);
+  border-right: 1px solid var(--color-separator);
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+.web-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+}
+.web-brand-left { display: flex; align-items: center; gap: 10px; font: 700 18px/24px var(--font-display); }
+.web-brand-mark {
+  width: 30px; height: 30px; border-radius: 9px;
+  background: var(--color-accent-soft); color: var(--color-accent-text);
+  display: grid; place-items: center;
+}
+
+.web-nav { display: flex; flex-direction: column; gap: 3px; }
+.web-nav-item {
+  display: flex; align-items: center; gap: 10px;
+  height: 38px; padding: 0 12px; border-radius: 10px;
+  font: 500 14px/20px var(--font-body); color: var(--color-text-secondary);
+}
+.web-nav-item.active {
+  background: var(--color-accent-soft); color: var(--color-accent-text); font-weight: 600;
+}
+.web-nav-item .count { margin-left: auto; font-size: 12px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
+
+.web-main {
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+  background: var(--color-bg);
+}
+.web-topbar {
+  height: 58px;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--color-separator);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+}
+.web-search {
+  width: 360px; height: 36px; border-radius: 999px;
+  background: var(--color-surface); border: 1px solid var(--color-separator);
+  padding: 0 14px; display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--color-text-tertiary);
+}
+.web-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 14px; border-radius: 10px;
+  font: 500 13px/18px var(--font-body);
+  border: 1px solid var(--color-separator);
+  background: var(--color-surface); color: var(--color-text);
+  white-space: nowrap;
+}
+.web-btn.primary {
+  background: var(--color-accent); border-color: var(--color-accent); color: #ffffff; font-weight: 600;
+}
+.web-btn.soft {
+  background: var(--color-accent-soft); border-color: transparent; color: var(--color-accent-text);
+}
+
+.web-content {
+  flex: 1; min-height: 0; overflow: hidden;
+  padding: 20px 32px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.web-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-separator);
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow-card);
+}
+
+.web-scrim {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.36);
+  display: grid; place-items: center;
+  backdrop-filter: blur(2px);
+}
+.web-dialog {
+  width: 640px; max-height: 680px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-separator);
+  border-radius: 20px;
+  box-shadow: var(--shadow-sheet);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.web-dialog-head {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--color-separator);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.web-dialog-body { padding: 18px 22px; display: flex; flex-direction: column; gap: 14px; }
+.web-dialog-foot {
+  padding: 12px 22px 16px;
+  border-top: 1px solid var(--color-separator);
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+}
+
+.hm-mini {
+  display: grid; grid-template-columns: repeat(12, 1fr); gap: 3px;
+  padding: 10px; border-radius: 12px;
+  background: var(--color-surface); border: 1px solid var(--color-separator);
+}
+.hm-mini span { aspect-ratio: 1; border-radius: 2px; background: var(--heatmap-0); }
+.hm-mini .l1 { background: var(--heatmap-1); }
+.hm-mini .l2 { background: var(--heatmap-2); }
+.hm-mini .l3 { background: var(--heatmap-3); }
+.hm-mini .l4 { background: var(--heatmap-4); }
+
+.tag { color: var(--color-accent-text); }
+.muted { color: var(--color-text-secondary); }
+.faint { color: var(--color-text-tertiary); }

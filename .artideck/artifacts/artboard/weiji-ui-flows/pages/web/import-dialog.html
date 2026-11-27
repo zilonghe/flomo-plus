@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+  <style>
+    .dropzone {
+      border: 1.5px dashed var(--color-accent-text);
+      border-radius: 14px;
+      padding: 28px 20px;
+      background: var(--color-accent-soft);
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      text-align: center;
+    }
+    .tab-strip {
+      display: inline-flex; gap: 4px; padding: 4px; border-radius: 12px;
+      background: var(--color-fill); align-self: flex-start;
+    }
+    .tab-pill { padding: 6px 14px; border-radius: 9px; font: 500 13px/18px var(--font-body); color: var(--color-text-secondary); }
+    .tab-pill.active { background: var(--color-surface); color: var(--color-text); font-weight: 600; box-shadow: var(--shadow-card); }
+  </style>
+</head>
+<body>
+  <div class="web-shell">
+    <aside class="web-sidebar" style="opacity:0.45"></aside>
+    <main class="web-main" style="opacity:0.45"></main>
+
+    <div class="web-scrim">
+      <div class="web-dialog" role="dialog" aria-label="导入笔记">
+        <div class="web-dialog-head">
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:2px;">数据迁移与摘录导入</div>
+            <strong style="font:600 17px/22px var(--font-display)">导入微信读书 / Joplin</strong>
+          </div>
+          <span class="web-btn" style="width:36px;padding:0;justify-content:center;"><ryugi-icon name="x" size="16"></ryugi-icon></span>
+        </div>
+        <div class="web-dialog-body">
+          <div class="tab-strip">
+            <span class="tab-pill">微信读书摘录</span>
+            <span class="tab-pill active">Joplin (.jex / 目录)</span>
+          </div>
+          <div class="dropzone">
+            <ryugi-icon name="upload" size="24" style="color:var(--color-accent-text)"></ryugi-icon>
+            <strong style="font:600 15px/20px var(--font-body)">选择 .jex 备份包或 Markdown 导出目录</strong>
+            <span class="muted" style="font-size:13px;">自动解析笔记本层级映射为 #标签、保留原始时间与幂等去重</span>
+          </div>
+          <div class="web-card" style="background:var(--color-bg);padding:12px 14px;">
+            <div style="font:600 13px/18px var(--font-body);margin-bottom:4px;">预览摘要</div>
+            <div class="muted" style="font-size:13px;">已解析 36 条笔记 · 4 个笔记本标签 · 0 条冲突（跳过已删除墓碑）</div>
+          </div>
+        </div>
+        <div class="web-dialog-foot">
+          <span class="web-btn">返回重选</span>
+          <span class="web-btn primary">确认导入 36 条</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

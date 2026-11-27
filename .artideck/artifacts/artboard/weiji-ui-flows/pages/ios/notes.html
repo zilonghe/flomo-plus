@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+</head>
+<body>
+  <ryugi-ios-shell id="shell" time="17:48" appearance="light">
+    <div class="screen">
+      <div class="ios-nav">
+        <span class="ios-glass-btn" aria-label="笔记菜单">
+          <ryugi-icon symbol="line.3.horizontal" name="menu" size="18"></ryugi-icon>
+        </span>
+        <span class="ios-glass-btn" aria-label="同步">
+          <ryugi-icon symbol="arrow.clockwise" name="refresh-cw" size="18"></ryugi-icon>
+        </span>
+      </div>
+      <div class="ios-large-title">笔记</div>
+      <div class="ios-search">
+        <ryugi-icon symbol="magnifyingglass" name="search" size="16"></ryugi-icon>
+        <span>搜索笔记、书名、作者</span>
+      </div>
+
+      <div class="ios-scroll">
+        <article class="note-card">
+          <div class="note-meta"><span>2026-11-27</span></div>
+          <div class="note-body">今天按照 Apple HIG 重构了 iOS 导航层，原生 TabView 和 NavigationStack 让 Liquid Glass 效果自然融入系统。<span class="tag">#设计/HIG</span> <span class="tag">#工作/复盘</span></div>
+        </article>
+        <article class="note-card">
+          <div class="note-meta">
+            <ryugi-icon symbol="book.closed.fill" name="book-open" size="13" style="color:var(--color-accent-text)"></ryugi-icon>
+            <span class="book">设计心理学</span>
+            <span>2026-11-26</span>
+          </div>
+          <div class="note-body">好的设计规范不是限制创造力，而是把触控热区、动态字号和高对比度这些底层体验变成默认能力。<span class="tag">#设计/HIG</span> <span class="tag">#阅读/交互</span></div>
+        </article>
+        <article class="note-card">
+          <div class="note-meta"><span>2026-11-24</span></div>
+          <div class="note-body">Material Design 3 的 tonal surface 层级非常适合阅读类 Web 应用，在浅色暖纸和深色炭灰下都能保持清晰的卡片层次。<span class="tag">#设计/M3</span> <span class="tag">#工作/复盘</span></div>
+        </article>
+        <article class="note-card">
+          <div class="note-meta"><span>2026-11-22</span></div>
+          <div class="note-body">阅读类应用在深色模式下必须控制文本与占位符对比度，避免纯白刺眼，同时保证次要信息仍满足 WCAG AA 4.5:1。<span class="tag">#设计/M3</span></div>
+        </article>
+      </div>
+
+      <div class="ios-fab" aria-label="快速记">
+        <ryugi-icon symbol="plus" name="plus" size="24"></ryugi-icon>
+      </div>
+
+      <nav class="ios-tabbar" aria-label="主导航">
+        <div class="ios-tab active">
+          <ryugi-icon symbol="text.alignleft" name="text-align-start" size="19"></ryugi-icon>
+          <span>笔记</span>
+        </div>
+        <div class="ios-tab">
+          <ryugi-icon symbol="point.topleft.down.to.point.bottomright.curvepath" name="waypoints" size="19"></ryugi-icon>
+          <span>漫步</span>
+        </div>
+        <div class="ios-tab">
+          <ryugi-icon symbol="bubble.left" name="message-circle" size="19"></ryugi-icon>
+          <span>AI</span>
+        </div>
+        <div class="ios-tab">
+          <ryugi-icon symbol="chart.bar.xaxis" name="chart-no-axes-column-increasing" size="19"></ryugi-icon>
+          <span>洞察</span>
+        </div>
+      </nav>
+    </div>
+  </ryugi-ios-shell>
+  <script>
+    const props = window.ryugiProps || {};
+    if (props.appearance === "dark") {
+      document.getElementById("shell").setAttribute("appearance", "dark");
+    }
+  </script>
+</body>
+</html>

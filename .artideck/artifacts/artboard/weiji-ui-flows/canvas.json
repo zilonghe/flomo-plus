@@ -1,0 +1,650 @@
+{
+  "version": 1,
+  "title": "微记 Weiji · 全量 UI/UX 交互画板",
+  "activePage": "ios-entry",
+  "focus": {
+    "target": "ios-notes"
+  },
+  "pages": [
+    {
+      "id": "ios-entry",
+      "name": "iOS · 入口与笔记流"
+    },
+    {
+      "id": "ios-walk",
+      "name": "iOS · 随机漫步流"
+    },
+    {
+      "id": "ios-ai",
+      "name": "iOS · AI 对话流"
+    },
+    {
+      "id": "ios-insights",
+      "name": "iOS · 洞察与画像流"
+    },
+    {
+      "id": "web-flows",
+      "name": "Web · M3 桌面与移动流"
+    },
+    {
+      "id": "tokens",
+      "name": "设计规范 · Tokens"
+    }
+  ],
+  "notes": {
+    "t-ios-entry": {
+      "kind": "title",
+      "page": "ios-entry",
+      "x": 0,
+      "y": 0,
+      "text": "iOS · 入口与笔记流",
+      "description": "覆盖启动鉴权、笔记主页（原生 TabView / .searchable / FAB）、实底侧栏抽屉、日历筛选、连接设置、快速记与全屏 Zoom 精读编辑。"
+    },
+    "c-ios-auth": {
+      "kind": "condition",
+      "page": "ios-entry",
+      "x": 882,
+      "y": 1985,
+      "text": "已登录？"
+    },
+    "t-ios-walk": {
+      "kind": "title",
+      "page": "ios-walk",
+      "x": 0,
+      "y": 0,
+      "text": "iOS · 随机漫步流",
+      "description": "语义引力图谱：焦点卡轻点精读、长按关联卡精读、点击关联卡跃迁并压入上一跳栈、右上角一键带组聊 AI。"
+    },
+    "t-ios-ai": {
+      "kind": "title",
+      "page": "ios-ai",
+      "x": 0,
+      "y": 0,
+      "text": "iOS · AI 对话流",
+      "description": "以空态/对话态为核心，向外连接历史会话抽屉、@ 置顶引用、模型选择、AI 设置短 Sheet 及引用笔记精读回跳。"
+    },
+    "t-ios-insights": {
+      "kind": "title",
+      "page": "ios-insights",
+      "x": 0,
+      "y": 0,
+      "text": "iOS · 洞察与画像流",
+      "description": "顶栏原生分段切换「洞察｜画像」；配方画板支持选视角配置范围 → 生成报告 → Push 精读引用，以及历史报告与自定义视角。"
+    },
+    "t-web": {
+      "kind": "title",
+      "page": "web-flows",
+      "x": 0,
+      "y": 0,
+      "text": "Web · M3 桌面与移动流",
+      "description": "Material Design 3 暖纸浅色与炭灰深色系统：独立登录页、桌面笔记主界面、详情/导入弹窗、漫步/AI/洞察工作区及 375px 48px 热区适配。"
+    },
+    "t-tokens": {
+      "kind": "title",
+      "page": "tokens",
+      "x": 0,
+      "y": 0,
+      "text": "设计规范 · Tokens 与明暗对照",
+      "description": "双端统一的设计 Token 单一事实源（pages/tokens.css），自动校验 WCAG 对比度，并排展示浅色暖纸与深色炭灰实际渲染效果。"
+    }
+  },
+  "boards": {
+    "ios-launch": {
+      "file": "pages/ios/launch.html",
+      "page": "ios-entry",
+      "x": 0,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "01 启动恢复连接"
+    },
+    "ios-login": {
+      "file": "pages/ios/login.html",
+      "page": "ios-entry",
+      "x": 882,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "02 登录页 (OAuth / 令牌)"
+    },
+    "ios-notes": {
+      "file": "pages/ios/notes.html",
+      "page": "ios-entry",
+      "x": 1660,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "03 笔记主页 (Tab 1)",
+      "props": {
+        "appearance": "light"
+      }
+    },
+    "ios-composer": {
+      "file": "pages/ios/composer.html",
+      "page": "ios-entry",
+      "x": 2542,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "04 记一条 Sheet"
+    },
+    "ios-reader": {
+      "file": "pages/ios/reader.html",
+      "page": "ios-entry",
+      "x": 2542,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "05 精读全屏 (Zoom)",
+      "props": {
+        "mode": "read"
+      }
+    },
+    "ios-reader-edit": {
+      "file": "pages/ios/reader.html",
+      "page": "ios-entry",
+      "x": 3424,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "06 精读编辑态",
+      "props": {
+        "mode": "edit"
+      }
+    },
+    "ios-sidebar": {
+      "file": "pages/ios/sidebar.html",
+      "page": "ios-entry",
+      "x": 1660,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "07 笔记侧栏抽屉"
+    },
+    "ios-date-sheet": {
+      "file": "pages/ios/date-sheet.html",
+      "page": "ios-entry",
+      "x": 2542,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "08 日历筛选 Sheet"
+    },
+    "ios-settings": {
+      "file": "pages/ios/settings.html",
+      "page": "ios-entry",
+      "x": 1660,
+      "y": 4020,
+      "w": 402,
+      "h": 874,
+      "title": "09 连接与外观设置"
+    },
+    "walk-main": {
+      "file": "pages/ios/walk.html",
+      "page": "ios-walk",
+      "x": 0,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "01 漫步引力图谱 (Tab 2)",
+      "props": {
+        "pivoted": false
+      }
+    },
+    "walk-reader": {
+      "file": "pages/ios/reader.html",
+      "page": "ios-walk",
+      "x": 882,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "02 漫步精读 (Zoom)",
+      "props": {
+        "mode": "walk-read"
+      }
+    },
+    "walk-pivoted": {
+      "file": "pages/ios/walk.html",
+      "page": "ios-walk",
+      "x": 882,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "03 跃迁后（含上一跳）",
+      "props": {
+        "pivoted": true
+      }
+    },
+    "walk-to-ai": {
+      "file": "pages/ios/ai-chat.html",
+      "page": "ios-walk",
+      "x": 882,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "04 带这组跳入 AI 对话",
+      "props": {
+        "state": "from-walk"
+      }
+    },
+    "ai-sessions": {
+      "file": "pages/ios/ai-sessions.html",
+      "page": "ios-ai",
+      "x": 0,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "01 历史会话抽屉"
+    },
+    "ai-settings": {
+      "file": "pages/ios/ai-settings.html",
+      "page": "ios-ai",
+      "x": 0,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "02 AI 设置 (短 Sheet)"
+    },
+    "ai-empty": {
+      "file": "pages/ios/ai-chat.html",
+      "page": "ios-ai",
+      "x": 882,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "03 AI 对话主页 (Tab 3)",
+      "props": {
+        "state": "empty"
+      }
+    },
+    "ai-pins": {
+      "file": "pages/ios/ai-pins.html",
+      "page": "ios-ai",
+      "x": 882,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "04 @ 置顶笔记选择"
+    },
+    "ai-models": {
+      "file": "pages/ios/ai-models.html",
+      "page": "ios-ai",
+      "x": 1764,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "05 模型选择 Sheet"
+    },
+    "ai-thread": {
+      "file": "pages/ios/ai-chat.html",
+      "page": "ios-ai",
+      "x": 1764,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "06 流式对话与引用",
+      "props": {
+        "state": "thread"
+      }
+    },
+    "ai-cited-reader": {
+      "file": "pages/ios/reader.html",
+      "page": "ios-ai",
+      "x": 2646,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "07 引用笔记精读",
+      "props": {
+        "mode": "ai-cite"
+      }
+    },
+    "ins-custom-lens": {
+      "file": "pages/ios/insights-lens.html",
+      "page": "ios-insights",
+      "x": 882,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "01 新建/编辑视角 Sheet"
+    },
+    "ins-history": {
+      "file": "pages/ios/insights-history.html",
+      "page": "ios-insights",
+      "x": 1764,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "02 历史报告 Sheet"
+    },
+    "ins-board": {
+      "file": "pages/ios/insights.html",
+      "page": "ios-insights",
+      "x": 882,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "03 洞察配方画板 (Tab 4)"
+    },
+    "ins-recipe-run": {
+      "file": "pages/ios/insights-run.html",
+      "page": "ios-insights",
+      "x": 1764,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "04 运行范围配置 Sheet"
+    },
+    "ins-report": {
+      "file": "pages/ios/insights-report.html",
+      "page": "ios-insights",
+      "x": 2646,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "05 洞察报告 Sheet"
+    },
+    "ins-cited-note": {
+      "file": "pages/ios/reader.html",
+      "page": "ios-insights",
+      "x": 3528,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "06 报告引用笔记 (Push)",
+      "props": {
+        "mode": "insight-push"
+      }
+    },
+    "ins-profile": {
+      "file": "pages/ios/insights-profile.html",
+      "page": "ios-insights",
+      "x": 0,
+      "y": 1620,
+      "w": 402,
+      "h": 874,
+      "title": "07 个人画像工作区"
+    },
+    "web-import-dialog": {
+      "file": "pages/web/import-dialog.html",
+      "page": "web-flows",
+      "x": 0,
+      "y": 420,
+      "w": 1280,
+      "h": 800,
+      "title": "02 导入弹窗 (微信读书 / Joplin)"
+    },
+    "web-walk": {
+      "file": "pages/web/walk.html",
+      "page": "web-flows",
+      "x": 3520,
+      "y": 420,
+      "w": 1280,
+      "h": 800,
+      "title": "04 Web 随机漫步"
+    },
+    "web-login": {
+      "file": "pages/web/login.html",
+      "page": "web-flows",
+      "x": 0,
+      "y": 1500,
+      "w": 1280,
+      "h": 800,
+      "title": "01 /login 认证页"
+    },
+    "web-notes": {
+      "file": "pages/web/notes.html",
+      "page": "web-flows",
+      "x": 1760,
+      "y": 1500,
+      "w": 1280,
+      "h": 800,
+      "title": "03 Web 笔记工作台"
+    },
+    "web-ai": {
+      "file": "pages/web/ai.html",
+      "page": "web-flows",
+      "x": 3520,
+      "y": 1500,
+      "w": 1280,
+      "h": 800,
+      "title": "05 Web AI 对话"
+    },
+    "web-note-dialog": {
+      "file": "pages/web/note-dialog.html",
+      "page": "web-flows",
+      "x": 0,
+      "y": 2580,
+      "w": 1280,
+      "h": 800,
+      "title": "06 Web 笔记详情弹窗"
+    },
+    "web-insights": {
+      "file": "pages/web/insights.html",
+      "page": "web-flows",
+      "x": 1760,
+      "y": 3660,
+      "w": 1280,
+      "h": 800,
+      "title": "07 Web 洞察与画像"
+    },
+    "web-mobile": {
+      "file": "pages/web/mobile.html",
+      "page": "web-flows",
+      "x": 3520,
+      "y": 2580,
+      "w": 402,
+      "h": 874,
+      "title": "08 Web 移动端 (48px 热区)"
+    },
+    "tokens-sheet": {
+      "file": "pages/tokens/sheet.html",
+      "page": "tokens",
+      "x": 0,
+      "y": 420,
+      "w": 1120,
+      "h": 2340,
+      "title": "Weiji Design Tokens (Light / Dark WCAG)"
+    },
+    "preview-light": {
+      "file": "pages/ios/notes.html",
+      "page": "tokens",
+      "x": 1360,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "浅色模式 · 暖纸",
+      "props": {
+        "appearance": "light"
+      }
+    },
+    "preview-dark": {
+      "file": "pages/ios/notes.html",
+      "page": "tokens",
+      "x": 1842,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "深色模式 · 炭灰",
+      "props": {
+        "appearance": "dark"
+      }
+    }
+  },
+  "groups": {
+    "g-appearance": {
+      "title": "明暗模式对照 (同一组件随 data-appearance 切换)",
+      "boards": [
+        "preview-light",
+        "preview-dark"
+      ]
+    }
+  },
+  "edges": {
+    "e-launch-auth": {
+      "from": "ios-launch",
+      "to": "c-ios-auth",
+      "label": "校验会话"
+    },
+    "e-auth-yes": {
+      "from": "c-ios-auth",
+      "to": "ios-notes",
+      "label": "是 · 进入主页"
+    },
+    "e-auth-no": {
+      "from": "c-ios-auth",
+      "to": "ios-login",
+      "label": "否 · 需要登录"
+    },
+    "e-login-ok": {
+      "from": "ios-login",
+      "to": "ios-notes",
+      "label": "OAuth / 令牌登录"
+    },
+    "e-notes-composer": {
+      "from": "ios-notes",
+      "to": "ios-composer",
+      "label": "点右下 + 快速记"
+    },
+    "e-notes-reader": {
+      "from": "ios-notes",
+      "to": "ios-reader",
+      "label": "点笔记卡 (Zoom)"
+    },
+    "e-reader-edit": {
+      "from": "ios-reader",
+      "to": "ios-reader-edit",
+      "label": "点底栏编辑"
+    },
+    "e-notes-sidebar": {
+      "from": "ios-notes",
+      "to": "ios-sidebar",
+      "label": "左上菜单 / 边缘右滑"
+    },
+    "e-sidebar-date": {
+      "from": "ios-sidebar",
+      "to": "ios-date-sheet",
+      "label": "点「按日期筛选」"
+    },
+    "e-sidebar-settings": {
+      "from": "ios-sidebar",
+      "to": "ios-settings",
+      "label": "点「连接设置」"
+    },
+    "e-walk-reader": {
+      "from": "walk-main",
+      "to": "walk-reader",
+      "label": "点焦点 / 长按关联精读"
+    },
+    "e-walk-pivot": {
+      "from": "walk-main",
+      "to": "walk-pivoted",
+      "label": "点关联卡跃迁 →"
+    },
+    "e-walk-ai": {
+      "from": "walk-main",
+      "to": "walk-to-ai",
+      "label": "点右上「聊这组」"
+    },
+    "e-ai-sessions": {
+      "from": "ai-empty",
+      "to": "ai-sessions",
+      "label": "左上历史 / 边缘右滑"
+    },
+    "e-ai-settings": {
+      "from": "ai-empty",
+      "to": "ai-settings",
+      "label": "点右上设置"
+    },
+    "e-ai-models": {
+      "from": "ai-empty",
+      "to": "ai-models",
+      "label": "点模型胶囊"
+    },
+    "e-ai-pins": {
+      "from": "ai-empty",
+      "to": "ai-pins",
+      "label": "点输入框 @"
+    },
+    "e-ai-send": {
+      "from": "ai-empty",
+      "to": "ai-thread",
+      "label": "发送问题 / 选会话"
+    },
+    "e-ai-cite": {
+      "from": "ai-thread",
+      "to": "ai-cited-reader",
+      "label": "点 [1] 引用 / 置顶条"
+    },
+    "e-ins-new": {
+      "from": "ins-board",
+      "to": "ins-custom-lens",
+      "label": "点右上 +"
+    },
+    "e-ins-history": {
+      "from": "ins-board",
+      "to": "ins-history",
+      "label": "点右上历史"
+    },
+    "e-ins-recipe": {
+      "from": "ins-board",
+      "to": "ins-recipe-run",
+      "label": "点配方卡"
+    },
+    "e-ins-run": {
+      "from": "ins-recipe-run",
+      "to": "ins-report",
+      "label": "点「开始分析」"
+    },
+    "e-ins-hist-open": {
+      "from": "ins-history",
+      "to": "ins-report",
+      "label": "点历史报告"
+    },
+    "e-ins-cite": {
+      "from": "ins-report",
+      "to": "ins-cited-note",
+      "label": "点报告引用 (Push)"
+    },
+    "e-ins-profile": {
+      "from": "ins-board",
+      "to": "ins-profile",
+      "label": "切顶栏「画像」"
+    },
+    "e-web-login": {
+      "from": "web-login",
+      "to": "web-notes",
+      "label": "OAuth 登录"
+    },
+    "e-web-import": {
+      "from": "web-notes",
+      "to": "web-import-dialog",
+      "label": "导入微信读书 / Joplin"
+    },
+    "e-web-detail": {
+      "from": "web-notes",
+      "to": "web-note-dialog",
+      "label": "点笔记卡片"
+    },
+    "e-web-walk": {
+      "from": "web-notes",
+      "to": "web-walk",
+      "label": "切「随机漫步」"
+    },
+    "e-web-ai": {
+      "from": "web-notes",
+      "to": "web-ai",
+      "label": "切「AI 对话」"
+    },
+    "e-web-ins": {
+      "from": "web-notes",
+      "to": "web-insights",
+      "label": "切「洞察 / 画像」"
+    },
+    "e-web-mobile": {
+      "from": "web-notes",
+      "to": "web-mobile",
+      "label": "≤768px 移动适配"
+    }
+  }
+}

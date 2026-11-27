@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .v-badge {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: var(--color-fill); display: grid; place-items: center;
+      font: 700 12px/1 var(--font-body); flex-shrink: 0;
+    }
+    .brain-pill {
+      padding: 2px 7px; border-radius: 999px; background: var(--color-fill);
+      color: var(--color-text-tertiary); display: inline-flex; align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="sheet-backdrop">
+        <div class="sheet-card full">
+          <div class="sheet-grabber"></div>
+          <div class="sheet-bar">
+            <span class="action">关闭</span>
+            <span class="ios-nav-title">选择模型</span>
+            <span style="width:44px"></span>
+          </div>
+          <div class="ios-search">
+            <ryugi-icon symbol="magnifyingglass" name="search" size="16"></ryugi-icon>
+            <span>搜索模型</span>
+          </div>
+
+          <div class="form-section-title">OpenAI</div>
+          <div class="form-group">
+            <div class="form-row">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <span class="v-badge" style="color:#16987a">O</span>
+                <span style="font-weight:600">GPT-4.1 Mini</span>
+                <span class="brain-pill"><ryugi-icon symbol="brain" name="brain" size="12"></ryugi-icon></span>
+              </div>
+              <ryugi-icon symbol="checkmark" name="check" size="16" style="color:var(--color-accent-text)"></ryugi-icon>
+            </div>
+            <div class="form-row">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <span class="v-badge" style="color:#16987a">O</span>
+                <span>GPT-5.2</span>
+                <span class="brain-pill"><ryugi-icon symbol="brain" name="brain" size="12"></ryugi-icon></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-section-title">Gemini</div>
+          <div class="form-group">
+            <div class="form-row">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <span class="v-badge" style="color:#6479e9">G</span>
+                <span>Gemini 2.5 Pro</span>
+                <span class="brain-pill"><ryugi-icon symbol="brain" name="brain" size="12"></ryugi-icon></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-section-title">Claude</div>
+          <div class="form-group">
+            <div class="form-row">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <span class="v-badge" style="color:#c96848">C</span>
+                <span>Claude Sonnet 4.5</span>
+                <span class="brain-pill"><ryugi-icon symbol="brain" name="brain" size="12"></ryugi-icon></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

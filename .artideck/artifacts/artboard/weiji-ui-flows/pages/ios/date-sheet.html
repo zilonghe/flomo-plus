@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .cal-box {
+      margin: 8px 16px;
+      padding: 16px;
+      background: var(--color-surface);
+      border: 1px solid var(--color-hairline);
+      border-radius: 18px;
+    }
+    .cal-head {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+      font: 600 16px/22px var(--font-body);
+    }
+    .cal-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr);
+      gap: 6px; text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .cal-dow { font: 500 12px/18px var(--font-body); color: var(--color-text-tertiary); }
+    .cal-day {
+      height: 36px; border-radius: 18px;
+      display: grid; place-items: center;
+      font: 400 16px/20px var(--font-body); color: var(--color-text);
+    }
+    .cal-day.today { color: var(--color-accent-text); font-weight: 600; }
+    .cal-day.selected { background: var(--color-accent); color: #ffffff; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="sheet-backdrop">
+        <div class="sheet-card medium">
+          <div class="sheet-grabber"></div>
+          <div class="sheet-bar">
+            <span class="action muted">取消</span>
+            <span class="ios-nav-title">按日期筛选</span>
+            <span class="action bold">筛选</span>
+          </div>
+          <div class="cal-box">
+            <div class="cal-head">
+              <span>2026年11月</span>
+              <span style="display:inline-flex;gap:14px;color:var(--color-accent-text);">
+                <ryugi-icon symbol="chevron.left" name="chevron-left" size="16"></ryugi-icon>
+                <ryugi-icon symbol="chevron.right" name="chevron-right" size="16"></ryugi-icon>
+              </span>
+            </div>
+            <div class="cal-grid">
+              <span class="cal-dow">日</span><span class="cal-dow">一</span><span class="cal-dow">二</span><span class="cal-dow">三</span><span class="cal-dow">四</span><span class="cal-dow">五</span><span class="cal-dow">六</span>
+              <span class="cal-day">1</span><span class="cal-day">2</span><span class="cal-day">3</span><span class="cal-day">4</span><span class="cal-day">5</span><span class="cal-day">6</span><span class="cal-day">7</span>
+              <span class="cal-day">8</span><span class="cal-day">9</span><span class="cal-day">10</span><span class="cal-day">11</span><span class="cal-day">12</span><span class="cal-day">13</span><span class="cal-day">14</span>
+              <span class="cal-day">15</span><span class="cal-day">16</span><span class="cal-day">17</span><span class="cal-day">18</span><span class="cal-day">19</span><span class="cal-day">20</span><span class="cal-day">21</span>
+              <span class="cal-day">22</span><span class="cal-day">23</span><span class="cal-day selected">24</span><span class="cal-day">25</span><span class="cal-day">26</span><span class="cal-day today">27</span><span class="cal-day">28</span>
+              <span class="cal-day">29</span><span class="cal-day">30</span>
+            </div>
+          </div>
+          <div style="padding:10px 20px;font:var(--type-meta);color:var(--color-text-secondary);">
+            原生 `.datePickerStyle(.graphical)` · 点「筛选」写入日期并关闭抽屉。
+          </div>
+        </div>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

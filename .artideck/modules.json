@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "design-system",
+      "name": "Design System",
+      "description": "Shared warm-paper color tokens, WCAG AA/AAA contrast pairs, typography scales, and platform theming across iOS (Apple HIG) and Web (Material Design 3).",
+      "paths": ["ios/Weiji/Views/Theme.swift", "public/styles.css", "public/index.html"],
+      "aliases": []
+    },
+    {
+      "id": "notes",
+      "name": "Notes & Reader",
+      "description": "Note list, native search, sidebar drawer with 84-day heatmap overview and graphical date filter, quick composer with tag suggestions, and full-screen serif reader/editor.",
+      "paths": ["ios/Weiji/Views/Notes/**", "ios/Weiji/Views/RootTabView.swift", "public/index.html", "public/app.js"],
+      "aliases": []
+    },
+    {
+      "id": "walk",
+      "name": "Random Walk",
+      "description": "Semantic gravity constellation graph with focus card, cross-book/same-book/memo related hops, previous-hop stack, and reader/AI handoff.",
+      "paths": ["ios/Weiji/Views/Walk/**", "public/app.js"],
+      "aliases": []
+    },
+    {
+      "id": "ai-chat",
+      "name": "AI Chat",
+      "description": "Grounded note Q&A, streaming reasoning step cards, clickable citations, pinned note context, history drawer, model/effort picker, and AI settings.",
+      "paths": ["ios/Weiji/Views/AI/**", "public/index.html", "public/app.js"],
+      "aliases": []
+    },
+    {
+      "id": "insights",
+      "name": "Insights & Profile",
+      "description": "Recipe board of analytical lenses, scope preview and run sheet, markdown report viewer with citations, custom lens editor, and personal profile workspace.",
+      "paths": ["ios/Weiji/Views/Insights/**", "public/index.html", "public/app.js"],
+      "aliases": []
+    },
+    {
+      "id": "auth-settings",
+      "name": "Auth, Settings & Import",
+      "description": "OAuth and token sign-in, 5 accent themes, self-hosted server configuration, semantic index status, Obsidian sync, and WeRead/Joplin import dialogs.",
+      "paths": ["ios/Weiji/Views/Settings/**", "public/joplin.js", "public/weread.js"],
+      "aliases": []
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+config.json
+artifacts/*
+!artifacts/document/
+!artifacts/artboard/
+artifacts/document/*/.artifact-id
+artifacts/artboard/*/.artifact-id
+artifacts/artboard/*/comments.json

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .run-body { flex: 1; padding: 8px 16px; display: flex; flex-direction: column; gap: 14px; }
+    .scope-box {
+      background: var(--color-surface); border: 1px solid var(--color-hairline);
+      border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 12px;
+    }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="sheet-backdrop">
+        <div class="sheet-card medium">
+          <div class="sheet-grabber"></div>
+          <div class="sheet-bar">
+            <span class="action muted">取消</span>
+            <span class="ios-nav-title">默认洞察</span>
+            <span style="width:44px"></span>
+          </div>
+          <div class="run-body">
+            <div class="note-card">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="chip selected">复盘整理</span>
+                <span style="font:var(--type-meta);color:var(--color-text-tertiary)">内置视角</span>
+              </div>
+              <div style="font:400 14px/21px var(--font-body);color:var(--color-text-secondary);">
+                从所选范围的笔记中提炼核心主题、观念变化与下一步可行动作，并附上原笔记引用。
+              </div>
+            </div>
+
+            <div class="scope-box">
+              <div style="font:600 13px/18px var(--font-body);color:var(--color-text-tertiary);">分析范围</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <span class="chip selected"><ryugi-icon symbol="calendar" name="calendar" size="12"></ryugi-icon>近 7 天 ▾</span>
+                <span class="chip"><ryugi-icon symbol="number" name="hash" size="12"></ryugi-icon>全部标签 ▾</span>
+              </div>
+              <div style="font:var(--type-meta);color:var(--color-text-secondary);padding-top:4px;border-top:1px solid var(--color-hairline);">
+                已命中 <strong>18 条笔记</strong>（共 4,320 字）· 预计 6 秒完成
+              </div>
+            </div>
+
+            <div style="margin-top:auto;">
+              <div class="btn-primary wide">
+                <ryugi-icon symbol="sparkles" name="sparkles" size="16"></ryugi-icon>
+                <span>开始分析</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>
