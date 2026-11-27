@@ -167,6 +167,7 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     '---\n普通正文\n---\n下一段', '---\nunknown: value\n---\n正文',
     '---\ntitle: 预算\n未缩进正文\n---\n正文',
     '---\ntitle: 预算\ndraft: [未闭合\n---\n正文',
+    '---\ntitle: 预算\ndraft: [草稿 # 注释]\n---\n正文',
     '---\ntitle: 预算\ndraft: {未闭合\n---\n正文']) {
     const { notes: [note] } = await parseJoplinFiles([md('原文.md', text)]);
     assert.equal(note.body, '# 原文\n\n' + text);
@@ -487,16 +488,21 @@ test('Joplin E2E: desktop JEX and directory import, retry, tombstone, and 375px 
     const dialog = document.querySelector('#joplin-dialog');
     const fileInput = document.querySelector('#joplin-file');
     document.querySelector('[data-action="open-joplin-import"]').click();
+    let closeDelivered = false;
+    const closed = new Promise(resolve => dialog.addEventListener('close', () => {
+      closeDelivered = true;
+      resolve();
+    }, { once: true }));
     dialog.close();
     document.querySelector('[data-action="open-joplin-import"]').click();
     const transfer = new DataTransfer();
     transfer.items.add(new File(['快速重开保留'], '快速重开.md', { type: 'text/markdown' }));
     fileInput.files = transfer.files;
     const before = fileInput.files.length;
-    await new Promise(resolve => setTimeout(resolve, 30));
-    return { before, after: fileInput.files.length, open: dialog.open };
+    await closed;
+    return { before, after: fileInput.files.length, open: dialog.open, closeDelivered };
   })()`);
-  assert.deepEqual(reopenRace, { before: 1, after: 1, open: true });
+  assert.deepEqual(reopenRace, { before: 1, after: 1, open: true, closeDelivered: true });
   await click('[data-close="joplin-dialog"]');
 
   await openImport();

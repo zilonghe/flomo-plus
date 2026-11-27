@@ -286,25 +286,25 @@ function yamlScalar(raw) {
 }
 
 function parseFlowArray(scalar) {
-  const match = /^\[([\s\S]*)\](?:\s+#.*)?$/.exec(scalar);
-  if (!match) return null;
-  const inner = match[1];
+  if (!scalar.startsWith('[')) return null;
   const values = [];
-  let i = 0;
-  const skipSpaces = () => { while (i < inner.length && /\s/.test(inner[i])) i++; };
+  let i = 1;
+  const skipSpaces = () => { while (i < scalar.length && /\s/.test(scalar[i])) i++; };
+  const validTail = () => /^\s*(?:#.*)?$/.test(scalar.slice(i + 1));
   skipSpaces();
-  if (i === inner.length) return values;
-  while (i < inner.length) {
+  if (i < scalar.length && scalar[i] === ']') return validTail() ? values : null;
+  while (i < scalar.length) {
     skipSpaces();
-    if (i >= inner.length) break;
+    if (i >= scalar.length) return null;
+    if (scalar[i] === ']') return validTail() ? values : null;
     let rawItem = '';
-    const ch = inner[i];
+    const ch = scalar[i];
     if (ch === "'") {
       let end = i + 1;
       let closed = false;
-      while (end < inner.length) {
-        if (inner[end] === "'") {
-          if (inner[end + 1] === "'") { end += 2; continue; }
+      while (end < scalar.length) {
+        if (scalar[end] === "'") {
+          if (scalar[end + 1] === "'") { end += 2; continue; }
           end++;
           closed = true;
           break;
@@ -312,43 +312,43 @@ function parseFlowArray(scalar) {
         end++;
       }
       if (!closed) return null;
-      rawItem = inner.slice(i, end);
+      rawItem = scalar.slice(i, end);
       i = end;
       skipSpaces();
-      if (i < inner.length && inner[i] !== ',') return null;
     } else if (ch === '"') {
       let end = i + 1;
       let closed = false;
-      while (end < inner.length) {
-        if (inner[end] === '\\') { end += 2; continue; }
-        if (inner[end] === '"') { end++; closed = true; break; }
+      while (end < scalar.length) {
+        if (scalar[end] === '\\') { end += 2; continue; }
+        if (scalar[end] === '"') { end++; closed = true; break; }
         end++;
       }
       if (!closed) return null;
-      rawItem = inner.slice(i, end);
+      rawItem = scalar.slice(i, end);
       i = end;
       skipSpaces();
-      if (i < inner.length && inner[i] !== ',') return null;
     } else {
+      if (ch === '#') return null;
       const start = i;
-      while (i < inner.length && inner[i] !== ',') {
-        if ('[]{}'.includes(inner[i])) return null;
+      while (i < scalar.length && scalar[i] !== ',' && scalar[i] !== ']') {
+        if (scalar[i] === '#' && /\s/.test(scalar[i - 1])) return null;
+        if ('[{}'.includes(scalar[i])) return null;
         i++;
       }
-      rawItem = inner.slice(start, i).trim();
+      rawItem = scalar.slice(start, i).trim();
       if (!rawItem) return null;
     }
     const parsed = yamlScalar(rawItem);
     if (parsed === null) return null;
     values.push(parsed);
-    if (i < inner.length) {
-      if (inner[i] !== ',') return null;
-      i++;
-      skipSpaces();
-      if (i === inner.length) break;
-    }
+    if (i >= scalar.length) return null;
+    if (scalar[i] === ']') return validTail() ? values : null;
+    if (scalar[i] !== ',') return null;
+    i++;
+    skipSpaces();
+    if (i < scalar.length && scalar[i] === ']') return validTail() ? values : null;
   }
-  return values;
+  return null;
 }
 
 function yamlValue(key, raw, lines, listIndent) {
