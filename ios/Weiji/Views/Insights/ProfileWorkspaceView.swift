@@ -18,6 +18,7 @@ struct ProfileWorkspaceView: View {
                     } label: {
                         Chip(text: enabled ? "已启用" : "未启用",
                              symbol: enabled ? "checkmark.circle.fill" : "circle", selected: enabled)
+                            .minTapHeight()
                     }
                     .buttonStyle(.plain)
                     .disabled(insights.savingProfile || insights.generatingProfile || store.api == nil)
@@ -56,7 +57,7 @@ struct ProfileWorkspaceView: View {
                     VStack(alignment: .trailing, spacing: 8) {
                         TextField("画像 Markdown", text: $draft, axis: .vertical)
                             .lineLimit(10...)
-                            .font(.system(size: 14, design: .monospaced))
+                            .font(.system(.subheadline, design: .monospaced))
                             .foregroundStyle(Theme.ink)
                             .onChange(of: draft) { _, value in
                                 if value.utf16.count > 6000 { draft = clippedUTF16(value, to: 6000) }

@@ -19,32 +19,32 @@ enum ThemeAccent: String, CaseIterable, Identifiable, Sendable {
     /// Text, icons, and links (WCAG AA >= 4.5:1 on canvas, paper, and accentSoft).
     var active: Color {
         switch self {
-        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x7AD4AA)
-        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x85B0FF)
-        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xF0A07B)
-        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0xC7ADF2)
-        case .graphite: Theme.adaptive(light: 0x363430, dark: 0xDCD9D0)
+        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x7AD4AA, highLight: 0x1F4836, highDark: 0xB6E7D0)
+        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x85B0FF, highLight: 0x193871, highDark: 0xBCD4FF)
+        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xF0A07B, highLight: 0x6B331B, highDark: 0xF7CBB6)
+        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0xC7ADF2, highLight: 0x483266, highDark: 0xE0D2F8)
+        case .graphite: Theme.adaptive(light: 0x363430, dark: 0xDCD9D0, highLight: 0x252321, highDark: 0xECEAE5)
         }
     }
 
     /// Solid primary CTA fill behind pure white text/icons (WCAG AA >= 4.5:1 in light & dark).
     var accent: Color {
         switch self {
-        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x276E50)
-        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x2F62BF)
-        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xA6502C)
-        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0x7755A8)
-        case .graphite: Theme.adaptive(light: 0x363430, dark: 0x57544D)
+        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x276E50, highLight: 0x1F4836, highDark: 0x1B4B36)
+        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x2F62BF, highLight: 0x193871, highDark: 0x204382)
+        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xA6502C, highLight: 0x6B331B, highDark: 0x71361E)
+        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0x7755A8, highLight: 0x483266, highDark: 0x513A72)
+        case .graphite: Theme.adaptive(light: 0x363430, dark: 0x57544D, highLight: 0x252321, highDark: 0x3B3934)
         }
     }
 
     var accentSoft: Color {
         switch self {
-        case .pine: Theme.adaptive(light: 0xE7F1EC, dark: 0x1C3127)
-        case .indigo: Theme.adaptive(light: 0xE9EFFB, dark: 0x1A2844)
-        case .clay: Theme.adaptive(light: 0xF6EAE4, dark: 0x352119)
-        case .plum: Theme.adaptive(light: 0xEFEAF7, dark: 0x292038)
-        case .graphite: Theme.adaptive(light: 0xEAE8E1, dark: 0x2E2D29)
+        case .pine: Theme.adaptive(light: 0xE7F1EC, dark: 0x1C3127, highLight: 0xECF4F0, highDark: 0x172820)
+        case .indigo: Theme.adaptive(light: 0xE9EFFB, dark: 0x1A2844, highLight: 0xEDF2FC, highDark: 0x152138)
+        case .clay: Theme.adaptive(light: 0xF6EAE4, dark: 0x352119, highLight: 0xF8EEE9, highDark: 0x2B1B14)
+        case .plum: Theme.adaptive(light: 0xEFEAF7, dark: 0x292038, highLight: 0xF2EEF9, highDark: 0x221A2E)
+        case .graphite: Theme.adaptive(light: 0xEAE8E1, dark: 0x2E2D29, highLight: 0xEEEDE7, highDark: 0x262522)
         }
     }
 
@@ -98,17 +98,22 @@ enum Theme {
     static let canvas = adaptive(light: 0xF6F5F0, dark: 0x171614)
     static let paper = adaptive(light: 0xFFFFFF, dark: 0x22211E)
     static let subtle = adaptive(light: 0xEEECE5, dark: 0x2B2A26)
-    static let ink = adaptive(light: 0x1C1B18, dark: 0xEDEBE5)
-    static let ink2 = adaptive(light: 0x55524A, dark: 0xB5B0A6)
-    static let ink3 = adaptive(light: 0x6F6B63, dark: 0x8F8A80)
-    static let line = adaptive(light: 0xE6E3DA, dark: 0x3A3833)
+    static let ink = adaptive(light: 0x1C1B18, dark: 0xEDEBE5, highLight: 0x131210, highDark: 0xF8F6F0)
+    static let ink2 = adaptive(light: 0x55524A, dark: 0xB5B0A6, highLight: 0x403E37, highDark: 0xDAD6CE)
+    static let ink3 = adaptive(light: 0x6F6B63, dark: 0x8F8A80, highLight: 0x4C4841, highDark: 0xC0BCB3)
+    static let line = adaptive(light: 0xE6E3DA, dark: 0x3A3833, highLight: 0xBBB6A9, highDark: 0x655F54)
     static let hairline = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.08) : UIColor(white: 0, alpha: 0.06)
+        let high = traits.accessibilityContrast == .high
+        return traits.userInterfaceStyle == .dark
+            ? UIColor(white: 1, alpha: high ? 0.26 : 0.08)
+            : UIColor(white: 0, alpha: high ? 0.22 : 0.06)
     })
 
-    static func adaptive(light: Int, dark: Int) -> Color {
+    static func adaptive(light: Int, dark: Int, highLight: Int? = nil, highDark: Int? = nil) -> Color {
         Color(uiColor: UIColor { traits in
-            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            let isDark = traits.userInterfaceStyle == .dark
+            let high = traits.accessibilityContrast == .high
+            let hex = isDark ? (high ? highDark ?? dark : dark) : (high ? highLight ?? light : light)
             return UIColor(red: CGFloat((hex >> 16) & 255) / 255, green: CGFloat((hex >> 8) & 255) / 255,
                            blue: CGFloat(hex & 255) / 255, alpha: 1)
         })
@@ -128,8 +133,12 @@ extension View {
             .contentShape(Rectangle())
     }
 
-    func screenHeader() -> some View {
-        padding(.horizontal, 16).frame(height: 52)
+    func minTapHeight() -> some View {
+        frame(minHeight: 44).contentShape(Rectangle())
+    }
+
+    func minTouchTarget() -> some View {
+        frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
     }
 
     /// Opaque canvas behind sheets and forms so they match the app instead of system grey.
@@ -144,7 +153,7 @@ struct WeijiPrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 15, weight: .semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .padding(.horizontal, 18)
             .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 36)
@@ -153,7 +162,7 @@ struct WeijiPrimaryButtonStyle: ButtonStyle {
                     .fill(Theme.accent.opacity(isEnabled ? 1 : 0.35))
                     .shadow(color: Theme.accent.opacity(isEnabled ? 0.22 : 0), radius: 8, y: 3)
             }
-            .contentShape(Rectangle())
+            .minTouchTarget()
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(configuration.isPressed ? 0.88 : 1)
             .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
@@ -166,12 +175,12 @@ struct WeijiSecondaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 15, weight: .medium))
+            .font(.subheadline.weight(.medium))
             .foregroundStyle(Theme.ink.opacity(isEnabled ? 1 : 0.35))
             .padding(.horizontal, 16)
             .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 36)
             .background(Theme.subtle, in: .rect(cornerRadius: wide ? 14 : 18))
-            .contentShape(Rectangle())
+            .minTouchTarget()
             .opacity(configuration.isPressed ? 0.7 : 1)
     }
 }
@@ -193,7 +202,7 @@ struct Chip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).accessibilityHidden(true) }
+            if let symbol { Image(systemName: symbol).font(.caption2.weight(.semibold)).accessibilityHidden(true) }
             Text(text).lineLimit(1)
         }
         .font(Theme.TypeScale.meta.weight(.medium))
@@ -221,7 +230,7 @@ struct IconAction: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44)
+            Image(systemName: symbol).font(.body.weight(.medium)).frame(width: 44, height: 44)
                 .foregroundStyle(Theme.ink)
                 .contentShape(Rectangle())
         }

@@ -20,7 +20,7 @@ struct QuickComposerSheet: View {
             VStack(spacing: 0) {
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: $draft, selection: $selection)
-                        .font(.system(size: 16))
+                        .font(.body)
                         .foregroundStyle(Theme.ink)
                         .lineSpacing(5)
                         .scrollContentBackground(.hidden)
@@ -31,7 +31,7 @@ struct QuickComposerSheet: View {
 
                     if draft.isEmpty {
                         Text("记下此刻的想法… 输入 # 联想标签")
-                            .font(.system(size: 16))
+                            .font(.body)
                             .foregroundStyle(Theme.ink3)
                             .padding(.horizontal, 19)
                             .padding(.top, 16)
@@ -146,7 +146,8 @@ struct NoteTagAccessoryBar<Trailing: View>: View {
                                 .font(Theme.TypeScale.meta.weight(.medium))
                                 .padding(.horizontal, 11).frame(minHeight: 32)
                                 .background(Theme.paper, in: Capsule())
-                                .overlay { Capsule().strokeBorder(Theme.hairline) }
+                                .overlay { Capsule().strokeBorder(Theme.hairline).allowsHitTesting(false) }
+                                .minTapHeight()
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("composer-tag-suggestion-\(tag)")
@@ -164,12 +165,13 @@ struct NoteTagAccessoryBar<Trailing: View>: View {
             HStack(spacing: 12) {
                 Button(action: insertHash) {
                     HStack(spacing: 4) {
-                        Image(systemName: "number").font(.system(size: 14, weight: .semibold))
+                        Image(systemName: "number").font(.subheadline.weight(.semibold))
                         Text("标签").font(Theme.TypeScale.meta.weight(.medium))
                     }
                     .foregroundStyle(activeTag != nil ? Theme.active : Theme.ink2)
                     .padding(.horizontal, 12).frame(minHeight: 34)
                     .background(activeTag != nil ? Theme.accentSoft : Theme.subtle, in: Capsule())
+                    .minTapHeight()
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("插入标签")

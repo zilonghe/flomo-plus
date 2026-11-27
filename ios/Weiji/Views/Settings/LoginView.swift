@@ -138,7 +138,7 @@ struct WeijiLoginMark: View {
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "text.alignleft")
-                .font(.system(size: 25, weight: .semibold))
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(Theme.active)
                 .frame(width: 58, height: 58)
                 .background(Theme.accentSoft, in: .rect(cornerRadius: 18))

@@ -3,6 +3,7 @@ import SwiftUI
 struct InsightsTabView: View {
     private enum Segment: String { case insights, profile }
     @Bindable var store: AppStore
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var segment: Segment = .insights
     @State private var selectedCategory: String?
     @State private var activeRecipe: InsightLens?
@@ -11,8 +12,6 @@ struct InsightsTabView: View {
     @State private var pendingHistoryReport: InsightReport?
     @State private var lensEditor: LensEditorRoute?
     @State private var pendingReportAction: ReportExitAction?
-    @Namespace private var segmentSelection
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct LensEditorRoute: Identifiable { let id = UUID(); let lens: InsightLens? }
     private enum RecipeExitAction { case run, edit(InsightLens) }
@@ -25,10 +24,34 @@ struct InsightsTabView: View {
 
     var body: some View {
         @Bindable var insights = store.insights
-        VStack(spacing: 0) {
-            header.screenHeader()
-            if segment == .insights { recipeBoard }
-            else { ProfileWorkspaceView(store: store) }
+        NavigationStack {
+            Group {
+                if segment == .insights { recipeBoard }
+                else { ProfileWorkspaceView(store: store) }
+            }
+            .background(Theme.canvas.ignoresSafeArea())
+            .navigationTitle(segment == .insights ? "洞察" : "画像")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("视图", selection: $segment) {
+                        Text("洞察").tag(Segment.insights)
+                        Text("画像").tag(Segment.profile)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 180)
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if segment == .insights {
+                        IconAction(symbol: "clock.arrow.circlepath", label: "历史", id: "insights-history-button") {
+                            showHistory = true
+                        }
+                        IconAction(symbol: "plus", label: "新建视角", id: "insights-new-lens-button") {
+                            lensEditor = LensEditorRoute(lens: nil)
+                        }
+                    }
+                }
+            }
         }
         .sheet(item: $activeRecipe, onDismiss: finishRecipe) { lens in
             RecipeRunSheet(store: store, lens: lens,
@@ -89,67 +112,12 @@ struct InsightsTabView: View {
         store.insights.showReport = false
     }
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 2) {
-                segmentButton(.insights, title: "洞察")
-                segmentButton(.profile, title: "画像")
-            }
-            .padding(3)
-            .background(Theme.subtle, in: Capsule())
-            Spacer(minLength: 0)
-            if segment == .insights {
-                Button { showHistory = true } label: {
-                    let count = store.insights.reports.count
-                    Chip(text: count == 0 ? "历史" : "历史 \(count)", symbol: "clock.arrow.circlepath")
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("insights-history-button")
-                Button { lensEditor = LensEditorRoute(lens: nil) } label: {
-                    Image(systemName: "plus").font(Theme.TypeScale.body.weight(.semibold))
-                        .foregroundStyle(Theme.active)
-                        .frame(width: 34, height: 34)
-                        .background(Theme.accentSoft, in: Circle())
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("新建视角")
-                .accessibilityIdentifier("insights-new-lens-button")
-            }
-        }
-    }
-
-    private func segmentButton(_ value: Segment, title: String) -> some View {
-        let selected = segment == value
-        return Button {
-            withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) { segment = value }
-        } label: {
-            Text(title)
-                .font(Theme.TypeScale.meta.weight(selected ? .semibold : .medium))
-                .foregroundStyle(selected ? Theme.ink : Theme.ink2)
-                .padding(.horizontal, 14)
-                .frame(minHeight: 34)
-                .background {
-                    if selected {
-                        Capsule().fill(Theme.paper)
-                            .shadow(color: .black.opacity(0.06), radius: 4, y: 1)
-                            .matchedGeometryEffect(id: "segment", in: segmentSelection)
-                    }
-                }
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityIdentifier("insights-segment-" + value.rawValue)
-    }
-
     private var recipeBoard: some View {
         let insights = store.insights
         let recipes = InsightsStore.filteredLenses(insights.lenses, category: selectedCategory)
+        let columns = dynamicTypeSize.isAccessibilitySize
+            ? [GridItem(.flexible())]
+            : [GridItem(.flexible(), spacing: 10), GridItem(.flexible())]
         return VStack(spacing: 0) {
             ScrollView(.horizontal) {
                 HStack(spacing: 7) {
@@ -171,7 +139,7 @@ struct InsightsTabView: View {
                     if insights.error != nil { InlineError(message: insights.error).padding(16) }
                     else { Text("暂无配方").foregroundStyle(Theme.ink3).padding(.top, 32) }
                 } else {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+                    LazyVGrid(columns: columns, spacing: 10) {
                         ForEach(recipes) { lens in
                             Button {
                                 insights.prepareRecipe(lens, api: store.api)
@@ -197,22 +165,39 @@ struct InsightsTabView: View {
         default: ("slider.horizontal.3", .graphite)
         }
         let shape = RoundedRectangle(cornerRadius: 18)
+        let accessibilitySize = dynamicTypeSize.isAccessibilitySize
+        let description = Text(lens.description).font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
+        let category = Text(lens.category).foregroundStyle(accent.active)
+        let range = Text(recipeRangeLabel(lens.suggestedRange ?? "7d")).foregroundStyle(Theme.ink3)
         return VStack(alignment: .leading, spacing: 8) {
             Image(systemName: symbol)
                 .font(Theme.TypeScale.body.weight(.semibold)).foregroundStyle(accent.active)
                 .frame(width: 34, height: 34)
                 .background(accent.accentSoft, in: .rect(cornerRadius: 10))
                 .accessibilityHidden(true)
-            Text(lens.name).font(Theme.TypeScale.itemTitle).foregroundStyle(Theme.ink).lineLimit(1)
-            Text(lens.description).font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
-                .lineLimit(2, reservesSpace: true)
-            HStack(spacing: 4) {
-                Text(lens.category).foregroundStyle(accent.active)
-                Spacer(minLength: 0)
-                Text(recipeRangeLabel(lens.suggestedRange ?? "7d")).foregroundStyle(Theme.ink3)
+            Text(lens.name).font(Theme.TypeScale.itemTitle).foregroundStyle(Theme.ink)
+                .lineLimit(accessibilitySize ? nil : 1)
+            if accessibilitySize {
+                description
+            } else {
+                description.lineLimit(2, reservesSpace: true)
+            }
+            Group {
+                if accessibilitySize {
+                    VStack(alignment: .leading, spacing: 2) {
+                        category
+                        range
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        category
+                        Spacer(minLength: 0)
+                        range
+                    }
+                    .lineLimit(1)
+                }
             }
             .font(Theme.TypeScale.meta)
-            .lineLimit(1)
         }
         .multilineTextAlignment(.leading)
         .padding(13)
