@@ -351,6 +351,101 @@ function parseFlowArray(scalar) {
   return null;
 }
 
+function scanMultiline(raw, lines) {
+  const all = [raw, ...lines].map(line => line.trim());
+  let start = 0;
+  while (start < all.length && (!all[start] || all[start].startsWith('#'))) start++;
+  if (start === all.length) return '';
+  const first = all[start][0];
+  const trailingClear = from => all.slice(from).every(line => !line || line.startsWith('#'));
+
+  if (first === "'" || first === '"') {
+    const out = [];
+    for (let li = start; li < all.length; li++) {
+      const line = all[li];
+      let p = li === start ? 1 : 0;
+      let closedAt = -1;
+      while (p < line.length) {
+        if (first === '"' && line[p] === '\\') { p += 2; continue; }
+        if (line[p] === first) {
+          if (first === "'" && line[p + 1] === "'") { p += 2; continue; }
+          closedAt = p;
+          break;
+        }
+        p++;
+      }
+      if (closedAt >= 0) {
+        if (!/^\s*(?:#.*)?$/.test(line.slice(closedAt + 1)) || !trailingClear(li + 1)) return null;
+        out.push(line.slice(0, closedAt + 1));
+        return out.join(' ');
+      }
+      out.push(line);
+    }
+    return null;
+  }
+
+  if (first === '[') {
+    const out = [];
+    let quote = null;
+    let expectValue = true;
+    for (let li = start; li < all.length; li++) {
+      const line = all[li];
+      let p = li === start ? 1 : 0;
+      let end = line.length;
+      let closedAt = -1;
+      while (p < line.length) {
+        const ch = line[p];
+        if (quote === '"') {
+          if (ch === '\\') { p += 2; continue; }
+          if (ch === '"') quote = null;
+        } else if (quote === "'") {
+          if (ch === "'") {
+            if (line[p + 1] === "'") { p += 2; continue; }
+            quote = null;
+          }
+        } else if (expectValue && (ch === '"' || ch === "'")) {
+          quote = ch;
+          expectValue = false;
+        } else if (ch === '#' && (p === 0 || /\s/.test(line[p - 1]))) {
+          end = p;
+          break;
+        } else if (ch === ']') {
+          closedAt = p;
+          break;
+        } else if (ch === ',') {
+          expectValue = true;
+        } else if (!/\s/.test(ch)) {
+          expectValue = false;
+        }
+        p++;
+      }
+      if (closedAt >= 0) {
+        if (!/^\s*(?:#.*)?$/.test(line.slice(closedAt + 1)) || !trailingClear(li + 1)) return null;
+        out.push(line.slice(0, closedAt + 1));
+        return out.join(' ');
+      }
+      out.push(line.slice(0, end).trimEnd());
+    }
+    return null;
+  }
+
+  const out = [];
+  let sawComment = false;
+  for (let li = start; li < all.length; li++) {
+    const line = all[li];
+    if (!line) continue;
+    if (line.startsWith('#')) { sawComment = true; continue; }
+    if (sawComment) return null;
+    if (/\s#/.test(line)) {
+      if (!trailingClear(li + 1)) return null;
+      out.push(line);
+      break;
+    }
+    out.push(line);
+  }
+  return out.join(' ');
+}
+
 function yamlValue(key, raw, lines, listIndent) {
   if (/^[>|](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?$/.test(raw)) {
     const indicator = raw.split(/\s/)[0];
@@ -390,18 +485,8 @@ function yamlValue(key, raw, lines, listIndent) {
     const values = items.map(item => yamlValue('', item.raw, item.lines, listStart[1].length + 2));
     return values.includes(null) ? null : values;
   }
-  const parts = raw && !raw.startsWith('#')
-    ? [raw, ...meaningful.map(line => line.trim())]
-    : meaningful.map(line => line.trim());
-  if (parts.length > 1) {
-    if (/^[\['"]/.test(parts[0])) {
-      const parsePrefix = parts[0].startsWith('[') ? parseFlowArray : yamlScalar;
-      for (let k = 1; k < parts.length; k++) {
-        if (parsePrefix(parts.slice(0, k).join(' ')) !== null) return null;
-      }
-    } else if (parts.slice(0, -1).some(part => /\s#/.test(part))) return null;
-  }
-  const scalar = parts.join(' ').trim();
+  const scalar = scanMultiline(raw, lines);
+  if (scalar === null) return null;
   if (scalar.startsWith('[')) return parseFlowArray(scalar);
   return yamlScalar(scalar);
 }

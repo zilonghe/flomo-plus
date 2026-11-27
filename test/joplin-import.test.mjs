@@ -179,6 +179,15 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     const { notes: [note] } = await parseJoplinFiles([md('原文.md', validMultiline)]);
     assert.equal(note.body, '# 预 算\n\n正文');
   }
+  const quotedHash = await parseJoplinFiles([md('原文.md',
+    '---\ntitle: "预算\n  #项目\n  计划"\n---\n正文')]);
+  assert.equal(quotedHash.notes[0].body, '# 预算 #项目 计划\n\n正文');
+
+  const manyTags = Array.from({ length: 2000 }, (_, i) => `  tag_${i}`).join(',\n');
+  const startMs = performance.now();
+  const largeFlow = await parseJoplinFiles([md('大标签.md', `---\ntitle: 长数组\ntags: [\n${manyTags}\n  ]\n---\n正文`)]);
+  assert.equal(tagsFor(largeFlow.notes[0].body).length, 2000);
+  assert.ok(performance.now() - startMs < 200, '2000-tag multiline flow array must parse linearly');
 
   for (const text of ['---\n# 预算\n---\n正文', '---\ntitle: 正文\n仍然是正文',
     '---\n普通正文\n---\n下一段', '---\nunknown: value\n---\n正文',
@@ -193,6 +202,7 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     '---\ntitle: 预算\ndraft: # 备注\n  !!seq [未闭合\n---\n正文',
     '---\ntitle: 预算 # 注释\n  续行\n---\n正文',
     '---\ntitle: "预\n  算" # 注释\n  续行\n---\n正文',
+    '---\ntitle: "预算\n  #项目" # 注释\n  计划"\n---\n正文',
     "---\ntitle: '预\n  算' # 注释\n  续行\n---\n正文",
     '---\ntitle: 预算\ntags: [甲,\n  乙] # 注释\n  续行\n---\n正文',
     '---\ntitle: 预算\ndraft: - [未闭合\n---\n正文',
