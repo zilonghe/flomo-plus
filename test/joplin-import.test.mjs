@@ -169,6 +169,9 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
   const apostrophe = await parseJoplinFiles([md('出版.md',
     "---\ntitle: 书单\ntags: [O'Reilly, Work, 'it''s ok', \"a, b\"]\n---\n正文")]);
   assert.deepEqual(tagsFor(apostrophe.notes[0].body), ['O_Reilly', 'Work', 'it_s_ok', 'a_b']);
+  const commentedContinuation = await parseJoplinFiles([md('原文.md',
+    '---\ntitle: # 项目名\n  预算\n---\n正文')]);
+  assert.equal(commentedContinuation.notes[0].body, '# 预算\n\n正文');
 
   for (const text of ['---\n# 预算\n---\n正文', '---\ntitle: 正文\n仍然是正文',
     '---\n普通正文\n---\n下一段', '---\nunknown: value\n---\n正文',
@@ -178,6 +181,10 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     '---\ntitle: 预算\ndraft: &drafts [未闭合\n---\n正文',
     '---\ntitle: 预算\ndraft: &drafts {未闭合\n---\n正文',
     '---\ntitle: 预算\ndraft: !!seq [未闭合\n---\n正文',
+    '---\ntitle: 预算\ndraft: # 备注\n  &drafts [未闭合\n---\n正文',
+    '---\ntitle: 预算\ndraft: # 备注\n  &drafts {未闭合\n---\n正文',
+    '---\ntitle: 预算\ndraft: # 备注\n  !!seq [未闭合\n---\n正文',
+    '---\ntitle: 预算 # 注释\n  续行\n---\n正文',
     '---\ntitle: 预算\ndraft: {未闭合\n---\n正文']) {
     const { notes: [note] } = await parseJoplinFiles([md('原文.md', text)]);
     assert.equal(note.body, '# 原文\n\n' + text);

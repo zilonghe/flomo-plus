@@ -390,7 +390,14 @@ function yamlValue(key, raw, lines, listIndent) {
     const values = items.map(item => yamlValue('', item.raw, item.lines, listStart[1].length + 2));
     return values.includes(null) ? null : values;
   }
-  const scalar = [raw, ...meaningful.map(line => line.trim())].join(' ').trim();
+  const parts = raw && !raw.startsWith('#')
+    ? [raw, ...meaningful.map(line => line.trim())]
+    : meaningful.map(line => line.trim());
+  if (parts.length > 1) {
+    if (/^['"]/.test(parts[0]) && yamlScalar(parts[0]) !== null) return null;
+    if (!/^[\['"]/.test(parts[0]) && parts.slice(0, -1).some(part => /\s#/.test(part))) return null;
+  }
+  const scalar = parts.join(' ').trim();
   if (scalar.startsWith('[')) return parseFlowArray(scalar);
   return yamlScalar(scalar);
 }
