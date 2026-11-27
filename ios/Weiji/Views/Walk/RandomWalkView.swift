@@ -53,6 +53,12 @@ struct RandomWalkView: View {
             .navigationTitle("漫步")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    IconAction(symbol: "square.and.pencil", label: "快速记", id: "walk-quick-note") {
+                        store.showComposer = true
+                    }
+                    .disabled(store.api == nil)
+                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if walk.loading { ProgressView().controlSize(.small).accessibilityLabel("正在寻找关联笔记") }
                     Button("换一条", action: shuffle)

@@ -17,8 +17,8 @@ struct SessionsDrawerView: View {
             .padding(.horizontal, 16).frame(minHeight: 52)
 
             Button {
-                chat.start()
-                onClose()
+                store.requestNewChat()
+                if store.pendingChatSwitch == nil { onClose() }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "plus").font(.subheadline.weight(.semibold))
@@ -72,8 +72,8 @@ struct SessionsDrawerView: View {
         let selected = chat.session?.id == session.id
         return HStack(spacing: 8) {
             Button {
-                if let api = store.api { chat.select(session.id, api: api) }
-                onClose()
+                store.requestSelectChatSession(session.id)
+                if store.pendingChatSwitch == nil { onClose() }
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(session.title)

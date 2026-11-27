@@ -27,9 +27,12 @@ struct ConnectionSettingsDraft {
 
 struct ConnectionSettingsView: View {
     let store: AppStore
+    let section: AppStore.SettingsSection
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ConnectionSettingsDraft
     @State private var error: String?
+    @State private var apiKey: String
+    @State private var aiError: String?
     @State private var semantic: SemanticStatus?
     @State private var indexing = false
     @State private var oauth = OAuthSessionCoordinator()
@@ -44,8 +47,10 @@ struct ConnectionSettingsView: View {
         try? ServerConfiguration(address: draft.address, token: "").origin
     }
 
-    init(store: AppStore) {
+    init(store: AppStore, section: AppStore.SettingsSection) {
         self.store = store
+        self.section = section
+        _apiKey = State(initialValue: store.options.apiKey)
         var draft = ConnectionSettingsDraft(configuration: store.configuration)
         draft.setAddress(draft.address, savedToken: store.savedConnectionToken(for:))
         _draft = State(initialValue: draft)
@@ -54,47 +59,9 @@ struct ConnectionSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("外观") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("主题色").font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
-                        HStack(spacing: 0) {
-                            ForEach(ThemeAccent.allCases) { option in
-                                let selected = theme.accent == option
-                                Button {
-                                    theme.accent = option
-                                } label: {
-                                    VStack(spacing: 6) {
-                                        ZStack {
-                                            Circle()
-                                                .fill(option.accent)
-                                                .frame(width: 32, height: 32)
-                                            if selected {
-                                                Circle()
-                                                    .strokeBorder(option.accent, lineWidth: 2)
-                                                    .frame(width: 40, height: 40)
-                                                Image(systemName: "checkmark")
-                                                    .font(.footnote.weight(.bold))
-                                                    .foregroundStyle(.white)
-                                            }
-                                        }
-                                        .frame(width: 42, height: 42)
-                                        Text(option.label)
-                                            .font(Theme.TypeScale.meta.weight(selected ? .semibold : .regular))
-                                            .foregroundStyle(selected ? Theme.ink : Theme.ink2)
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityAddTraits(selected ? .isSelected : [])
-                                .accessibilityLabel("主题色：\(option.label)")
-                                .accessibilityIdentifier("theme-accent-\(option.rawValue)")
-                            }
-                        }
-                    }
-                    .padding(.vertical, 4)
-                    .sensoryFeedback(.selection, trigger: theme.accent)
-                }
+                if section == .ai { aiSettings }
+                appearanceSettings
+                if section == .general { aiSettings }
                 Section("自托管服务") {
                     TextField("服务器地址", text: Binding(get: { draft.address }, set: {
                         draft.setAddress($0, savedToken: store.savedConnectionToken(for:))
@@ -152,10 +119,10 @@ struct ConnectionSettingsView: View {
                 }
             }
             .weijiSheetBackground()
-            .navigationTitle("连接设置")
+            .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("完成", action: finish) }
             }
             .tint(Theme.active)
             .task(id: origin) { await discoverProviders() }
@@ -170,6 +137,81 @@ struct ConnectionSettingsView: View {
                 if store.api != nil { updateIndex(rebuild: false) }
             }
         }
+    }
+
+    private var appearanceSettings: some View {
+        Section("外观") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("主题色").font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
+                HStack(spacing: 0) {
+                    ForEach(ThemeAccent.allCases) { option in
+                        let selected = theme.accent == option
+                        Button {
+                            theme.accent = option
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle()
+                                        .fill(option.accent)
+                                        .frame(width: 32, height: 32)
+                                    if selected {
+                                        Circle()
+                                            .strokeBorder(option.accent, lineWidth: 2)
+                                            .frame(width: 40, height: 40)
+                                        Image(systemName: "checkmark")
+                                            .font(.footnote.weight(.bold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                                .frame(width: 42, height: 42)
+                                Text(option.label)
+                                    .font(Theme.TypeScale.meta.weight(selected ? .semibold : .regular))
+                                    .foregroundStyle(selected ? Theme.ink : Theme.ink2)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .accessibilityLabel("主题色：\(option.label)")
+                        .accessibilityIdentifier("theme-accent-\(option.rawValue)")
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+            .sensoryFeedback(.selection, trigger: theme.accent)
+        }
+    }
+
+    private var aiSettings: some View {
+        @Bindable var chat = store.chat
+        return Section("AI 模型与偏好") {
+            if store.identity?.codexAvailable == true {
+                Picker("模型来源", selection: Binding(get: { store.options.provider }, set: store.setProvider)) {
+                    Text(AIProvider.codex.label).tag(AIProvider.codex)
+                    Text(AIProvider.openai.label).tag(AIProvider.openai)
+                }
+                .pickerStyle(.segmented)
+                .frame(minHeight: 44)
+            }
+            if store.options.provider == .openai {
+                SecureField("API Key", text: $apiKey)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField("模型名称", text: Binding(get: { store.options.model }, set: store.setModel))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+            }
+            Toggle("结合个人画像回答", isOn: $chat.useProfile).tint(Theme.accent)
+            InlineError(message: aiError)
+        }
+        .listRowBackground(Theme.paper)
+    }
+
+    private func finish() {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if key != store.options.apiKey { try store.setAPIKey(key) }
+            dismiss()
+        } catch { aiError = error.localizedDescription }
     }
 
     private func discoverProviders() async {

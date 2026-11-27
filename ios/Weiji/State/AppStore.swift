@@ -14,6 +14,15 @@ enum DetailSource: Hashable, Sendable {
 @Observable @MainActor
 final class AppStore {
     enum Tab: String, CaseIterable { case notes, walk, ai, insights }
+    enum SettingsSection: String, Identifiable {
+        case general, ai
+        var id: String { rawValue }
+    }
+
+    enum PendingChatSwitch {
+        case note(Note), walk(RelatedNotes), report(InsightReport), session(String), new
+    }
+
     struct Detail: Identifiable, Hashable {
         let note: Note
         let source: DetailSource
@@ -35,7 +44,9 @@ final class AppStore {
 
     var tab: Tab = .notes
     var detail: Detail?
-    var showSettings = false
+    var settingsSection: SettingsSection?
+    var showComposer = false
+    private(set) var pendingChatSwitch: PendingChatSwitch?
     var error: String?
     var query = "" { didSet { if query != oldValue { scheduleSearch() } } }
     var filter = NoteFilter() { didSet { if filter != oldValue { scheduleSearch() } } }
@@ -123,7 +134,7 @@ final class AppStore {
         let canPreload = !save && offlineFallbackAllowed && (previous == nil || previous == config)
         if let rejectedChatDraft, rejectedChatDraft.key.origin != config.origin { self.rejectedChatDraft = nil }
         resetConnection(to: config)
-        showSettings = false
+        settingsSection = nil
         let stamp = connectionGeneration
         syncing = true
 
@@ -186,7 +197,7 @@ final class AppStore {
                 api = client
                 if let rejectedChatDraft, rejectedChatDraft.key == key { chat.draft = rejectedChatDraft.text }
                 rejectedChatDraft = nil
-                showSettings = false
+                settingsSection = nil
                 if let confirmedSnapshot {
                     await replace(with: confirmedSnapshot.notes, etag: confirmedSnapshot.etag, persist: false)
                 } else if preloadedKey != key, let cached = try? await cache.loadSnapshot(key),
@@ -228,7 +239,7 @@ final class AppStore {
                 }
                 clearLoadedState()
                 self.error = error.localizedDescription
-                showSettings = false
+                settingsSection = nil
             }
         }
     }
@@ -257,6 +268,8 @@ final class AppStore {
         searchGeneration += 1
         dataGeneration += 1
         detail = nil
+        showComposer = false
+        pendingChatSwitch = nil
         isOffline = false
         notesETag = nil
         workingNotes = [:]
@@ -289,7 +302,7 @@ final class AppStore {
         rejectedChatDraft = nil
         resetConnection(to: nil)
         syncing = false
-        showSettings = false
+        settingsSection = nil
         var failure: String?
         if !temporary {
             if UserDefaults.standard.string(forKey: "weiji.origin") == config.origin {
@@ -318,7 +331,7 @@ final class AppStore {
         let recoverable = chat.recoverableDraft
         if let key, !recoverable.isEmpty { rejectedChatDraft = (key, recoverable) }
         resetConnection(to: config)
-        showSettings = false
+        settingsSection = nil
         error = failure.localizedDescription
         let stamp = connectionGeneration
         try? await cache.clearSession(config, key: key)
@@ -487,7 +500,6 @@ final class AppStore {
     func performReaderPrimaryAction(for note: Note, source: DetailSource) {
         if source == .ai {
             chat.togglePin(note.id)
-            detail = nil
         } else {
             askAbout(note)
         }
@@ -536,20 +548,43 @@ final class AppStore {
         await replace(with: Array(workingNotes.values))
     }
 
-    func askAbout(_ note: Note) {
-        detail = nil
-        chat.start(source: note.id)
-        tab = .ai
-        if let api { chat.loadSource(note.id, api: api) }
+    func openSettings(_ section: SettingsSection = .general) { settingsSection = section }
+
+    func askAbout(_ note: Note) { requestChatSwitch(.note(note)) }
+    func askAbout(_ walk: RelatedNotes) { requestChatSwitch(.walk(walk)) }
+    func askAbout(_ report: InsightReport) { requestChatSwitch(.report(report)) }
+    func requestSelectChatSession(_ id: String) { requestChatSwitch(.session(id)) }
+    func requestNewChat() { requestChatSwitch(.new) }
+
+    func cancelChatSwitch() { pendingChatSwitch = nil }
+
+    func confirmChatSwitch() {
+        guard let target = pendingChatSwitch else { return }
+        pendingChatSwitch = nil
+        switchChat(to: target)
     }
 
-    func askAbout(_ walk: RelatedNotes) {
-        chat.start(pins: [walk.focus.id] + walk.related.map(\.id))
-        tab = .ai
+    private func requestChatSwitch(_ target: PendingChatSwitch) {
+        if chat.sending { pendingChatSwitch = target }
+        else { switchChat(to: target) }
     }
 
-    func askAbout(_ report: InsightReport) {
-        chat.start(pins: report.citations?.map(\.noteId) ?? [], insight: report)
+    private func switchChat(to target: PendingChatSwitch) {
+        switch target {
+        case .note(let note):
+            detail = nil
+            chat.start(source: note.id)
+            if let api { chat.loadSource(note.id, api: api) }
+        case .walk(let walk):
+            chat.start(pins: [walk.focus.id] + walk.related.map(\.id))
+        case .report(let report):
+            chat.start(pins: report.citations?.map(\.noteId) ?? [], insight: report)
+        case .session(let id):
+            guard let api else { return }
+            chat.select(id, api: api)
+        case .new:
+            chat.start()
+        }
         tab = .ai
     }
 

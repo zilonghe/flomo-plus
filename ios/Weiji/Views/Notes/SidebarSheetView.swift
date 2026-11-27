@@ -3,10 +3,8 @@ import SwiftUI
 struct SidebarSheetView: View {
     @Bindable var store: AppStore
     let onClose: () -> Void
+    let onPickDate: () -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var showDatePicker = false
-    @State private var draftDate = Date()
-    @State private var closeAfterDatePickerDismisses = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,25 +50,7 @@ struct SidebarSheetView: View {
                 .padding(.bottom, 20)
             }
             .scrollIndicators(.hidden)
-            Divider().overlay(Theme.hairline)
-            Button {
-                onClose()
-                store.showSettings = true
-            } label: {
-                Label("连接设置", systemImage: "gearshape")
-                    .font(.subheadline.weight(.medium)).foregroundStyle(Theme.ink)
-                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 16)
         }
-        .sheet(isPresented: $showDatePicker, onDismiss: {
-            if closeAfterDatePickerDismisses {
-                closeAfterDatePickerDismisses = false
-                onClose()
-            }
-        }) { datePickerSheet }
     }
 
     private func metric(_ title: String, _ value: Int) -> some View {
@@ -110,8 +90,8 @@ struct SidebarSheetView: View {
     private var dateFilter: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                draftDate = store.filter.day.flatMap { Self.dayFormatter.date(from: $0) } ?? Date()
-                showDatePicker = true
+                onClose()
+                onPickDate()
             } label: {
                 Group {
                     if dynamicTypeSize.isAccessibilitySize {
@@ -156,42 +136,6 @@ struct SidebarSheetView: View {
                 .accessibilityHidden(true)
         }
         .foregroundStyle(Theme.ink2)
-    }
-
-    private var datePickerSheet: some View {
-        NavigationStack {
-            ScrollView {
-                DatePicker("按日期筛选", selection: $draftDate, displayedComponents: .date)
-                    .datePickerStyle(.graphical)
-                    .padding(.horizontal, 16)
-            }
-            .weijiSheetBackground()
-            .navigationTitle("按日期筛选")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showDatePicker = false }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("筛选") {
-                        store.filter.day = Self.dayFormatter.string(from: draftDate)
-                        closeAfterDatePickerDismisses = true
-                        showDatePicker = false
-                    }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-        .tint(Theme.active)
-    }
-
-    private static var dayFormatter: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = Calendar.current.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
     }
 
     private func applyTag(_ tag: String) {

@@ -9,13 +9,17 @@ final class InsightsStore {
     var useProfile = false
     private(set) var stats: InsightStats?
     private(set) var reports: [InsightReport] = []
-    private(set) var report: InsightReport?
-    private(set) var reportText = ""
-    var showReport = false
     private(set) var running = false
+    private(set) var runningLensName: String?
+    private(set) var liveReport: InsightReport?
+    private(set) var liveReportText = ""
+    private(set) var liveReportError: String?
+    private(set) var loadingReport = false
+    private(set) var viewedReport: InsightReport?
+    private(set) var viewedReportText = ""
+    private(set) var viewedReportError: String?
     private(set) var deletingReport = false
     private(set) var error: String?
-    private(set) var reportError: String?
 
     private(set) var profile: Profile?
     private(set) var profileText = ""
@@ -26,8 +30,11 @@ final class InsightsStore {
     @ObservationIgnored private var profileSaveTask: Task<Bool, Never>?
     @ObservationIgnored private var profileTask: Task<Void, Never>?
     @ObservationIgnored private var profileGeneration = 0
-    @ObservationIgnored private var reportTask: Task<Void, Never>?
-    @ObservationIgnored private var reportGeneration = 0
+    @ObservationIgnored private var runTask: Task<Void, Never>?
+    @ObservationIgnored private var runGeneration = 0
+    @ObservationIgnored private var viewReportTask: Task<Void, Never>?
+    @ObservationIgnored private var viewReportGeneration = 0
+    private(set) var viewedReportID: String?
     @ObservationIgnored private var reportsGeneration = 0
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var previewGeneration = 0
@@ -82,10 +89,11 @@ final class InsightsStore {
         profileError = nil
         stopReport()
         deletingReport = false
-        showReport = false
-        report = nil
-        reportText = ""
-        reportError = nil
+        runningLensName = nil
+        liveReport = nil
+        liveReportText = ""
+        liveReportError = nil
+        clearViewedReport()
         error = nil
         scope = InsightScope()
         lensId = "builtin:default"
@@ -149,93 +157,110 @@ final class InsightsStore {
     }
 
     func stopReport() {
-        reportGeneration += 1
-        reportTask?.cancel()
+        runGeneration += 1
+        runTask?.cancel()
+        runTask = nil
         running = false
     }
 
     func run(api: WeijiAPIClient, options: AIOptions) {
-        stopReport()
-        let stamp = reportGeneration
-        report = nil
-        reportText = ""
-        reportError = nil
+        guard !running else { return }
+        runGeneration += 1
+        let stamp = runGeneration
+        liveReport = nil
+        liveReportText = ""
+        liveReportError = nil
+        runningLensName = selectedLens?.name
         running = true
-        showReport = true
+        let useProfile = self.useProfile
         var fields = options.fields
         fields["scope"] = .scope(scope)
         fields["lensId"] = .string(lensId)
         fields["useProfile"] = .bool(useProfile)
         fields["clientRequestId"] = .string(UUID().uuidString.lowercased())
-        reportTask = Task {
-            defer { if stamp == reportGeneration { running = false } }
+        runTask = Task {
+            defer { if stamp == runGeneration { running = false } }
             do {
                 if useProfile { try await awaitProfileSave() }
                 let result: ReportResponse = try await api.stream("/api/insights/run", fields) { [weak self] frame in
                     await self?.receiveReport(frame, generation: stamp)
                 }
-                guard stamp == reportGeneration, !Task.isCancelled else { return }
-                report = result.report
-                reportText = result.report.content ?? ""
+                guard stamp == runGeneration, !Task.isCancelled else { return }
+                liveReport = result.report
+                liveReportText = result.report.content ?? ""
                 reportsGeneration += 1
                 reports.removeAll { $0.id == result.report.id }
                 reports.insert(result.report, at: 0)
             } catch is CancellationError {
             } catch {
-                if stamp == reportGeneration { reportError = error.localizedDescription }
+                if stamp == runGeneration { liveReportError = error.localizedDescription }
             }
         }
     }
 
     private func receiveReport(_ frame: SSEParser.Frame, generation stamp: Int) {
-        guard stamp == reportGeneration, frame.event == "delta",
+        guard stamp == runGeneration, frame.event == "delta",
               let delta = try? JSONDecoder().decode(StreamDelta.self, from: Data(frame.data.utf8)) else { return }
-        reportText += delta.text
+        liveReportText += delta.text
+    }
+
+    private func clearViewedReport() {
+        viewReportGeneration += 1
+        viewReportTask?.cancel()
+        viewReportTask = nil
+        viewedReportID = nil
+        loadingReport = false
+        viewedReport = nil
+        viewedReportText = ""
+        viewedReportError = nil
     }
 
     func openReport(_ summary: InsightReport, api: WeijiAPIClient) {
-        stopReport()
-        let stamp = reportGeneration
-        report = nil
-        reportText = ""
-        reportError = nil
-        running = true
-        showReport = true
-        reportTask = Task {
-            defer { if stamp == reportGeneration { running = false } }
+        clearViewedReport()
+        let stamp = viewReportGeneration
+        viewedReportID = summary.id
+        loadingReport = true
+        viewReportTask = Task {
+            defer { if stamp == viewReportGeneration { loadingReport = false } }
             do {
                 let response: ReportResponse = try await api.get("/api/insights/reports/\(summary.id)")
-                guard stamp == reportGeneration, !Task.isCancelled else { return }
-                report = response.report
-                reportText = response.report.content ?? ""
+                guard stamp == viewReportGeneration, !Task.isCancelled else { return }
+                viewedReport = response.report
+                viewedReportText = response.report.content ?? ""
             } catch is CancellationError {
             } catch {
-                if stamp == reportGeneration { reportError = error.localizedDescription }
+                if stamp == viewReportGeneration { viewedReportError = error.localizedDescription }
             }
         }
     }
 
-    func deleteReport(_ id: String, api: WeijiAPIClient) async {
-        guard !deletingReport else { return }
+    func deleteReport(_ id: String, api: WeijiAPIClient) async -> Bool {
+        guard !deletingReport else { return false }
         let context = contextGeneration
-        let stamp = reportGeneration
         deletingReport = true
-        reportError = nil
+        if liveReport?.id == id { liveReportError = nil }
+        if viewedReportID == id { viewedReportError = nil }
         defer { if context == contextGeneration { deletingReport = false } }
         do {
             let _: DeletedResponse = try await api.delete("/api/insights/reports/\(id)")
-            guard context == contextGeneration, !Task.isCancelled else { return }
+            guard context == contextGeneration, !Task.isCancelled else { return false }
             reportsGeneration += 1
             reports.removeAll { $0.id == id }
-            if stamp == reportGeneration, report?.id == id {
-                showReport = false
-                report = nil
-                reportText = ""
+            if liveReport?.id == id {
+                liveReport = nil
+                liveReportText = ""
+                liveReportError = nil
             }
+            if viewedReportID == id { clearViewedReport() }
+            return true
         } catch is CancellationError {
         } catch {
-            if stamp == reportGeneration { reportError = error.localizedDescription }
+            if context == contextGeneration {
+                if liveReport?.id == id { liveReportError = error.localizedDescription }
+                if viewedReportID == id { viewedReportError = error.localizedDescription }
+            }
         }
+        return false
     }
 
     func loadProfile(api: WeijiAPIClient) async {

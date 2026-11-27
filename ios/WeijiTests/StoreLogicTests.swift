@@ -33,7 +33,7 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(store.chat.pins, ["note"])
         XCTAssertEqual(store.chat.session?.id, "reader-session")
         XCTAssertEqual(store.tab, .notes)
-        XCTAssertNil(store.detail)
+        XCTAssertEqual(store.detail?.id, detail.id)
     }
 
     func testOpenTagClearsQueryAndSwitchesToNotesFilter() throws {
@@ -71,7 +71,7 @@ final class StoreLogicTests: XCTestCase {
             XCTAssertEqual(store.chat.session?.version, 7)
             XCTAssertEqual(store.chat.draft, "继续追问")
             XCTAssertEqual(store.tab, .ai)
-            XCTAssertNil(store.detail)
+            XCTAssertEqual(store.detail?.id, note.id)
         }
 
         XCTAssertTrue(store.canPerformReaderPrimaryAction(for: note.id, source: .ai))
@@ -104,6 +104,144 @@ final class StoreLogicTests: XCTestCase {
         store.chat.select("reader-session", api: api)
         try await waitUntil("读取阅读页引用测试会话") { !store.chat.loadingSession }
         XCTAssertEqual(store.chat.session?.id, "reader-session")
+    }
+
+    func testFilterDimensionsClearIndependentlyAndSetTitle() {
+        var filter = NoteFilter(kind: .reading, tag: "工作", day: "2026-11-25")
+        XCTAssertEqual(NoteFilter.Dimension.allCases.compactMap { $0.label(in: filter) },
+                       ["读书", "#工作", "2026-11-25"])
+        XCTAssertEqual(filter.navigationTitle, "筛选结果")
+        filter.clear(.tag)
+        XCTAssertEqual(filter, NoteFilter(kind: .reading, day: "2026-11-25"))
+        XCTAssertEqual(filter.navigationTitle, "筛选结果")
+        filter.clear(.day)
+        XCTAssertEqual(filter.navigationTitle, "读书")
+        filter.clear(.kind)
+        XCTAssertEqual(filter.navigationTitle, "笔记")
+        XCTAssertEqual(NoteFilter(tag: "工作").navigationTitle, "#工作")
+        XCTAssertEqual(NoteFilter(day: "2026-11-25").navigationTitle, "2026-11-25")
+    }
+
+    func testNewAndWalkDraftsStayIsolatedAfterRemovingAllPins() {
+        let store = AppStore(temporary: true, reset: true)
+        let walk = RelatedNotes(focus: .init(id: "focus", body: "正文", createdAt: "2026-11-25", reading: nil),
+                                mode: "test", indexed: 1, total: 1, related: [])
+        let note = Note(id: "note", body: "正文", createdAt: "2026-11-25", revision: 1)
+        let report = InsightReport(id: "report", title: "洞察", lensName: "回顾", content: "正文",
+                                   excerpt: nil, citations: nil, createdAt: "2026-11-25")
+        store.chat.draft = "新会话草稿"
+        store.askAbout(walk)
+        XCTAssertEqual(store.chat.draft, "")
+        store.chat.draft = "漫步草稿"
+        store.chat.togglePin("focus")
+        XCTAssertTrue(store.chat.pins.isEmpty)
+        store.requestNewChat()
+        XCTAssertEqual(store.chat.draft, "新会话草稿")
+        store.askAbout(walk)
+        XCTAssertEqual(store.chat.draft, "漫步草稿")
+        store.chat.draft = "  \n"
+        store.askAbout(note)
+        XCTAssertEqual(store.chat.draft, "")
+        store.chat.draft = "笔记草稿"
+        store.askAbout(report)
+        XCTAssertEqual(store.chat.draft, "")
+        store.chat.draft = "洞察草稿"
+        store.askAbout(walk)
+        XCTAssertEqual(store.chat.draft, "")
+        store.askAbout(note)
+        XCTAssertEqual(store.chat.draft, "笔记草稿")
+        store.askAbout(report)
+        XCTAssertEqual(store.chat.draft, "洞察草稿")
+        store.requestNewChat()
+        XCTAssertEqual(store.chat.draft, "新会话草稿")
+        store.requestNewChat()
+        XCTAssertEqual(store.chat.draft, "")
+
+        store.chat.reset()
+        store.askAbout(note)
+        XCTAssertEqual(store.chat.draft, "")
+        store.askAbout(report)
+        XCTAssertEqual(store.chat.draft, "")
+    }
+
+    func testSelectRestoresSessionDraftAndLoadDoesNotOverwriteIt() async throws {
+        let (config, transport) = try StubProtocol.make { request in
+            let id = request.url?.lastPathComponent ?? ""
+            return .init(status: 200, body: readerSessionFixture.replacingOccurrences(of: "reader-session", with: id))
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let chat = AIChatStore()
+        chat.select("a", api: api)
+        chat.draft = "会话 A 草稿"
+        chat.select("b", api: api)
+        XCTAssertEqual(chat.draft, "")
+        chat.draft = "会话 B 草稿"
+        chat.select("a", api: api)
+        XCTAssertEqual(chat.draft, "会话 A 草稿")
+        try await waitUntil("会话 A 已完成加载") { chat.session?.id == "a" }
+        XCTAssertEqual(chat.draft, "会话 A 草稿")
+        chat.reset()
+        chat.select("b", api: api)
+        XCTAssertEqual(chat.draft, "")
+        try await waitUntil("重置后的会话 B 已完成加载") { chat.session?.id == "b" }
+        XCTAssertEqual(chat.draft, "")
+    }
+
+    func testInFlightAskAndSessionSwitchRequireConfirmation() async throws {
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes": return .init(status: 200, body: notesFixture)
+            case "/api/ai/sessions", "/api/ai/sessions/reader-session":
+                return .init(status: 200, body: readerSessionFixture)
+            default:
+                XCTFail("Unexpected request: \(request.url?.path ?? "")")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let store = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("完成初始同步") { store.api != nil && !store.syncing }
+        let api = try XCTUnwrap(store.api)
+        let note = try XCTUnwrap(store.notesById["note"])
+        store.detail = .init(note: note, source: .notes)
+
+        // Run these transitions before yielding so the request stays in flight deterministically.
+        store.chat.draft = "正在发送"
+        store.chat.send(api: api, options: .init(), profile: store.insights)
+        store.askAbout(note)
+        guard case .note(let pendingNote) = store.pendingChatSwitch else { return XCTFail("Expected pending note") }
+        XCTAssertEqual(pendingNote.id, note.id)
+        XCTAssertTrue(store.chat.sending)
+        XCTAssertEqual(store.tab, .notes)
+        XCTAssertEqual(store.detail?.id, note.id)
+        store.cancelChatSwitch()
+        XCTAssertNil(store.pendingChatSwitch)
+        XCTAssertTrue(store.chat.sending)
+        XCTAssertEqual(store.tab, .notes)
+        XCTAssertEqual(store.detail?.id, note.id)
+        store.askAbout(note)
+        store.confirmChatSwitch()
+        XCTAssertNil(store.pendingChatSwitch)
+        XCTAssertFalse(store.chat.sending)
+        XCTAssertNil(store.detail)
+        XCTAssertEqual(store.tab, .ai)
+        store.requestNewChat()
+        XCTAssertEqual(store.chat.draft, "正在发送")
+
+        store.tab = .walk
+        store.chat.send(api: api, options: .init(), profile: store.insights)
+        store.requestSelectChatSession("reader-session")
+        guard case .session("reader-session") = store.pendingChatSwitch else { return XCTFail("Expected pending session") }
+        XCTAssertTrue(store.chat.sending)
+        XCTAssertEqual(store.tab, .walk)
+        store.confirmChatSwitch()
+        XCTAssertFalse(store.chat.sending)
+        XCTAssertNil(store.pendingChatSwitch)
+        XCTAssertEqual(store.tab, .ai)
+        try await waitUntil("确认后会话完成加载") { store.chat.session?.id == "reader-session" }
     }
 
     func test409ConflictPreservesDraftWithoutOverwritingServer() async throws {
@@ -363,7 +501,7 @@ final class StoreLogicTests: XCTestCase {
             try await waitUntil("完成认证与笔记同步") { !store.syncing }
             XCTAssertEqual(store.identity?.user.id, userId)
             XCTAssertNotNil(store.api)
-            XCTAssertFalse(store.showSettings)
+            XCTAssertNil(store.settingsSection)
         }
 
         for (next, userId, status, expectedDraft) in [(renewed, "account", 401, draft),
@@ -380,7 +518,7 @@ final class StoreLogicTests: XCTestCase {
             store.chat.send(api: api, options: store.options, profile: store.insights)
             XCTAssertTrue(store.chat.sending)
             try await waitUntil("认证失效并显示登录页") { store.authScreenState == .needsLogin && !store.syncing }
-            XCTAssertFalse(store.showSettings)
+            XCTAssertNil(store.settingsSection)
             XCTAssertEqual(store.error, "HTTP \(status)")
             XCTAssertNil(store.api)
             XCTAssertNil(store.identity)
@@ -443,7 +581,7 @@ final class StoreLogicTests: XCTestCase {
         let normalized = try ServerConfiguration(address: config.origin.uppercased() + "/", token: " \(config.token) ")
         let offline = try await launch(normalized)
         XCTAssertTrue(offline.isOffline)
-        XCTAssertFalse(offline.showSettings)
+        XCTAssertNil(offline.settingsSection)
         XCTAssertNil(offline.api)
         XCTAssertNil(offline.identity)
         XCTAssertEqual(offline.notesById["note"]?.body, "原始版本")
@@ -452,7 +590,7 @@ final class StoreLogicTests: XCTestCase {
         let changed = try ServerConfiguration(address: config.origin, token: "different-token")
         func assertIsolated(_ store: AppStore) {
             XCTAssertEqual(store.authScreenState, .needsLogin)
-            XCTAssertFalse(store.showSettings)
+            XCTAssertNil(store.settingsSection)
             XCTAssertFalse(store.isOffline)
             XCTAssertNil(store.identity)
             XCTAssertNil(store.api)
@@ -715,7 +853,7 @@ final class StoreLogicTests: XCTestCase {
                 try await waitUntil("认证后同步服务器笔记") { store.results.map(\.id) == ["note"] }
             } else {
                 XCTAssertEqual(store.authScreenState, .needsLogin)
-                XCTAssertFalse(store.showSettings)
+                XCTAssertNil(store.settingsSection)
                 XCTAssertNil(store.api)
                 XCTAssertTrue(store.results.isEmpty)
                 XCTAssertTrue(store.notesById.isEmpty)
@@ -931,18 +1069,70 @@ final class StoreLogicTests: XCTestCase {
         try await waitUntil("自定义范围预览完成") { insights.stats?.noteCount == 2 }
         insights.run(api: api, options: .init())
         try await waitUntil("洞察生成完成") { !insights.running }
-        XCTAssertNil(insights.reportError)
+        XCTAssertNil(insights.liveReportError)
         XCTAssertEqual(captured.withLock { $0.map(\.path) }, ["/api/insights/preview", "/api/insights/preview", "/api/insights/run"])
         XCTAssertEqual(captured.withLock { $0.map(\.scope) }, [recipeScope, dates, dates])
-        let report = try XCTUnwrap(insights.report)
-        await insights.deleteReport(report.id, api: api)
-        XCTAssertTrue(insights.showReport)
+        let report = try XCTUnwrap(insights.liveReport)
+        let failedDelete = await insights.deleteReport(report.id, api: api)
+        XCTAssertFalse(failedDelete)
+        XCTAssertEqual(insights.liveReport?.id, report.id)
         XCTAssertEqual(insights.reports.map(\.id), [report.id])
-        XCTAssertEqual(insights.reportError, "删除失败")
-        await insights.deleteReport(report.id, api: api)
-        XCTAssertFalse(insights.showReport)
+        XCTAssertEqual(insights.liveReportError, "删除失败")
+        let successfulDelete = await insights.deleteReport(report.id, api: api)
+        XCTAssertTrue(successfulDelete)
+        XCTAssertNil(insights.liveReport)
+        XCTAssertEqual(insights.liveReportText, "")
         XCTAssertTrue(insights.reports.isEmpty)
-        XCTAssertNil(insights.reportError)
+        XCTAssertNil(insights.liveReportError)
+    }
+
+    func testInsightRunContinuesWhileReadingHistoryAndRejectsSecondRun() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [HeldInsightRunProtocol.self]
+        let transport = URLSession(configuration: configuration)
+        let config = try ServerConfiguration(address: "http://insight-run.example:5173", token: "test-token-123")
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let insights = InsightsStore()
+        HeldInsightRunProtocol.state.withLock { $0 = .init() }
+        defer {
+            transport.invalidateAndCancel()
+            HeldInsightRunProtocol.state.withLock { $0.finish = nil }
+        }
+        let history = InsightReport(id: "saved", title: "历史洞察", lensName: "回顾", content: nil,
+                                    excerpt: nil, citations: nil, createdAt: "2026-11-25")
+
+        insights.run(api: api, options: .init())
+        try await waitUntil("已发出生成请求") { HeldInsightRunProtocol.state.withLock { $0.finish != nil } }
+        insights.openReport(history, api: api)
+        XCTAssertTrue(insights.loadingReport)
+        try await waitUntil("生成期间可以读取历史") { !insights.loadingReport }
+        XCTAssertEqual(insights.viewedReport?.id, "saved")
+        XCTAssertEqual(insights.viewedReportText, "历史正文")
+        XCTAssertTrue(insights.running)
+        XCTAssertNil(insights.liveReport)
+        insights.run(api: api, options: .init())
+        let finish = HeldInsightRunProtocol.state.withLock { state in
+            defer { state.finish = nil }
+            return state.finish
+        }
+        try XCTUnwrap(finish)()
+        try await waitUntil("原生成任务正常结束") { !insights.running }
+        XCTAssertEqual(HeldInsightRunProtocol.state.withLock { $0.requests }, 1)
+        XCTAssertEqual(insights.liveReport?.id, "generated")
+        XCTAssertEqual(insights.liveReportText, "生成正文")
+        XCTAssertEqual(insights.reports.map(\.id), ["generated"])
+        XCTAssertEqual(insights.viewedReport?.id, "saved")
+
+        insights.run(api: api, options: .init())
+        try await waitUntil("第二次生成已发出") { HeldInsightRunProtocol.state.withLock { $0.finish != nil } }
+        let cancellations = HeldInsightRunProtocol.state.withLock { $0.cancellations }
+        insights.stopReport()
+        try await waitUntil("显式停止后请求取消") {
+            HeldInsightRunProtocol.state.withLock { $0.cancellations > cancellations }
+        }
+        XCTAssertFalse(insights.running)
+        XCTAssertEqual(insights.reports.map(\.id), ["generated"])
+        XCTAssertEqual(insights.viewedReport?.id, "saved")
     }
 
     func testInsightReportDeleteRemovesOnSuccessAndPreservesOnFailure() async throws {
@@ -976,19 +1166,21 @@ final class StoreLogicTests: XCTestCase {
         await store.loadLibrary(api: api)
         let report = try XCTUnwrap(store.reports.first)
         store.openReport(report, api: api)
-        try await waitUntil("读取报告详情") { !store.running }
+        try await waitUntil("读取报告详情") { !store.loadingReport }
 
-        await store.deleteReport(report.id, api: api)
+        let failedDelete = await store.deleteReport(report.id, api: api)
+        XCTAssertFalse(failedDelete)
         XCTAssertEqual(store.reports.map(\.id), [report.id])
-        XCTAssertTrue(store.showReport)
-        XCTAssertEqual(store.reportText, "报告正文")
-        XCTAssertEqual(store.reportError, "删除失败")
+        XCTAssertEqual(store.viewedReport?.id, report.id)
+        XCTAssertEqual(store.viewedReportText, "报告正文")
+        XCTAssertEqual(store.viewedReportError, "删除失败")
 
-        await store.deleteReport(report.id, api: api)
+        let successfulDelete = await store.deleteReport(report.id, api: api)
+        XCTAssertTrue(successfulDelete)
         XCTAssertTrue(store.reports.isEmpty)
-        XCTAssertFalse(store.showReport)
-        XCTAssertNil(store.report)
-        XCTAssertNil(store.reportError)
+        XCTAssertNil(store.viewedReport)
+        XCTAssertEqual(store.viewedReportText, "")
+        XCTAssertNil(store.viewedReportError)
         let reloaded: ReportList = try await api.get("/api/insights/reports")
         XCTAssertTrue(reloaded.reports.isEmpty)
         XCTAssertEqual(deletes.withLock { $0 }, 2)
@@ -1096,7 +1288,7 @@ final class StoreLogicTests: XCTestCase {
 
         await store.logout()
         XCTAssertEqual(store.authScreenState, .needsLogin)
-        XCTAssertFalse(store.showSettings)
+        XCTAssertNil(store.settingsSection)
         XCTAssertTrue(revoked.withLock { $0 })
         XCTAssertNil(keychain.serverToken(for: config.origin))
         XCTAssertNil(UserDefaults.standard.string(forKey: "weiji.origin"))
@@ -1116,7 +1308,7 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertFalse(restarted.isOffline)
         XCTAssertTrue(restarted.notesById.isEmpty)
         XCTAssertEqual(restarted.authScreenState, .needsLogin)
-        XCTAssertFalse(restarted.showSettings)
+        XCTAssertNil(restarted.settingsSection)
     }
 
     func testOriginSwitchAccountIsolatesPersonalOpenAIKey() async throws {
@@ -1351,7 +1543,10 @@ final class StoreLogicTests: XCTestCase {
     func testChatSendClearsDraftImmediatelyAndRestoresOnlyOnFailure() async throws {
         let release = DispatchSemaphore(value: 0)
         let attempts = OSAllocatedUnfairLock(initialState: 0)
-        let (config, transport) = try StubProtocol.make { _ in
+        let (config, transport) = try StubProtocol.make { request in
+            if request.httpMethod == "GET" {
+                return .init(status: 200, body: readerSessionFixture.replacingOccurrences(of: "reader-session", with: "chat-clear"))
+            }
             let attempt = attempts.withLock { $0 += 1; return $0 }
             _ = release.wait(timeout: .now() + 8)
             if attempt <= 2 {
@@ -1397,6 +1592,7 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(chat.draft, "追问")
 
         // 3. Clean success keeps draft empty.
+        chat.start(source: "source")
         chat.draft = "立即清空测试"
         chat.send(api: api, options: .init(), profile: profile)
         XCTAssertTrue(chat.sending)
@@ -1408,6 +1604,12 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(chat.draft, "")
         XCTAssertEqual(chat.pendingQuestion, "")
         XCTAssertEqual(chat.session?.id, "chat-clear")
+        chat.draft = "成功后的追问"
+        chat.start(source: "source")
+        XCTAssertEqual(chat.draft, "")
+        chat.select("chat-clear", api: api)
+        try await waitUntil("新会话完成加载") { chat.session?.id == "chat-clear" }
+        XCTAssertEqual(chat.draft, "成功后的追问")
     }
 
     func testStopThenResendReusesClientRequestIDAndEditRotatesIt() async throws {
@@ -1492,6 +1694,52 @@ private final class DelayedWalkProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() { stopped.withLock { $0 = true } }
+}
+
+private final class HeldInsightRunProtocol: URLProtocol, @unchecked Sendable {
+    struct State {
+        var requests = 0
+        var cancellations = 0
+        var finish: (@Sendable () -> Void)?
+    }
+
+    static let state = OSAllocatedUnfairLock(initialState: State())
+    private let finished = OSAllocatedUnfairLock(initialState: false)
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let streaming = url.path == "/api/insights/run"
+        if streaming {
+            Self.state.withLock { state in
+                state.requests += 1
+                state.finish = { self.complete(streaming: true, url: url) }
+            }
+        } else {
+            XCTAssertEqual(url.path, "/api/insights/reports/saved")
+            complete(streaming: false, url: url)
+        }
+    }
+
+    private func complete(streaming: Bool, url: URL) {
+        let body = streaming
+            ? "event: done\ndata: {\"report\":{\"id\":\"generated\",\"title\":\"新洞察\",\"lensName\":\"回顾\",\"content\":\"生成正文\",\"createdAt\":\"2026-11-25\"}}\n\n"
+            : #"{"report":{"id":"saved","title":"历史洞察","lensName":"回顾","content":"历史正文","createdAt":"2026-11-25"}}"#
+        let headers = ["Content-Type": streaming ? "text/event-stream" : "application/json"]
+        guard let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: headers) else { return }
+        finished.withLock { $0 = true }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {
+        if request.url?.path == "/api/insights/run", !finished.withLock({ $0 }) {
+            Self.state.withLock { $0.cancellations += 1 }
+        }
+    }
 }
 
 private let sessionFixture = #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":false}"#

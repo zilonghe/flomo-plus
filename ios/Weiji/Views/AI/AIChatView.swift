@@ -4,7 +4,7 @@ struct AIChatView: View {
     let store: AppStore
     @Binding var showSessions: Bool
     @State private var showPins = false
-    @State private var showAISettings = false
+    @State private var openSettingsAfterModels = false
     @State private var showModels = false
     @State private var sendFeedback = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -63,14 +63,23 @@ struct AIChatView: View {
                     .disabled(store.api == nil)
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    IconAction(symbol: "slider.horizontal.3", label: "AI 设置", id: "ai-settings-button") { showAISettings = true }
-                    IconAction(symbol: "square.and.pencil", label: "新建会话", id: "ai-new-button") { chat.start() }
+                    IconAction(symbol: "gearshape", label: "AI 设置", id: "ai-settings-button") { store.openSettings(.ai) }
+                    IconAction(symbol: "square.and.pencil", label: "新建会话", id: "ai-new-button") { store.requestNewChat() }
                 }
             }
         }
         .sheet(isPresented: $showPins) { PinPickerSheet(store: store) }
-        .sheet(isPresented: $showAISettings) { AISettingsView(store: store) }
-        .sheet(isPresented: $showModels) { ModelPickerSheet(store: store) }
+        .sheet(isPresented: $showModels, onDismiss: {
+            if openSettingsAfterModels {
+                openSettingsAfterModels = false
+                store.openSettings(.ai)
+            }
+        }) {
+            ModelPickerSheet(store: store) {
+                openSettingsAfterModels = true
+                showModels = false
+            }
+        }
         .sensoryFeedback(.selection, trigger: store.options.model)
         .sensoryFeedback(.selection, trigger: store.options.reasoningEffort)
         .sensoryFeedback(.impact(weight: .light), trigger: sendFeedback)
@@ -137,8 +146,7 @@ struct AIChatView: View {
         let vendor = ModelVendor(model?.vendor ?? (store.options.provider == .openai ? "openai" : "other"))
         return HStack(spacing: 4) {
             Button {
-                if store.options.provider == .codex && !store.gatewayModelMeta.isEmpty { showModels = true }
-                else { showAISettings = true }
+                showModels = true
             } label: {
                 HStack(spacing: 5) {
                     vendor.badge.font(.caption2)
@@ -423,19 +431,60 @@ private enum ModelVendor: String, CaseIterable, Identifiable {
 
 private struct ModelPickerSheet: View {
     let store: AppStore
+    let openSettings: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
     var body: some View {
+        NavigationStack {
+            Group {
+                if store.options.provider == .codex {
+                    modelList.searchable(text: $query, prompt: "搜索模型")
+                } else {
+                    modelList
+                }
+            }
+            .navigationTitle("选择模型")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    IconAction(symbol: "gearshape", label: "AI 设置", id: "ai-model-picker-settings", action: openSettings)
+                }
+            }
+            .onChange(of: store.options.provider) { query = "" }
+        }
+    }
+
+    private var modelList: some View {
         let filtered = query.isEmpty ? store.gatewayModelMeta : store.gatewayModelMeta.filter {
             $0.label.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query)
                 || ModelVendor($0.vendor).label.localizedCaseInsensitiveContains(query)
         }
         let groups = Dictionary(grouping: filtered) { ModelVendor($0.vendor) }
-        NavigationStack {
-            List {
+        return List {
+            if store.identity?.codexAvailable == true {
+                Section {
+                    Picker("模型来源", selection: Binding(get: { store.options.provider }, set: store.setProvider)) {
+                        Text(AIProvider.codex.label).tag(AIProvider.codex)
+                        Text(AIProvider.openai.label).tag(AIProvider.openai)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(minHeight: 44)
+                }
+                .listRowBackground(Theme.paper)
+            }
+            if store.options.provider == .openai {
+                Section {
+                    LabeledContent("当前模型", value: store.options.model)
+                    Button("配置 OpenAI API Key", action: openSettings).minTapHeight()
+                }
+                .listRowBackground(Theme.paper)
+            } else {
                 if query.isEmpty {
                     modelRow("网关默认", selection: "", vendor: .other)
+                } else if filtered.isEmpty {
+                    ContentUnavailableView.search(text: query)
                 }
                 ForEach(ModelVendor.allCases) { vendor in
                     if let models = groups[vendor] {
@@ -447,19 +496,8 @@ private struct ModelPickerSheet: View {
                     }
                 }
             }
-            .overlay {
-                if !query.isEmpty && filtered.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                }
-            }
-            .weijiSheetBackground()
-            .searchable(text: $query, prompt: "搜索模型")
-            .navigationTitle("选择模型")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
-            }
         }
+        .weijiSheetBackground()
     }
 
     private func modelRow(_ label: String, selection: String, vendor: ModelVendor, thinking: Bool = false) -> some View {
@@ -485,76 +523,10 @@ private struct ModelPickerSheet: View {
                         .accessibilityLabel("已选")
                 }
             }
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
+            .minTapHeight()
         }
         .buttonStyle(.plain)
         .listRowBackground(Theme.paper)
-    }
-}
-
-private struct AISettingsView: View {
-    @Bindable var store: AppStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var apiKey = ""
-    @State private var error: String?
-
-    var body: some View {
-        @Bindable var chat = store.chat
-        NavigationStack {
-            Form {
-                if store.identity?.codexAvailable == true {
-                    Section {
-                        Picker("连接方式", selection: Binding(get: { store.options.provider }, set: store.setProvider)) {
-                            Text(AIProvider.codex.label).tag(AIProvider.codex)
-                            Text(AIProvider.openai.label).tag(AIProvider.openai)
-                        }
-                        .pickerStyle(.segmented)
-                        Text(store.options.provider == .codex
-                             ? "使用服务器内置 AI 模型，无需配置密钥。"
-                             : "使用个人 OpenAI API Key 直接请求模型。")
-                            .font(Theme.TypeScale.meta)
-                            .foregroundStyle(Theme.ink2)
-                    } header: {
-                        Text("模型来源")
-                    }
-                    .listRowBackground(Theme.paper)
-                }
-                if store.options.provider == .openai {
-                    Section("OpenAI 接口") {
-                        SecureField("API Key", text: $apiKey).autocorrectionDisabled()
-                        TextField("模型名称", text: Binding(get: { store.options.model }, set: store.setModel))
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    }
-                    .listRowBackground(Theme.paper)
-                }
-                Section("对话偏好") {
-                    Toggle("结合个人画像回答", isOn: $chat.useProfile).tint(Theme.accent)
-                }
-                .listRowBackground(Theme.paper)
-                if let error {
-                    Section {
-                        InlineError(message: error)
-                    }
-                    .listRowBackground(Theme.paper)
-                }
-            }
-            .weijiSheetBackground()
-            .navigationTitle("AI 设置")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") {
-                        do { try store.setAPIKey(apiKey); dismiss() }
-                        catch { self.error = error.localizedDescription }
-                    }
-                }
-            }
-            .onAppear { apiKey = store.options.apiKey }
-        }
-        .tint(Theme.active)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
     }
 }
 

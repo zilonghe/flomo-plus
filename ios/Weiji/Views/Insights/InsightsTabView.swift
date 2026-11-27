@@ -1,21 +1,20 @@
 import SwiftUI
 
+private enum InsightRoute: Hashable {
+    case recipe(String), history, liveReport, savedReport(String), citedNote(AppStore.Detail)
+}
+
 struct InsightsTabView: View {
     private enum Segment: String { case insights, profile }
     @Bindable var store: AppStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var segment: Segment = .insights
     @State private var selectedCategory: String?
-    @State private var activeRecipe: InsightLens?
-    @State private var pendingRecipeAction: RecipeExitAction?
-    @State private var showHistory = false
-    @State private var pendingHistoryReport: InsightReport?
+    @State private var path: [InsightRoute] = []
     @State private var lensEditor: LensEditorRoute?
-    @State private var pendingReportAction: ReportExitAction?
+    @State private var editingCited = false
 
     private struct LensEditorRoute: Identifiable { let id = UUID(); let lens: InsightLens? }
-    private enum RecipeExitAction { case run, edit(InsightLens) }
-    private enum ReportExitAction { case followUp(InsightReport), askNote(Note), openTag(String) }
 
     private var categories: [String?] {
         let builtin: [String?] = [nil, "复盘整理", "自我觉察", "思维决策", "大师视角"]
@@ -23,8 +22,8 @@ struct InsightsTabView: View {
     }
 
     var body: some View {
-        @Bindable var insights = store.insights
-        NavigationStack {
+        let insights = store.insights
+        NavigationStack(path: $path) {
             Group {
                 if segment == .insights { recipeBoard }
                 else { ProfileWorkspaceView(store: store) }
@@ -33,6 +32,12 @@ struct InsightsTabView: View {
             .navigationTitle(segment == .insights ? "洞察" : "画像")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    IconAction(symbol: "square.and.pencil", label: "快速记", id: "insights-quick-note") {
+                        store.showComposer = true
+                    }
+                    .disabled(store.api == nil)
+                }
                 ToolbarItem(placement: .principal) {
                     Picker("视图", selection: $segment) {
                         Text("洞察").tag(Segment.insights)
@@ -44,7 +49,7 @@ struct InsightsTabView: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if segment == .insights {
                         IconAction(symbol: "clock.arrow.circlepath", label: "历史", id: "insights-history-button") {
-                            showHistory = true
+                            path.append(.history)
                         }
                         IconAction(symbol: "plus", label: "新建视角", id: "insights-new-lens-button") {
                             lensEditor = LensEditorRoute(lens: nil)
@@ -52,39 +57,10 @@ struct InsightsTabView: View {
                     }
                 }
             }
+            .navigationDestination(for: InsightRoute.self, destination: destination)
+            .sheet(item: $lensEditor) { route in CustomLensSheet(store: store, lens: route.lens) }
         }
-        .sheet(item: $activeRecipe, onDismiss: finishRecipe) { lens in
-            RecipeRunSheet(store: store, lens: lens,
-                           onRun: { exitRecipe(with: .run) },
-                           onEdit: { exitRecipe(with: .edit(lens)) })
-        }
-        .sheet(isPresented: $showHistory, onDismiss: {
-            guard let report = pendingHistoryReport else { return }
-            pendingHistoryReport = nil
-            if let api = store.api { insights.openReport(report, api: api) }
-        }) {
-            InsightReportsHistorySheet(insights: insights) { report in
-                pendingHistoryReport = report
-                showHistory = false
-            }
-        }
-        .sheet(isPresented: $insights.showReport, onDismiss: {
-            insights.stopReport()
-            guard let action = pendingReportAction else { return }
-            pendingReportAction = nil
-            switch action {
-            case .followUp(let report): store.askAbout(report)
-            case .askNote(let note): store.askAbout(note)
-            case .openTag(let tag): store.openTag(tag)
-            }
-        }) {
-            InsightReportSheet(store: store,
-                               followUp: { exitReport(with: .followUp($0)) },
-                               onAskNote: { exitReport(with: .askNote($0)) },
-                               onOpenTag: { exitReport(with: .openTag($0)) })
-        }
-        .sheet(item: $lensEditor) { route in CustomLensSheet(store: store, lens: route.lens) }
-        .task(id: store.api != nil) {
+        .task(id: store.api.map(ObjectIdentifier.init)) {
             if let api = store.api { await insights.loadLibrary(api: api) }
         }
         .onChange(of: insights.lenses.map(\.id)) { _, _ in
@@ -92,24 +68,40 @@ struct InsightsTabView: View {
         }
     }
 
-    private func exitRecipe(with action: RecipeExitAction) {
-        pendingRecipeAction = action
-        activeRecipe = nil
-    }
-
-    private func finishRecipe() {
-        guard let action = pendingRecipeAction else { return }
-        pendingRecipeAction = nil
-        switch action {
-        case .run:
-            if let api = store.api { store.insights.run(api: api, options: store.options) }
-        case .edit(let lens): lensEditor = LensEditorRoute(lens: lens)
+    @ViewBuilder
+    private func destination(_ route: InsightRoute) -> some View {
+        let insights = store.insights
+        switch route {
+        case .recipe(let id):
+            if let lens = insights.lenses.first(where: { $0.id == id }) {
+                RecipeRunView(store: store, lens: lens, onRun: {
+                    guard !insights.running, let api = store.api else { return }
+                    insights.run(api: api, options: store.options)
+                    path.append(.liveReport)
+                }, onEdit: { lensEditor = LensEditorRoute(lens: lens) },
+                   onViewProgress: { path.append(.liveReport) })
+            } else {
+                ContentUnavailableView("视角已删除", systemImage: "slider.horizontal.3")
+            }
+        case .history:
+            InsightReportsHistoryView(insights: insights) { report in
+                guard let api = store.api else { return }
+                insights.openReport(report, api: api)
+                path.append(.savedReport(report.id))
+            }
+        case .liveReport:
+            InsightReportView(store: store, mode: .live, onCite: openCitation)
+        case .savedReport(let id):
+            InsightReportView(store: store, mode: .saved(id), onCite: openCitation)
+        case .citedNote(let item):
+            NoteReaderView(store: store, note: item.note, source: .insights, presentation: .pushed,
+                           isEditing: $editingCited)
+                .navigationBarBackButtonHidden(editingCited)
         }
     }
 
-    private func exitReport(with action: ReportExitAction) {
-        pendingReportAction = action
-        store.insights.showReport = false
+    private func openCitation(_ note: Note) {
+        path.append(.citedNote(.init(note: note, source: .insights)))
     }
 
     private var recipeBoard: some View {
@@ -119,6 +111,15 @@ struct InsightsTabView: View {
             ? [GridItem(.flexible())]
             : [GridItem(.flexible(), spacing: 10), GridItem(.flexible())]
         return VStack(spacing: 0) {
+            if insights.running {
+                Button {
+                    path.append(.liveReport)
+                } label: {
+                    Label("正在后台生成 · 查看", systemImage: "sparkles").minTapHeight()
+                }
+                .buttonStyle(.weijiSecondary)
+                .padding(.horizontal, 16)
+            }
             ScrollView(.horizontal) {
                 HStack(spacing: 7) {
                     ForEach(categories, id: \.self) { category in
@@ -143,7 +144,7 @@ struct InsightsTabView: View {
                         ForEach(recipes) { lens in
                             Button {
                                 insights.prepareRecipe(lens, api: store.api)
-                                activeRecipe = lens
+                                path.append(.recipe(lens.id))
                             } label: { recipeCard(lens) }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("insights-recipe-card-\(lens.id)")
@@ -222,11 +223,12 @@ private func recipeRangeLabel(_ range: String) -> String {
     }
 }
 
-private struct RecipeRunSheet: View {
+private struct RecipeRunView: View {
     let store: AppStore
     let lens: InsightLens
     let onRun: () -> Void
     let onEdit: () -> Void
+    let onViewProgress: () -> Void
     @State private var startDate = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
     @State private var endDate = Date.now
     private var insights: InsightsStore { store.insights }
@@ -274,8 +276,13 @@ private struct RecipeRunSheet: View {
                         }
                         Button(action: onRun) { Label("开始分析", systemImage: "sparkles") }
                             .buttonStyle(.weijiPrimaryWide)
-                            .disabled(store.api == nil || (insights.stats?.noteCount ?? 0) == 0)
+                            .disabled(insights.running || store.api == nil || (insights.stats?.noteCount ?? 0) == 0)
                             .accessibilityIdentifier("insights-run-button")
+                        if insights.running {
+                            Text("已有洞察正在后台生成")
+                                .font(Theme.TypeScale.meta).foregroundStyle(Theme.ink2)
+                            Button("查看生成进度", action: onViewProgress).buttonStyle(.weijiSecondary)
+                        }
                     }
                 }
                 .padding(.horizontal, 20).padding(.vertical, 16)
@@ -286,9 +293,8 @@ private struct RecipeRunSheet: View {
         .onChange(of: startDate) { _, _ in if insights.scope.range == "custom" { applyDates() } }
         .onChange(of: endDate) { _, _ in if insights.scope.range == "custom" { applyDates() } }
         .weijiSheetBackground()
-        .presentationBackground(Theme.canvas)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .navigationTitle("配方")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var rangeMenu: some View {
@@ -367,37 +373,29 @@ private struct RecipeRunSheet: View {
     }
 }
 
-private struct InsightReportsHistorySheet: View {
+private struct InsightReportsHistoryView: View {
     let insights: InsightsStore
     let onSelect: (InsightReport) -> Void
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                if insights.reports.isEmpty {
-                    Text("暂无历史报告").font(Theme.TypeScale.body).foregroundStyle(Theme.ink3)
-                        .frame(maxWidth: .infinity).padding(.top, 32)
-                } else {
-                    LazyVStack(spacing: 10) {
-                        ForEach(insights.reports) { report in
-                            Button { onSelect(report) } label: { reportCard(report) }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("insight-report-row-\(report.id)")
-                        }
+        ScrollView {
+            if insights.reports.isEmpty {
+                Text("暂无历史报告").font(Theme.TypeScale.body).foregroundStyle(Theme.ink3)
+                    .frame(maxWidth: .infinity).padding(.top, 32)
+            } else {
+                LazyVStack(spacing: 10) {
+                    ForEach(insights.reports) { report in
+                        Button { onSelect(report) } label: { reportCard(report) }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("insight-report-row-\(report.id)")
                     }
-                    .padding(16)
                 }
+                .padding(16)
             }
-            .weijiSheetBackground()
-            .navigationTitle("历史报告")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
-        .tint(Theme.active)
-        .presentationBackground(Theme.canvas)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .weijiSheetBackground()
+        .navigationTitle("历史报告")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func reportCard(_ report: InsightReport) -> some View {

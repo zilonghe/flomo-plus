@@ -4,12 +4,14 @@ struct NotesTabView: View {
     @Bindable var store: AppStore
     let noteZoom: Namespace.ID
     @Binding var sidebar: Bool
+    @Binding var showDatePicker: Bool
+    @State private var draftDate = Date()
 
     var body: some View {
         NavigationStack {
             NotesList(store: store, noteZoom: noteZoom, sidebar: sidebar)
                 .background(Theme.canvas.ignoresSafeArea())
-                .navigationTitle(navigationTitle)
+                .navigationTitle(store.filter.navigationTitle)
                 .navigationBarTitleDisplayMode(.large)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
@@ -23,16 +25,81 @@ struct NotesTabView: View {
                         }
                         IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
                             .disabled(store.syncing)
+                        IconAction(symbol: "gearshape", label: "设置", id: "notes-settings-button") {
+                            store.openSettings(.general)
+                        }
                     }
                 }
         }
         .searchable(text: $store.query, prompt: "搜索笔记、书名、作者")
+        .sheet(isPresented: $showDatePicker) { datePickerSheet }
+        .onChange(of: showDatePicker) { _, open in
+            if open { draftDate = store.filter.day.flatMap { Self.dayFormatter.date(from: $0) } ?? .now }
+        }
     }
 
-    private var navigationTitle: String {
-        if let tag = store.filter.tag { return "#" + tag }
-        if let day = store.filter.day { return day }
-        return store.filter == NoteFilter() ? "笔记" : store.filter.kind.rawValue
+    private var datePickerSheet: some View {
+        NavigationStack {
+            ScrollView {
+                DatePicker("按日期筛选", selection: $draftDate, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
+            }
+            .weijiSheetBackground()
+            .navigationTitle("按日期筛选")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showDatePicker = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("筛选") {
+                        store.filter.day = Self.dayFormatter.string(from: draftDate)
+                        showDatePicker = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .tint(Theme.active)
+    }
+
+    private static var dayFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = Calendar.current.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
+
+}
+
+extension NoteFilter {
+    enum Dimension: CaseIterable {
+        case kind, tag, day
+
+        func label(in filter: NoteFilter) -> String? {
+            switch self {
+            case .kind: return filter.kind == .all ? nil : filter.kind.rawValue
+            case .tag: return filter.tag.map { "#" + $0 }
+            case .day: return filter.day
+            }
+        }
+    }
+
+    var navigationTitle: String {
+        let active = Dimension.allCases.compactMap { $0.label(in: self) }
+        return active.count > 1 ? "筛选结果" : (active.first ?? "笔记")
+    }
+
+    mutating func clear(_ dimension: Dimension) {
+        switch dimension {
+        case .kind: kind = .all
+        case .tag: tag = nil
+        case .day: day = nil
+        }
     }
 }
 
@@ -40,7 +107,6 @@ private struct NotesList: View {
     let store: AppStore
     let noteZoom: Namespace.ID
     let sidebar: Bool
-    @State private var composer = false
     @Environment(\.isSearching) private var isSearching
     @Environment(\.dismissSearch) private var dismissSearch
 
@@ -54,17 +120,7 @@ private struct NotesList: View {
                     .padding(.horizontal, 16).padding(.bottom, 6)
             }
             if store.filter != NoteFilter() {
-                Button {
-                    store.filter = NoteFilter()
-                } label: {
-                    Chip(text: store.filter.tag.map { "#" + $0 } ?? store.filter.day ?? store.filter.kind.rawValue,
-                         symbol: "xmark", selected: true)
-                        .minTapHeight()
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除筛选")
-                .padding(.horizontal, 16).padding(.bottom, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                filterChips
             }
             InlineError(message: store.error).padding(.horizontal, 16)
             ScrollView {
@@ -92,9 +148,9 @@ private struct NotesList: View {
             .scrollDismissesKeyboard(.interactively)
             .refreshable { store.refresh() }
             .overlay(alignment: .bottomTrailing) {
-                if !isSearching && store.api != nil {
+                if store.api != nil {
                     Button {
-                        composer = true
+                        store.showComposer = true
                     } label: {
                         Image(systemName: "plus").font(.title2.weight(.semibold))
                             .foregroundStyle(.white)
@@ -113,7 +169,32 @@ private struct NotesList: View {
             }
         }
         .onChange(of: sidebar) { _, open in if open && isSearching { dismissSearch() } }
-        .sheet(isPresented: $composer) { QuickComposerSheet(store: store) }
+    }
+
+    private var filterChips: some View {
+        let active = NoteFilter.Dimension.allCases.filter { $0.label(in: store.filter) != nil }
+        return ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(active, id: \.self) { dimension in
+                    if let title = dimension.label(in: store.filter) {
+                        Button { store.filter.clear(dimension) } label: {
+                            Chip(text: title, symbol: "xmark", selected: true).minTouchTarget()
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("清除 \(title)")
+                    }
+                }
+                if active.count > 1 {
+                    Button { store.filter = NoteFilter() } label: {
+                        Chip(text: "清除全部").minTouchTarget()
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .scrollIndicators(.hidden)
+        .padding(.bottom, 6)
     }
 
 }

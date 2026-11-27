@@ -203,6 +203,7 @@ struct NoteReaderView: View {
             }
         }
         .disabled(saving || !store.canPerformReaderPrimaryAction(for: current.id, source: source))
+        .sensoryFeedback(.selection, trigger: store.chat.pins.contains(current.id)) { _, _ in source == .ai }
         .accessibilityIdentifier("detail-ask-ai-button")
     }
 

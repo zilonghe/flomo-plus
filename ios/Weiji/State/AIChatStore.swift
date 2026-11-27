@@ -50,6 +50,8 @@ final class AIChatStore {
     private(set) var cursor: String?
     private(set) var loadingList = false
     private var source: String?
+    @ObservationIgnored private var draftContextKey = "new"
+    @ObservationIgnored private var draftsByKey: [String: String] = [:]
     @ObservationIgnored private var requestID = ChatRequestID()
     @ObservationIgnored private var inflightDraft: String?
     @ObservationIgnored private var generation = 0
@@ -63,21 +65,45 @@ final class AIChatStore {
     @ObservationIgnored private var listTask: Task<Void, Never>?
 
     func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil) {
-        stop()
-        requestID.clear()
-        sessionTask?.cancel()
-        loadingSession = false
-        draft = ""
-        session = nil
+        let source = source.flatMap { $0.isEmpty ? nil : $0 }
+        let nextKey = source.map { "note:\($0)" }
+            ?? insight.map { "insight:\($0.id)" }
+            ?? (pins.isEmpty ? "new" : "pins:" + pins.joined(separator: ","))
+        switchDraftContext(to: nextKey, resetNew: true)
         self.source = source
         var seen = Set<String>()
         self.pins = Array(pins.filter { seen.insert($0).inserted }.prefix(10))
         self.insight = insight
+    }
+
+    private func switchDraftContext(to nextKey: String, resetNew: Bool = false) {
+        stop()
+        // Stop can restore the interrupted question; save it under the context it came from.
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draftsByKey.removeValue(forKey: draftContextKey)
+        } else {
+            draftsByKey[draftContextKey] = draft
+        }
+        if nextKey != draftContextKey {
+            draftContextKey = nextKey
+            draft = draftsByKey[nextKey] ?? ""
+        } else if resetNew && nextKey == "new" {
+            draft = ""
+            draftsByKey.removeValue(forKey: nextKey)
+        }
+        requestID.clear()
+        session = nil
+        source = nil
+        pins = []
+        insight = nil
         error = nil
     }
 
     func reset() {
         start()
+        draftsByKey = [:]
+        draftContextKey = "new"
+        draft = ""
         listGeneration += 1
         listTask?.cancel()
         sessions = []
@@ -111,7 +137,7 @@ final class AIChatStore {
     }
 
     func select(_ id: String, api: WeijiAPIClient) {
-        start()
+        switchDraftContext(to: "session:\(id)")
         load("/api/ai/sessions/\(id)", api: api)
     }
 
@@ -123,6 +149,7 @@ final class AIChatStore {
         sessionTask = Task {
             defer { if stamp == generation { loadingSession = false } }
             do {
+                try Task.checkCancellation()
                 let response: ChatResponse = try await api.get(path)
                 guard stamp == generation, !Task.isCancelled else { return }
                 session = response.session
@@ -162,6 +189,7 @@ final class AIChatStore {
             let _: DeletedResponse = try await api.delete("/api/ai/sessions/\(id)")
             guard stamp == listGeneration else { return }
             if session?.id == id { start() }
+            draftsByKey.removeValue(forKey: "session:\(id)")
             sessions.removeAll { $0.id == id }
         } catch is CancellationError {
         } catch {
@@ -212,6 +240,8 @@ final class AIChatStore {
                 }
                 guard stamp == generation, !Task.isCancelled, let latest = response.session else { return }
                 session = latest
+                draftsByKey.removeValue(forKey: draftContextKey)
+                draftContextKey = "session:\(latest.id)"
                 insight = nil
                 requestID.clear()
                 inflightDraft = nil

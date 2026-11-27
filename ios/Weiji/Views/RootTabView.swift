@@ -8,6 +8,7 @@ struct NoteZoomID: Hashable {
 struct RootTabView: View {
     @Bindable var store: AppStore
     @State private var notesSidebar = false
+    @State private var showDatePicker = false
     @State private var aiSessionsDrawer = false
     @Namespace private var noteZoom
 
@@ -24,7 +25,7 @@ struct RootTabView: View {
             case .online, .offline:
                 TabView(selection: $store.tab) {
                     Tab("笔记", systemImage: "text.alignleft", value: AppStore.Tab.notes) {
-                        NotesTabView(store: store, noteZoom: noteZoom, sidebar: $notesSidebar)
+                        NotesTabView(store: store, noteZoom: noteZoom, sidebar: $notesSidebar, showDatePicker: $showDatePicker)
                     }
                     Tab("漫步", systemImage: "point.topleft.down.to.point.bottomright.curvepath", value: AppStore.Tab.walk) {
                         RandomWalkView(store: store, noteZoom: noteZoom)
@@ -37,7 +38,8 @@ struct RootTabView: View {
                     }
                 }
                 .modifier(SideDrawer(isOpen: $notesSidebar, edgeSwipeEnabled: store.tab == .notes && !aiSessionsDrawer) {
-                    SidebarSheetView(store: store, onClose: { notesSidebar = false })
+                    SidebarSheetView(store: store, onClose: { notesSidebar = false },
+                                     onPickDate: { showDatePicker = true })
                 })
                 .modifier(SideDrawer(isOpen: $aiSessionsDrawer, edgeSwipeEnabled: store.tab == .ai && store.api != nil && !notesSidebar) {
                     SessionsDrawerView(store: store, onClose: { aiSessionsDrawer = false })
@@ -50,6 +52,7 @@ struct RootTabView: View {
         .onChange(of: store.authScreenState) { _, state in
             if state == .needsLogin || state == .restoring {
                 notesSidebar = false
+                showDatePicker = false
                 aiSessionsDrawer = false
             }
         }
@@ -57,12 +60,17 @@ struct RootTabView: View {
             notesSidebar = false
             aiSessionsDrawer = false
         }
-        .sheet(isPresented: $store.showSettings) { ConnectionSettingsView(store: store) }
+        .sheet(item: $store.settingsSection) { ConnectionSettingsView(store: store, section: $0) }
+        .sheet(isPresented: $store.showComposer) { QuickComposerSheet(store: store) }
+        .modifier(ChatSwitchAlert(store: store, active: store.detail == nil, onConfirm: closeSessions))
         .fullScreenCover(item: $store.detail) { detail in
             noteReader(for: detail)
+                .modifier(ChatSwitchAlert(store: store, active: true, onConfirm: closeSessions))
         }
         .task { store.start() }
     }
+
+    private func closeSessions() { aiSessionsDrawer = false }
 
     @ViewBuilder
     private func noteReader(for detail: AppStore.Detail) -> some View {
@@ -76,6 +84,25 @@ struct RootTabView: View {
         }
     }
 
+}
+
+private struct ChatSwitchAlert: ViewModifier {
+    let store: AppStore
+    let active: Bool
+    let onConfirm: () -> Void
+
+    func body(content: Content) -> some View {
+        content.alert("AI 正在回复", isPresented: Binding(
+            get: { active && store.pendingChatSwitch != nil },
+            set: { _ in } // The two buttons resolve the pending switch.
+        )) {
+            Button("继续等待", role: .cancel) { store.cancelChatSwitch() }
+            Button("停止并切换", role: .destructive) {
+                store.confirmChatSwitch()
+                onConfirm()
+            }
+        }
+    }
 }
 
 /// Shared solid, strictly clipped left-edge slide-in drawer for both Notes sidebar and AI history.
