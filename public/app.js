@@ -2531,7 +2531,7 @@ function focusCompose() {
 
 const rw = {
   id: null, history: [], zoom: 1, scrollY: 0, seq: 0, opener: null,
-  related: [], loading: false, relatedPromise: null, controller: null,
+  related: [], loading: false, needsRelated: false, relatedPromise: null, controller: null,
 };
 
 function applyWalkZoom() {
@@ -2665,19 +2665,12 @@ function renderWalkRelated() {
   $('rw-related').replaceChildren(...(cards.length ? cards : [el('p', 'help-text', '暂无相关笔记')]));
 }
 
-function pivotWalk(id, remember = true) {
-  const local = state.notes.get(id);
-  if (!local) return;
+function loadWalkRelated(id) {
   resetWalkRelated();
   const seq = rw.seq;
   const controller = rw.controller = new AbortController();
   rw.loading = true;
-  if (remember && rw.id && rw.id !== id) rw.history.push(rw.id);
-  rw.id = id;
-  pruneWalkHistory();
-  $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]').disabled = !rw.history.length;
-  renderWalkPrev();
-  $('rw-focus').replaceChildren(walkFocusCard(local));
+  rw.needsRelated = false;
   $('rw-related').replaceChildren();
   drawWalkLinks();
   setError('rw-status', '正在寻找相关笔记…');
@@ -2704,6 +2697,18 @@ function pivotWalk(id, remember = true) {
     rw.loading = false;
     rw.relatedPromise = rw.controller = null;
   });
+}
+
+function pivotWalk(id, remember = true) {
+  const local = state.notes.get(id);
+  if (!local) return;
+  if (remember && rw.id && rw.id !== id) rw.history.push(rw.id);
+  rw.id = id;
+  pruneWalkHistory();
+  $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]').disabled = !rw.history.length;
+  renderWalkPrev();
+  $('rw-focus').replaceChildren(walkFocusCard(local));
+  loadWalkRelated(id);
 }
 
 function syncWalkState() {
@@ -2764,9 +2769,12 @@ function openRandomWalk(button) {
   window.scrollTo(0, 0);
   sidebar(false);
   $('rw-title').focus({ preventScroll: true });
-  if (state.notes.has(rw.id)) requestAnimationFrame(drawWalkLinks);
-  else {
+  if (state.notes.has(rw.id)) {
+    if (rw.needsRelated) loadWalkRelated(rw.id);
+    else requestAnimationFrame(drawWalkLinks);
+  } else {
     rw.id = null;
+    rw.needsRelated = false;
     $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = true;
     shuffleWalk();
   }
@@ -2777,6 +2785,7 @@ function closeRandomWalk({ restore = true } = {}) {
   $('random-walk-overlay').hidden = true;
   $('notes-topbar').hidden = $('main').hidden = false;
   if (rw.controller) {
+    rw.needsRelated = true;
     abortWalkRequest();
     $('rw-focus').querySelector('[data-action="rw-chat-focus"]').disabled = false;
     setError('rw-status', '');

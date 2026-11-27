@@ -352,6 +352,61 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(chat.draft, "")
     }
 
+    func testSendFromSourceConvergingIntoExistingSessionPreservesTargetDraft() async throws {
+        let sendCount = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/ai/sessions/a", "/api/ai/sessions":
+                return .init(status: 200, body: readerSessionFixture.replacingOccurrences(of: "reader-session", with: "a"))
+            case "/api/ai/chat":
+                sendCount.withLock { $0 += 1 }
+                return .init(status: 200, body: """
+                event: done
+                data: {"session":{"id":"a","version":8,"title":"继续聊","origin":"note","updatedAt":"2026-11-25","turns":[{"role":"user","text":"另一条问题"},{"role":"assistant","text":"已回复"}]}}
+
+
+                """, headers: ["Content-Type": "text/event-stream"])
+            default:
+                XCTFail("Unexpected request: \(request.url?.path ?? "")")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let chat = AIChatStore()
+        let profile = InsightsStore()
+
+        // 1. User leaves an unsent draft in historical session A.
+        chat.select("a", api: api)
+        try await waitUntil("历史会话 A 加载完成") { chat.session?.id == "a" }
+        chat.draft = "会话 A 原有未发送草稿"
+
+        // 2. User opens from a note whose source resolves to the same session A and sends another prompt.
+        chat.start(source: "note-a")
+        chat.loadSource("note-a", api: api)
+        try await waitUntil("按来源加载到同一会话 A") { chat.session?.id == "a" && !chat.loadingSession }
+        XCTAssertEqual(chat.draft, "")
+        chat.draft = "另一条问题"
+        chat.send(api: api, options: .init(), profile: profile)
+        try await waitUntil("发送完成") { !chat.sending }
+        XCTAssertEqual(sendCount.withLock { $0 }, 1)
+        XCTAssertEqual(chat.session?.id, "a")
+        XCTAssertEqual(chat.draft, "会话 A 原有未发送草稿")
+
+        // 3. Switching away and back to session A preserves the original unsent draft.
+        chat.start()
+        XCTAssertEqual(chat.draft, "")
+        chat.select("a", api: api)
+        XCTAssertEqual(chat.draft, "会话 A 原有未发送草稿")
+
+        // 4. Explicitly clearing session A's draft deletes its slot and does not resurrect it.
+        chat.draft = ""
+        chat.start()
+        chat.select("a", api: api)
+        try await waitUntil("清空后的会话 A 加载完成") { !chat.loadingSession }
+        XCTAssertEqual(chat.draft, "")
+    }
+
     func testInFlightAskAndSessionSwitchRequireConfirmation() async throws {
         let (config, transport) = try StubProtocol.make { request in
             switch request.url?.path {
@@ -370,42 +425,61 @@ final class StoreLogicTests: XCTestCase {
         try await waitUntil("完成初始同步") { store.api != nil && !store.syncing }
         let api = try XCTUnwrap(store.api)
         let note = try XCTUnwrap(store.notesById["note"])
-        store.detail = .init(note: note, source: .notes)
+        let walk = RelatedNotes(focus: .init(id: note.id, body: note.body, createdAt: note.createdAt, reading: nil),
+                                mode: "test", indexed: 1, total: 1, related: [])
+        let report = InsightReport(id: "report-1", title: "洞察报告", lensName: "回顾", content: "正文",
+                                   excerpt: nil, citations: [.init(ref: "1", noteId: note.id, excerpt: "摘录")],
+                                   createdAt: "2026-11-25")
 
-        // Run these transitions before yielding so the request stays in flight deterministically.
-        store.chat.draft = "正在发送"
-        store.chat.send(api: api, options: .init(), profile: store.insights)
-        store.askAbout(note)
-        guard case .note(let pendingNote) = store.pendingChatSwitch else { return XCTFail("Expected pending note") }
-        XCTAssertEqual(pendingNote.id, note.id)
-        XCTAssertTrue(store.chat.sending)
-        XCTAssertEqual(store.tab, .notes)
-        XCTAssertEqual(store.detail?.id, note.id)
-        store.cancelChatSwitch()
-        XCTAssertNil(store.pendingChatSwitch)
-        XCTAssertTrue(store.chat.sending)
-        XCTAssertEqual(store.tab, .notes)
-        XCTAssertEqual(store.detail?.id, note.id)
-        store.askAbout(note)
-        store.confirmChatSwitch()
-        XCTAssertNil(store.pendingChatSwitch)
-        XCTAssertFalse(store.chat.sending)
-        XCTAssertNil(store.detail)
-        XCTAssertEqual(store.tab, .ai)
-        store.requestNewChat()
-        XCTAssertEqual(store.chat.draft, "正在发送")
+        let cases: [(name: String, originTab: AppStore.Tab, setDetail: Bool, trigger: () -> Void, assertConfirmed: () -> Void)] = [
+            ("note", .notes, true, { store.askAbout(note) }, {
+                XCTAssertNil(store.detail)
+                XCTAssertEqual(store.tab, .ai)
+            }),
+            ("walk", .walk, false, { store.askAbout(walk) }, {
+                XCTAssertEqual(store.tab, .ai)
+                XCTAssertEqual(store.chat.pins, [note.id])
+            }),
+            ("report", .insights, false, { store.askAbout(report) }, {
+                XCTAssertEqual(store.tab, .ai)
+                XCTAssertEqual(store.chat.insight?.id, report.id)
+                XCTAssertEqual(store.chat.pins, [note.id])
+            }),
+            ("session", .walk, false, { store.requestSelectChatSession("reader-session") }, {
+                XCTAssertEqual(store.tab, .ai)
+            }),
+            ("new", .ai, false, { store.requestNewChat() }, {
+                XCTAssertEqual(store.tab, .ai)
+                XCTAssertNil(store.chat.session)
+            }),
+        ]
 
-        store.tab = .walk
-        store.chat.send(api: api, options: .init(), profile: store.insights)
-        store.requestSelectChatSession("reader-session")
-        guard case .session("reader-session") = store.pendingChatSwitch else { return XCTFail("Expected pending session") }
-        XCTAssertTrue(store.chat.sending)
-        XCTAssertEqual(store.tab, .walk)
-        store.confirmChatSwitch()
-        XCTAssertFalse(store.chat.sending)
-        XCTAssertNil(store.pendingChatSwitch)
-        XCTAssertEqual(store.tab, .ai)
-        try await waitUntil("确认后会话完成加载") { store.chat.session?.id == "reader-session" }
+        for item in cases {
+            store.tab = item.originTab
+            store.detail = item.setDetail ? .init(note: note, source: .notes) : nil
+            store.chat.draft = "在途提问-\(item.name)"
+            store.chat.send(api: api, options: .init(), profile: store.insights)
+            XCTAssertTrue(store.chat.sending, "\(item.name): stream should be active")
+
+            item.trigger()
+            XCTAssertNotNil(store.pendingChatSwitch, "\(item.name): must require confirmation while sending")
+            XCTAssertTrue(store.chat.sending, "\(item.name): must not stop stream before confirm")
+            XCTAssertEqual(store.tab, item.originTab, "\(item.name): must stay on origin tab before confirm")
+            if item.setDetail { XCTAssertEqual(store.detail?.id, note.id, "\(item.name): must keep detail open") }
+
+            store.cancelChatSwitch()
+            XCTAssertNil(store.pendingChatSwitch, "\(item.name): cancel clears pending switch")
+            XCTAssertTrue(store.chat.sending, "\(item.name): cancel keeps stream running")
+            XCTAssertEqual(store.tab, item.originTab, "\(item.name): cancel stays on origin tab")
+
+            item.trigger()
+            XCTAssertNotNil(store.pendingChatSwitch, "\(item.name): re-trigger sets pending switch")
+            store.confirmChatSwitch()
+            XCTAssertNil(store.pendingChatSwitch, "\(item.name): confirm clears pending switch")
+            XCTAssertFalse(store.chat.sending, "\(item.name): confirm stops previous stream")
+            item.assertConfirmed()
+            try await waitUntil("\(item.name): 会话加载完成") { !store.chat.loadingSession }
+        }
     }
 
     func test409ConflictPreservesDraftWithoutOverwritingServer() async throws {

@@ -8,8 +8,6 @@ struct NoteReaderView: View {
     let source: DetailSource
     let presentation: Presentation
     var isEditing: Binding<Bool>? = nil
-    var onAsk: (() -> Void)? = nil
-    var onOpenTag: ((String) -> Void)? = nil
 
     @ScaledMetric(relativeTo: .body) private var readerFontSize: CGFloat = 18
     @Environment(\.dismiss) private var dismiss
@@ -68,7 +66,7 @@ struct NoteReaderView: View {
         .tint(Theme.active)
         .environment(\.openURL, OpenURLAction { url in
             guard let tag = TagParser.tagPath(from: url) else { return .systemAction }
-            if let onOpenTag { onOpenTag(tag) } else { store.openTag(tag) }
+            store.openTag(tag)
             return .handled
         })
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -190,8 +188,7 @@ struct NoteReaderView: View {
 
     private var primaryButton: some View {
         Button {
-            if source != .ai, let onAsk { onAsk() }
-            else { store.performReaderPrimaryAction(for: current, source: source) }
+            store.performReaderPrimaryAction(for: current, source: source)
         } label: {
             let isPinned = store.chat.pins.contains(current.id)
             let title = source == .ai ? (isPinned ? "移出引用" : "加入引用") : "问 AI"

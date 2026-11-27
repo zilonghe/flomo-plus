@@ -50,7 +50,7 @@
     "s-entry-cross": {
       "kind": "sticky",
       "page": "ios-entry",
-      "x": 2542,
+      "x": 3424,
       "y": 420,
       "w": 280,
       "text": "跨 Tab 循环：\n• 精读点「问 AI」→ 切 AI Tab（按上下文保草稿，在途流确认）\n• 精读点 #标签 → 切笔记 Tab 按标签筛选"
@@ -202,6 +202,18 @@
       "w": 402,
       "h": 874,
       "title": "09 统一设置（外观/AI/连接/同步）"
+    },
+    "entry-to-ai": {
+      "file": "pages/ios/ai-chat.html",
+      "page": "ios-entry",
+      "x": 2542,
+      "y": 420,
+      "w": 402,
+      "h": 874,
+      "title": "10 跨 Tab · 聊这条进 AI",
+      "props": {
+        "state": "thread"
+      }
     },
     "walk-main": {
       "file": "pages/ios/walk.html",
@@ -389,6 +401,18 @@
       "h": 874,
       "title": "07 个人画像工作区"
     },
+    "ins-to-ai": {
+      "file": "pages/ios/ai-chat.html",
+      "page": "ios-insights",
+      "x": 2646,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "08 跨 Tab · 继续追问进 AI",
+      "props": {
+        "state": "thread"
+      }
+    },
     "web-import-dialog": {
       "file": "pages/web/import-dialog.html",
       "page": "web-flows",
@@ -540,6 +564,16 @@
       "to": "ios-reader-edit",
       "label": "点底栏编辑"
     },
+    "e-reader-ai": {
+      "from": "ios-reader",
+      "to": "entry-to-ai",
+      "label": "点「聊这条」→ AI Tab"
+    },
+    "e-reader-tag": {
+      "from": "ios-reader",
+      "to": "ios-notes",
+      "label": "点 #标签 → 笔记按标签筛选"
+    },
     "e-notes-sidebar": {
       "from": "ios-notes",
       "to": "ios-sidebar",
@@ -634,6 +668,11 @@
       "from": "ins-report",
       "to": "ins-cited-note",
       "label": "点报告引用 (Push)"
+    },
+    "e-report-ai": {
+      "from": "ins-report",
+      "to": "ins-to-ai",
+      "label": "点「继续追问」→ AI Tab"
     },
     "e-ins-profile": {
       "from": "ins-board",

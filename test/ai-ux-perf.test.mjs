@@ -919,6 +919,9 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     let getNotesCount = 0;
     let postDeleteCount = 0;
     let relatedRequests = 0;
+    let holdNextRelated = false;
+    let heldRelatedStarted = null;
+    let releaseHeldRelated = null;
     let profileLoads = 0;
     const nextInCycle = new Map([[noteA.id, noteB], [noteB.id, noteC], [noteC.id, noteA]]);
     const json = (res, value, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(value));
@@ -969,6 +972,12 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
         relatedRequests++;
         const focus = noteMap.get(relatedMatch[1]) ?? noteA;
         const other = nextInCycle.get(focus.id) ?? noteB;
+        if (holdNextRelated) {
+          holdNextRelated = false;
+          if (heldRelatedStarted) { heldRelatedStarted(); heldRelatedStarted = null; }
+          await new Promise(resolve => { releaseHeldRelated = resolve; });
+          if (res.writableEnded || req.destroyed) return;
+        }
         return json(res, { focus, related: [{ id: other.id, note: other, relevancePercent: 92 }] });
       }
       const response = await worker.fetch(new Request(origin + req.url, {
@@ -1158,6 +1167,38 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     await until(() => page.evaluate("!!document.querySelector('svg.rw-links path.rw-link-prev')"), 'walk redrew the previous hop after re-entry');
     assert.deepEqual(await preservedWalk(), beforeSwitch);
     assert.equal(relatedRequests, requestsBeforeSwitch, 'reopening walk does not fetch related notes again');
+
+    // Leaving Random Walk while related fetch is still in flight must resume fetching for the same focus without adding history.
+    holdNextRelated = true;
+    const heldStarted = new Promise(resolve => { heldRelatedStarted = resolve; });
+    const reqBeforeAbort = relatedRequests;
+    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
+    await heldStarted;
+    const inFlightWalk = await page.evaluate(`({
+      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
+      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
+    })`);
+    await clickNav('[data-filter=all]');
+    await assertNav('all');
+    if (releaseHeldRelated) { releaseHeldRelated(); releaseHeldRelated = null; }
+    await clickNav('[data-action=open-random-walk]');
+    await assertNav('open-random-walk');
+    await until(() => page.evaluate("!!document.querySelector('#rw-related .rw-related-card')"),
+      'walk resumed aborted related fetch upon re-entry');
+    assert.equal(relatedRequests, reqBeforeAbort + 2, 'aborted in-flight related fetch reloads once on re-entry');
+    const afterResume = await page.evaluate(`({
+      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
+      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
+    })`);
+    assert.deepEqual(afterResume, inFlightWalk, 'resumed walk keeps exact focus and previous-hop history');
+    const reqAfterResume = relatedRequests;
+    await clickNav('[data-filter=all]');
+    await clickNav('[data-action=open-random-walk]');
+    assert.equal(relatedRequests, reqAfterResume, 'completed resumed walk does not refetch on subsequent re-entry');
+    // Return back one hop to restore expected state before testing prev-card click below.
+    await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
+    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(beforeSwitch.focusId)} && !!document.querySelector('#rw-related .rw-related-card')`),
+      'returned to pivoted note before previous-hop check');
 
     await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
     await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.focusId)}`),

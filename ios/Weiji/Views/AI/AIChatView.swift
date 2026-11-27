@@ -12,7 +12,7 @@ struct AIChatView: View {
 
     static func pinChipTitle(for note: Note?) -> String {
         let text = note?.body.split(whereSeparator: \.isWhitespace).joined(separator: " ") ?? ""
-        if !text.isEmpty { return String(text.prefix(24)) }
+        if !text.isEmpty { return String(text.prefix(25)) }
         if let book = note?.reading?.bookTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !book.isEmpty { return book }
         return "引用笔记"
     }
@@ -496,8 +496,12 @@ private struct ModelPickerSheet: View {
                 .listRowBackground(Theme.paper)
             }
             if store.options.provider == .openai {
-                Section {
-                    LabeledContent("当前模型", value: store.options.model)
+                Section("OpenAI 模型") {
+                    TextField("模型名称", text: Binding(get: { store.options.model }, set: store.setModel))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("ai-model-picker-openai-field")
                     Button("配置 OpenAI API Key", action: openSettings).minTapHeight()
                 }
                 .listRowBackground(Theme.paper)

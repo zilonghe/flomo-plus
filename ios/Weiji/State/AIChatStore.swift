@@ -272,8 +272,16 @@ final class AIChatStore {
                 }
                 guard stamp == generation, !Task.isCancelled, let latest = response.session else { return }
                 updateSession(latest)
-                draftsByKey.removeValue(forKey: draftContextKey)
-                draftContextKey = "session:\(latest.id)"
+                let previousKey = draftContextKey
+                let nextKey = "session:\(latest.id)"
+                draftsByKey.removeValue(forKey: previousKey)
+                draftContextKey = nextKey
+                // Sending from a note/walk/insight entry can converge into an existing session that already holds an unsent draft.
+                if previousKey != nextKey,
+                   draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let preserved = draftsByKey[nextKey] {
+                    draft = preserved
+                }
                 insight = nil
                 requestID.clear()
                 inflightDraft = nil
