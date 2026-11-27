@@ -56,7 +56,7 @@ function assemble(title, source, sourceTags) {
   const first = /^(?:[^\S\n]*\n)*([^\n]*\S[^\n]*)/.exec(source)?.[1];
   if (!title.trim()) title = '';
   if (!first && !title) return '';
-  const heading = first && /^ {0,3}#\s+(.+?)\s*#*\s*$/.exec(first)?.[1];
+  const heading = first && /^ {0,3}#[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(first)?.[1];
   let body = !first ? title : !title || heading === title ? source : '# ' + title + '\n\n' + source;
   const seen = new Set(tagsFor(body).map(tag => tag.toLowerCase()));
   const tags = [];
@@ -281,7 +281,7 @@ function yamlScalar(raw) {
   if (text.startsWith('#')) return '';
   const plain = text.replace(/\s+#.*$/, '');
   if (!plain) return '';
-  if (/^[\[\]{},]/.test(plain)) return null;
+  if (/^[\[\]{},&*!%@`|>]/.test(plain)) return null;
   return /:\s|:$/.test(plain) ? null : plain;
 }
 

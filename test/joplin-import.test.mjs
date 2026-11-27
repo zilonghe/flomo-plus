@@ -123,6 +123,13 @@ test('Joplin parser: preserves original Markdown and only deduplicates an actual
   assert.deepEqual(notes.map(note => note.body), expected);
   const markdown = await parseJoplinMarkdownFiles(bodies.map(body => md('会议记录.md', body)));
   assert.deepEqual(markdown.notes.map(note => note.body), expected);
+
+  const hashTitles = await parseJoplinMarkdownFiles([
+    md('C#.md', '# C#\n正文'),
+    md('C.md', '# C#\n正文'),
+    md('C.md', '# C ##\n正文'),
+  ]);
+  assert.deepEqual(hashTitles.notes.map(note => note.body), ['# C#\n正文', '# C\n\n# C#\n正文', '# C ##\n正文']);
 });
 
 test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non-note targets', async () => {
@@ -168,6 +175,9 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     '---\ntitle: 预算\n未缩进正文\n---\n正文',
     '---\ntitle: 预算\ndraft: [未闭合\n---\n正文',
     '---\ntitle: 预算\ndraft: [草稿 # 注释]\n---\n正文',
+    '---\ntitle: 预算\ndraft: &drafts [未闭合\n---\n正文',
+    '---\ntitle: 预算\ndraft: &drafts {未闭合\n---\n正文',
+    '---\ntitle: 预算\ndraft: !!seq [未闭合\n---\n正文',
     '---\ntitle: 预算\ndraft: {未闭合\n---\n正文']) {
     const { notes: [note] } = await parseJoplinFiles([md('原文.md', text)]);
     assert.equal(note.body, '# 原文\n\n' + text);
