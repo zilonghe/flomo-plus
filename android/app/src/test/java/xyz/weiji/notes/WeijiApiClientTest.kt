@@ -5,11 +5,16 @@ import android.os.Looper
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.QueueDispatcher
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -21,6 +26,7 @@ import org.robolectric.annotation.Config
 import xyz.weiji.notes.core.network.*
 import xyz.weiji.notes.core.storage.*
 import xyz.weiji.notes.model.*
+import xyz.weiji.notes.state.AiChatState
 import xyz.weiji.notes.state.AppState
 
 @RunWith(RobolectricTestRunner::class)
@@ -73,14 +79,20 @@ class WeijiApiClientTest {
         }
     }
 
-    @Test fun forbiddenAccountClearsOnlyCurrentCredentialsAndCache() {
+    @Test fun unauthorizedAccountClearsOnlyCurrentCredentialsAndCache() =
+        assertAuthFailureClearsOnlyCurrentAccount(401)
+
+    @Test fun forbiddenAccountClearsOnlyCurrentCredentialsAndCache() =
+        assertAuthFailureClearsOnlyCurrentAccount(403)
+
+    private fun assertAuthFailureClearsOnlyCurrentAccount(status: Int) {
         val dao = cache.notes()
         runBlocking {
             dao.replaceSnapshot(server.origin, "alice", listOf(testNote), "current")
             dao.replaceSnapshot(server.origin, "bob", listOf(otherNote), "other")
         }
         store.credentials = Credentials(server.origin, "a-token", testSession)
-        server.raw("""{"error":"登录账号已变化，请重新登录。"}""", 403)
+        server.raw("""{"error":"登录账号已变化，请重新登录。"}""", status)
         val app = AppState(store, dao)
         spinUntil { app.session == null && app.error != null }
         assertEquals("alice", server.next().getHeader("X-Journal-Account"))
@@ -159,6 +171,51 @@ class WeijiApiClientTest {
         assertFalse("note" in body)
     }
 
+    @Test fun deletingOldNoteLeavesIncomingShareDraftOpen() = withDelayedJson(
+        NoteConflictCurrent(deleted = Tombstone(NOTE_ID, 2)),
+        { it.method == "POST" && it.path == "/api/notes" },
+    ) { release ->
+        val app = connectedApp()
+        app.openNote(NOTE_ID)
+        val deletion = app.delete(testNote)
+        val request = server.next()
+        assertEquals("/api/notes", request.path)
+        assertTrue(wireJson.decodeFromString<NoteMutation>(request.body.readUtf8()).delete)
+        app.receiveShare("分享中的新草稿")
+        val share = app.editor
+        assertEquals("分享中的新草稿", share?.body)
+
+        release()
+        waitFor(deletion)
+        assertNull(app.reader)
+        assertTrue(app.notes.isEmpty())
+        assertSame(share, app.editor)
+        assertEquals("分享中的新草稿", app.editor?.body)
+    }
+
+    @Test fun savingOneEditorDoesNotCloseAReopenedEditorForTheSameNote() = withDelayedJson(
+        NoteConflictCurrent(note = testNote.copy(body = "已保存", revision = 2)),
+        { it.method == "POST" && it.path == "/api/notes" },
+    ) { release ->
+        val app = connectedApp()
+        app.edit(testNote)
+        app.changeDraft("已保存")
+        val save = app.save()
+        val request = server.next()
+        assertEquals("/api/notes", request.path)
+        assertEquals("已保存", wireJson.decodeFromString<NoteMutation>(request.body.readUtf8()).note?.body)
+        app.closeEditor()
+        app.edit(testNote)
+        app.changeDraft("第二份草稿")
+        val reopened = app.editor
+
+        release()
+        waitFor(save)
+        assertEquals("已保存", app.notes.single().body)
+        assertSame(reopened, app.editor)
+        assertEquals("第二份草稿", app.editor?.body)
+    }
+
     @Test fun conflictFormsDecodeWithoutReplacingUnsavedDraft() {
         server.json(testSession)
         server.json(NotesSnapshotResponse(listOf(testNote), emptyList()))
@@ -206,6 +263,67 @@ class WeijiApiClientTest {
         assertEquals("/api/semantic/reindex", post.path)
         assertEquals("POST", post.method)
         assertEquals(server.origin, post.getHeader("Origin"))
+    }
+
+    @Test fun lateSemanticStatusCannotOverwriteNewAccountSettings() = assertSettingsStayWithAccount(
+        "/api/semantic/status",
+        semantic.copy(indexed = 3, total = 4),
+    )
+
+    @Test fun lateObsidianStatusCannotOverwriteNewAccountSettings() = assertSettingsStayWithAccount(
+        "/api/admin/obsidian/status",
+        ObsidianStatus(configured = true, prefixes = listOf("alice/")),
+    )
+
+    private inline fun <reified T> assertSettingsStayWithAccount(path: String, response: T) = withDelayedJson(
+        response,
+        { it.path == path && it.getHeader("X-Journal-Account") == "alice" },
+    ) { release ->
+        val alice = testSession.copy(user = testSession.user.copy(role = "admin"))
+        val bob = testSession.copy(user = User("bob", "Bob", role = "admin"))
+        val bobIndex = semantic.copy(indexed = 8, total = 10)
+        val bobObsidian = ObsidianStatus(configured = true, prefixes = listOf("bob/"))
+        val app = connectedApp(alice)
+        val delaysSemantic = path == "/api/semantic/status"
+        server.json(alice)
+        if (!delaysSemantic) server.json(semantic)
+        val expectedRequests = server.requestCount + if (delaysSemantic) 2 else 3
+        val oldSettings = app.openSettings()
+        spinUntil { server.requestCount >= expectedRequests }
+        assertEquals("/api/session", server.next().path)
+        val indexRequest = server.next()
+        assertEquals("/api/semantic/status", indexRequest.path)
+        val delayed = if (delaysSemantic) indexRequest else server.next()
+        assertEquals(path, delayed.path)
+        assertEquals("alice", delayed.getHeader("X-Journal-Account"))
+
+        server.raw("""{"ok":true}""")
+        waitFor(app.logout())
+        assertEquals("/api/auth/logout", server.next().path)
+        assertNull(app.session)
+        assertNull(app.semantic)
+        assertNull(app.obsidian)
+        server.json(bob)
+        server.json(NotesSnapshotResponse(emptyList(), emptyList()))
+        waitFor(app.manualLogin("b-token"))
+        spinUntil { app.notesLoaded && !app.noteBusy }
+        assertEquals("/api/session", server.next().path)
+        assertEquals("bob", server.next().getHeader("X-Journal-Account"))
+
+        server.json(bob)
+        server.json(bobIndex)
+        server.json(bobObsidian)
+        waitFor(app.openSettings())
+        assertEquals(bobIndex, app.semantic)
+        assertEquals(bobObsidian, app.obsidian)
+
+        release()
+        waitFor(oldSettings)
+        assertEquals(bob, app.session)
+        assertEquals(bob, store.credentials?.session)
+        assertEquals(bobIndex, app.semantic)
+        assertEquals(bobObsidian, app.obsidian)
+        assertFalse(app.settingsBusy)
     }
 
     @Test fun aiRoutesDecodeModelsSourceSummaryAndFullSession() = runBlocking {
@@ -256,6 +374,80 @@ class WeijiApiClientTest {
             assertEquals(request.sessionId, body["sessionId"]?.jsonPrimitive?.content)
             assertEquals(request.expectedVersion, body["expectedVersion"]?.jsonPrimitive?.int)
         }
+    }
+
+    @Test fun lateHistoryDetailLeavesInterruptedChatDraftAndRequestIdIntact() =
+        assertLateAiSessionLeavesChatRetry("/api/ai/sessions/$SESSION_ID") { it.open(SESSION_ID) }
+
+    @Test fun lateSourceSessionLeavesInterruptedChatDraftAndRequestIdIntact() =
+        assertLateAiSessionLeavesChatRetry("/api/ai/sessions?sourceNoteId=$NOTE_ID") { it.openSource(NOTE_ID) }
+
+    private fun assertLateAiSessionLeavesChatRetry(path: String, load: suspend (AiChatState) -> Unit) = withDelayedJson(
+        AiSessionEnvelope(aiSession),
+        { it.path == path },
+    ) { release ->
+        val app = connectedApp()
+        val chat = checkNotNull(app.ai)
+        val message = "待重试的消息"
+        chat.draft = message
+        val selection = app.work { load(chat) }
+        assertEquals(path, server.next().path)
+
+        server.stream(": heartbeat\n\n")
+        val firstSend = app.work { chat.send() }
+        val first = chatBody(server.next())
+        assertEquals(message, first["message"]?.jsonPrimitive?.content)
+        val id = first.getValue("clientRequestId").jsonPrimitive.content
+        assertFalse(id.isBlank())
+        waitFor(firstSend)
+        assertEquals("连接已中断，请重试。", app.error)
+
+        release()
+        waitFor(selection)
+        assertNull(chat.session)
+        assertNull(chat.sourceNoteId)
+        assertEquals(message, chat.draft)
+
+        server.stream(doneFrame())
+        val retry = app.work { chat.send() }
+        val second = chatBody(server.next())
+        assertEquals(first, second)
+        waitFor(retry)
+        assertEquals(aiSession, chat.session)
+        assertEquals("", chat.draft)
+    }
+
+    private fun chatBody(request: RecordedRequest): JsonObject {
+        assertEquals("/api/ai/chat", request.path)
+        return wireJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+    }
+
+    private fun connectedApp(session: SessionInfo = testSession): AppState {
+        store.credentials = Credentials(server.origin, "a-token", session)
+        server.json(session)
+        server.json(NotesSnapshotResponse(listOf(testNote), emptyList()))
+        val app = AppState(store, cache.notes())
+        spinUntil { app.notesLoaded && !app.noteBusy }
+        assertEquals("/api/session", server.next().path)
+        assertEquals("/api/notes", server.next().path)
+        return app
+    }
+
+    private inline fun <reified T> withDelayedJson(
+        value: T,
+        crossinline matches: (RecordedRequest) -> Boolean,
+        test: (() -> Unit) -> Unit,
+    ) {
+        val release = CountDownLatch(1)
+        val response = MockResponse().setHeader("Content-Type", "application/json").setBody(wireJson.encodeToString(value))
+        server.dispatcher = object : QueueDispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (!matches(request)) return super.dispatch(request)
+                check(release.await(15, TimeUnit.SECONDS)) { "Timed out waiting to release ${request.path}" }
+                return response
+            }
+        }
+        try { test(release::countDown) } finally { release.countDown() }
     }
 
     private fun waitFor(job: Job) = spinUntil { job.isCompleted }

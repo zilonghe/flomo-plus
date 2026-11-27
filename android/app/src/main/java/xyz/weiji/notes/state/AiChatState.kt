@@ -2,6 +2,7 @@ package xyz.weiji.notes.state
 
 import androidx.compose.runtime.*
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import xyz.weiji.notes.core.network.SseEvent
@@ -38,6 +39,7 @@ class AiChatState(private val api: WeijiApiClient, val provider: String) {
     val steps = mutableStateMapOf<String, AiStep>()
 
     private var retry: AiChatRequest? = null
+    private var operationGeneration = 0L
 
     suspend fun loadModels() {
         if (models != null) return
@@ -67,12 +69,31 @@ class AiChatState(private val api: WeijiApiClient, val provider: String) {
         resetLive()
     }
 
-    fun startNew() { if (!sending) select(null, null) }
-    suspend fun openSource(id: String) { if (!sending) select(api.sourceSession(id), id) }
-    suspend fun open(id: String) {
+    fun startNew() {
         if (sending) return
-        val found = api.aiSession(id)
-        select(found, found.sourceNoteId)
+        operationGeneration++
+        select(null, null)
+    }
+
+    suspend fun openSource(id: String) = selectSession(id) { api.sourceSession(id) }
+    suspend fun open(id: String) {
+        selectSession { api.aiSession(id) }
+    }
+
+    private suspend fun selectSession(source: String? = null, load: suspend () -> AiSession?): Boolean {
+        if (sending) return false
+        val generation = ++operationGeneration
+        val found = try {
+            load()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (generation != operationGeneration) return false
+            throw failure
+        }
+        if (generation != operationGeneration) return false
+        select(found, source ?: found?.sourceNoteId)
+        return true
     }
 
     suspend fun list(more: Boolean = false) {
@@ -92,6 +113,7 @@ class AiChatState(private val api: WeijiApiClient, val provider: String) {
     suspend fun send() {
         val message = draft
         if (sending || message.isBlank()) return
+        operationGeneration++
         val candidate = AiChatRequest(
             message, "", provider, references.sorted(),
             model = model.takeIf { it.isNotBlank() }, reasoningEffort = effort.takeIf { it.isNotBlank() },

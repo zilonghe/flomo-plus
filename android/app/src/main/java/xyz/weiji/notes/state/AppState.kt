@@ -20,7 +20,7 @@ import xyz.weiji.notes.model.*
 
 enum class Tab(val label: String) { Notes("笔记"), Walk("漫步"), Ai("AI") }
 
-data class NoteDraft(val note: Note, val body: String)
+data class NoteDraft(val note: Note, val body: String, val sessionId: Long)
 class AppState(private val store: CredentialStore, private val cache: NoteCache) : ViewModel() {
     var address by mutableStateOf(store.credentials?.origin ?: store.origin ?: DEFAULT_ORIGIN)
     var theme by mutableStateOf(store.theme)
@@ -67,6 +67,8 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
 
     private var api: WeijiApiClient? = null
     private var credentials: Credentials? = null
+    private var connectionGeneration = 0L
+    private var editorSessionId = 0L
     private var share: String? = null
     private var logoutInProgress = false
 
@@ -165,6 +167,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
     }
 
     private fun connect(account: Credentials, validate: Boolean) {
+        connectionGeneration++
         credentials = account
         val client = WeijiApiClient(account.origin, account.token, account.session.user.id) { invalidate(account) }
         api = client
@@ -195,6 +198,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
 
     private suspend fun invalidate(account: Credentials) {
         if (credentials !== account) return
+        connectionGeneration++
         credentials = null
         api = null
         session = null
@@ -225,6 +229,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
         val account = credentials ?: return@work
         if (logoutInProgress) return@work
         logoutInProgress = true
+        connectionGeneration++
         try {
             if (session?.authMode == "oauth") client.logout()
         } finally {
@@ -266,7 +271,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
 
     fun beginNote(text: String = "") {
         conflict = null
-        editor = NoteDraft(Note(UUID.randomUUID().toString(), "", Instant.now().toString(), 0), text)
+        editor = NoteDraft(Note(UUID.randomUUID().toString(), "", Instant.now().toString(), 0), text, ++editorSessionId)
     }
 
     fun openNote(id: String) {
@@ -275,7 +280,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
     }
 
     fun closeReader() { reader = null }
-    fun edit(note: Note) { conflict = null; editor = NoteDraft(note, note.body) }
+    fun edit(note: Note) { conflict = null; editor = NoteDraft(note, note.body, ++editorSessionId) }
     fun changeDraft(body: String) { editor = editor?.copy(body = body) }
     fun closeEditor() {
         editor = null
@@ -287,7 +292,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
         val draft = editor ?: return@noteWork
         if (draft.body.isBlank()) return@noteWork
         val note = draft.note
-        mutate(client, NoteMutation(note.id, note.revision, note.payload(draft.body)))
+        mutate(client, NoteMutation(note.id, note.revision, note.payload(draft.body)), draft)
     }
 
     fun delete(note: Note) = noteWork { client ->
@@ -303,10 +308,13 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
         }
     }
 
-    private suspend fun mutate(client: WeijiApiClient, mutation: NoteMutation) {
+    private suspend fun mutate(client: WeijiApiClient, mutation: NoteMutation, draft: NoteDraft? = null) {
         val account = credentials ?: return
         val result = try { client.write(mutation) } catch (error: NoteConflict) {
-            if (api === client) conflict = error.conflict
+            val current = editor
+            val matches = if (draft != null) current?.sessionId == draft.sessionId
+                else (current?.note ?: reader)?.id == mutation.id
+            if (api === client && matches) conflict = error.conflict
             throw error
         }
         if (api !== client) return
@@ -317,33 +325,55 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
         if (api !== client) return
         notes = (notes.filterNot { it.id == mutation.id } + listOfNotNull(note)).sortedByDescending { it.createdAt }
         if (reader?.id == mutation.id) reader = note
-        closeEditor()
-    }
-
-    fun openSettings() {
-        settings = true
-        settingsWork { client ->
-            val info = client.session()
-            setSession(client, info, persist = true)
-            if (api !== client) return@settingsWork
-            obsidian = null
-            semantic = client.semanticStatus()
-            if (api === client) obsidian = client.obsidianStatus(info)
+        val current = editor
+        when {
+            mutation.delete && deleted != null && current?.note?.id == deleted.id -> closeEditor()
+            draft != null && current === draft -> closeEditor()
+            note != null && current != null && current.sessionId == draft?.sessionId -> editor = current.copy(note = note)
         }
     }
 
-    fun reindex() = settingsWork { semantic = it.reindex() }
-    fun syncObsidian() = settingsWork { client ->
-        val info = session ?: return@settingsWork
-        val status = obsidian ?: return@settingsWork
-        client.syncObsidian(info, status)?.let { obsidian = it.status }
+    fun openSettings(): Job {
+        settings = true
+        return settingsWork { client, isCurrent ->
+            val info = client.session()
+            if (!isCurrent()) return@settingsWork
+            setSession(client, info, persist = true)
+            obsidian = null
+            val index = client.semanticStatus()
+            if (!isCurrent()) return@settingsWork
+            semantic = index
+            val status = client.obsidianStatus(info)
+            if (isCurrent()) obsidian = status
+        }
     }
 
-    private fun settingsWork(action: suspend (WeijiApiClient) -> Unit) = work {
+    fun reindex() = settingsWork { client, isCurrent ->
+        val status = client.reindex()
+        if (isCurrent()) semantic = status
+    }
+    fun syncObsidian() = settingsWork { client, isCurrent ->
+        val info = session ?: return@settingsWork
+        val status = obsidian ?: return@settingsWork
+        val result = client.syncObsidian(info, status)
+        if (isCurrent() && result != null) obsidian = result.status
+    }
+
+    private fun settingsWork(action: suspend (WeijiApiClient, () -> Boolean) -> Unit) = work {
         val client = api ?: return@work
-        if (settingsBusy) return@work
+        if (settingsBusy || logoutInProgress) return@work
+        val generation = connectionGeneration
+        val isCurrent = { api === client && connectionGeneration == generation }
         settingsBusy = true
-        try { action(client) } finally { if (api === client) settingsBusy = false }
+        try {
+            action(client, isCurrent)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (isCurrent()) throw failure
+        } finally {
+            if (isCurrent()) settingsBusy = false
+        }
     }
 
     fun openWalk(noteId: String? = null) {
@@ -359,9 +389,7 @@ class AppState(private val store: CredentialStore, private val cache: NoteCache)
 
     fun openAi(noteId: String) = work {
         val chat = ai ?: return@work
-        if (chat.sending) return@work
-        chat.openSource(noteId)
-        if (chat !== ai) return@work
+        if (!chat.openSource(noteId) || chat !== ai) return@work
         reader = null
         tab = Tab.Ai
     }
