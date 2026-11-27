@@ -84,7 +84,7 @@ const state = {
   apiKey: '',
 };
 
-const filters = { all: '全部笔记', journal: '日志', reading: '读书摘录' };
+const filters = { all: '全部笔记', journal: '随记', reading: '读书' };
 const dateLong = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
 const dateTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 let toastTimer;
@@ -263,11 +263,15 @@ function resetAccount() {
   accountLifecycle = new AbortController();
   pendingProfileSave = null;
   failedProfileSave = null;
-  closeProfile({ restore: false });
   closeInsights({ restore: false });
   closeAIChat({ restore: false });
   ai = emptyAIState();
   closeRandomWalk({ restore: false });
+  resetWalkRelated();
+  rw.id = null;
+  rw.history = [];
+  rw.zoom = 1;
+  for (const id of ['rw-prev-slot', 'rw-focus', 'rw-related']) $(id).replaceChildren();
   state.user = null;
   state.authMode = null;
   state.loaded = false;
@@ -728,8 +732,9 @@ function renderTagList() {
 }
 
 function syncNavActive() {
-  const activeView = prof ? 'open-ai-profile' : ai.lifecycle ? 'open-ai-chat' : ins ? 'open-ai-insights' : null;
-  for (const button of document.querySelectorAll('#sidebar [data-filter], #sidebar [data-action="open-ai-insights"], #sidebar [data-action="open-ai-chat"], #sidebar [data-action="open-ai-profile"]')) {
+  const activeView = ai.lifecycle ? 'open-ai-chat' : ins ? 'open-ai-insights'
+    : $('random-walk-overlay').hidden ? null : 'open-random-walk';
+  for (const button of document.querySelectorAll('#sidebar [data-filter], #sidebar [data-action="open-ai-insights"], #sidebar [data-action="open-ai-chat"], #sidebar [data-action="open-random-walk"]')) {
     const selected = activeView ? button.dataset.action === activeView : button.dataset.filter === state.filter;
     button.classList.toggle('active', selected);
     if (selected) button.setAttribute('aria-current', 'page');
@@ -956,7 +961,7 @@ function renderFeedList({ reset = true, preservePage = false } = {}) {
     state.feedRendered = 0;
     if (query) showEmpty('search', '没有找到相关笔记', '试试其他关键词，或清空搜索。', actionButton('清空搜索', 'clear-search'));
     else if (state.dayFilter || state.bookFilter) showEmpty('search', '当前筛选下没有笔记', '可以清除筛选查看全部笔记。', actionButton('清除筛选', 'clear-filters'));
-    else if (state.filter === 'reading') showEmpty('book', '还没有读书摘录', '', actionButton('导入微信读书', 'open-import'));
+    else if (state.filter === 'reading') showEmpty('book', '还没有读书', '', actionButton('导入微信读书', 'open-import'));
     else showEmpty('note', '从一条笔记开始', '记下一件今天想留住的事。', actionButton('写第一条笔记', 'focus-compose'));
     renderInlineDraftBanner();
     return;
@@ -1543,7 +1548,7 @@ function renderDetail() {
   $('detail-meta').replaceChildren(icon(note.reading ? 'book' : 'calendar'), dateLong.format(new Date(note.createdAt)));
   const meta = [note.reading?.author, note.reading?.chapter].filter(Boolean).join(' · ');
   if (meta) $('detail-meta').append(' · ' + meta);
-  $('dialog-note-title').textContent = note.reading ? (note.reading.bookTitle || '微信读书') : '日志';
+  $('dialog-note-title').textContent = note.reading ? (note.reading.bookTitle || '微信读书') : '随记';
   $('detail-body').textContent = note.body;
   $('detail-body').hidden = state.editRevision !== null;
   $('edit-form').hidden = state.editRevision === null;
@@ -1771,6 +1776,7 @@ function openImport() {
     notify('请先登录并完成同步');
     return;
   }
+  $('import-hub-dialog').close();
   resetWereadImport();
   setError('import-error', '');
   sidebar(false);
@@ -2262,7 +2268,7 @@ async function importNotes(event) {
     clearSearchInput();
     rebuildNoteIndex();
     renderFeedList({ reset: true });
-    notify(imported ? '已导入 ' + imported + ' 条读书摘录' : '这批笔记已导入');
+    notify(imported ? '已导入 ' + imported + ' 条读书笔记' : '这批笔记已导入');
   } catch (error) {
     setError('import-error', error.message);
   } finally {
@@ -2300,6 +2306,7 @@ function openFileImport(kind) {
     notify('请先登录并完成同步');
     return;
   }
+  $('import-hub-dialog').close();
   const select = $(`${kind}-zone`);
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (browserZone && ![...select.options].some((option) => option.value === browserZone)) {
@@ -2506,7 +2513,7 @@ async function importFileNotes(event, kind) {
 
 function sidebar(open) {
   $('sidebar').classList.toggle('open', open);
-  const menus = document.querySelectorAll('#mobile-toggle, [data-action="ins-mobile-menu"], [data-action="profile-mobile-menu"]');
+  const menus = document.querySelectorAll('[aria-controls="sidebar"]');
   for (const button of menus) {
     button.setAttribute('aria-expanded', String(open));
     button.setAttribute('aria-label', open ? '关闭导航' : '打开导航');
@@ -2526,8 +2533,6 @@ const rw = {
   id: null, history: [], zoom: 1, scrollY: 0, seq: 0, opener: null,
   related: [], loading: false, relatedPromise: null, controller: null,
 };
-const refreshAnchor = document.createComment('位置：同步按钮');
-$('refresh-button').before(refreshAnchor);
 
 function applyWalkZoom() {
   $('rw-stage').style.transform = `translate(0px, 0px) scale(${rw.zoom})`;
@@ -2613,7 +2618,7 @@ function walkFocusCard(note) {
   const card = el('article', 'rw-focus-card');
   card.dataset.noteId = note.id;
   card.append(el('p', 'date-line', dateLong.format(new Date(note.createdAt))),
-    el('h3', '', note.reading?.bookTitle || '日志'),
+    el('h3', '', note.reading?.bookTitle || '随记'),
     el('p', 'rw-focus-body', note.body));
   const buttons = el('div', 'rw-card-actions');
   for (const [label, action] of [['编辑', 'edit'], ['对话', 'chat'], ['复制', 'copy'], ['删除', 'delete']]) {
@@ -2623,12 +2628,16 @@ function walkFocusCard(note) {
   return card;
 }
 
-function resetWalkRelated() {
+function abortWalkRequest() {
   rw.controller?.abort();
   rw.seq++;
   rw.controller = rw.relatedPromise = null;
-  rw.related = [];
   rw.loading = false;
+}
+
+function resetWalkRelated() {
+  abortWalkRequest();
+  rw.related = [];
 }
 
 function pruneWalkHistory() {
@@ -2698,7 +2707,7 @@ function pivotWalk(id, remember = true) {
 }
 
 function syncWalkState() {
-  if ($('random-walk-overlay').hidden) return;
+  if (!rw.id) return;
   pruneWalkHistory();
   const prevBtn = $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]');
   if (prevBtn) prevBtn.disabled = !rw.history.length;
@@ -2709,14 +2718,19 @@ function syncWalkState() {
     $('rw-focus').replaceChildren();
     $('rw-related').replaceChildren();
     drawWalkLinks();
-    shuffleWalk();
+    if (!$('random-walk-overlay').hidden) shuffleWalk();
     return;
   }
-  if (!rw.loading && rw.id) renderWalkRelated();
+  if (!rw.loading) renderWalkRelated();
   drawWalkLinks();
 }
 
 function reconcileWalkFocus(data) {
+  if ($('random-walk-overlay').hidden) {
+    if (data.note) $('rw-focus').replaceChildren(walkFocusCard(data.note));
+    syncWalkState();
+    return;
+  }
   if (data.note) { pivotWalk(data.note.id, false); return; }
   if (!data.deleted) return;
   rw.id = null;
@@ -2739,40 +2753,36 @@ function shuffleWalk() {
 
 function openRandomWalk(button) {
   if (!state.loaded || !$('random-walk-overlay').hidden) return;
-  const profileScrollY = prof?.scrollY;
-  closeProfile({ restore: false });
-  closeAIChat();
+  rw.scrollY = ai.lifecycle ? ai.scrollY : ins?.scrollY ?? window.scrollY;
+  closeAIChat({ restore: false });
   closeInsights({ restore: false });
-  rw.scrollY = profileScrollY ?? window.scrollY;
   rw.opener = button;
-  rw.zoom = 1;
   applyWalkZoom();
+  $('notes-topbar').hidden = $('main').hidden = true;
   $('random-walk-overlay').hidden = false;
-  $('random-walk-overlay').querySelector('.rw-controls').prepend($('refresh-button'));
-  $('random-walk-overlay').querySelector('.rw-toolbar [data-action="rw-prev"]').disabled = true;
-  $('rw-prev-slot').replaceChildren();
-  $('random-walk-overlay').querySelector('[data-action="rw-close"]').focus({ preventScroll: true });
+  syncNavActive();
+  window.scrollTo(0, 0);
   sidebar(false);
-  shuffleWalk();
+  $('rw-title').focus({ preventScroll: true });
+  if (state.notes.has(rw.id)) requestAnimationFrame(drawWalkLinks);
+  else {
+    rw.id = null;
+    $('random-walk-overlay').querySelector('[data-action="rw-prev"]').disabled = true;
+    shuffleWalk();
+  }
 }
 
 function closeRandomWalk({ restore = true } = {}) {
   if ($('random-walk-overlay').hidden) return;
   $('random-walk-overlay').hidden = true;
-  refreshAnchor.after($('refresh-button'));
-  resetWalkRelated();
-  rw.id = null;
-  rw.history = [];
-  $('rw-prev-slot').replaceChildren();
-  $('rw-focus').replaceChildren();
-  $('rw-related').replaceChildren();
-  drawWalkLinks();
-  setError('rw-status', '');
-  if (restore) {
-    rw.opener?.focus({ preventScroll: true });
-    window.scrollTo(0, rw.scrollY);
+  $('notes-topbar').hidden = $('main').hidden = false;
+  if (rw.controller) {
+    abortWalkRequest();
+    $('rw-focus').querySelector('[data-action="rw-chat-focus"]').disabled = false;
+    setError('rw-status', '');
   }
-  rw.opener = null;
+  syncNavActive();
+  if (restore) window.scrollTo(0, rw.scrollY);
 }
 
 async function walkNoteAction(action) {
@@ -3009,32 +3019,19 @@ function providerSettings() {
 }
 
 let prof = null;
-const profileView = $('ai-profile-view');
+const profileView = $('ins-panel-profile');
 const profileButton = action => profileView.querySelector('[data-action="profile-' + action + '"]');
 
-function openProfile(opener) {
-  if (!state.loaded) { notify('请先登录并完成同步'); return; }
-  sidebar(false);
+function initProfile() {
   if (prof) return;
-  const scrollY = ai.lifecycle ? ai.scrollY : ins?.scrollY ?? window.scrollY;
-  closeRandomWalk({ restore: false });
-  closeAIChat({ restore: false });
-  closeInsights({ restore: false });
   const view = prof = {
-    opener, scrollY, lifecycle: new AbortController(), profile: null,
+    lifecycle: new AbortController(), profile: null,
     loading: false, loaded: false, loadError: false, saving: false, generating: null, editing: false,
   };
-  $('notes-topbar').hidden = $('main').hidden = true;
-  profileView.hidden = false;
-  syncNavActive();
-  window.scrollTo(0, 0);
-  profileView.querySelector('.ins-scroll').scrollTop = 0;
-  profileButton('close').focus({ preventScroll: true });
-  loadGatewayModels(view.lifecycle.signal);
   loadProfile(view);
 }
 
-function closeProfile({ restore = true } = {}) {
+function closeProfile() {
   const view = prof;
   if (!view) return;
   prof = null;
@@ -3047,13 +3044,6 @@ function closeProfile({ restore = true } = {}) {
   $('profile-status').textContent = $('profile-meta').textContent = $('profile-text').value = '';
   setError('profile-error', '');
   profileButton('reload').hidden = true;
-  $('notes-topbar').hidden = $('main').hidden = false;
-  syncNavActive();
-  if (restore) {
-    sidebar(false);
-    (view.opener.getClientRects().length ? view.opener : $('mobile-toggle')).focus({ preventScroll: true });
-    window.scrollTo(0, view.scrollY);
-  }
 }
 
 async function loadProfile(view) {
@@ -3261,9 +3251,8 @@ function openAIChat() {
   if (!state.loaded) { notify('请先登录并完成同步'); return false; }
   sidebar(false);
   if (ai.lifecycle) return true;
-  const scrollY = prof?.scrollY ?? ins?.scrollY ?? window.scrollY;
+  const scrollY = ins?.scrollY ?? (!$('random-walk-overlay').hidden ? rw.scrollY : window.scrollY);
   closeRandomWalk({ restore: false });
-  closeProfile({ restore: false });
   closeInsights({ restore: false });
   ai.lifecycle = new AbortController();
   ai.scrollY = scrollY;
@@ -3274,7 +3263,7 @@ function openAIChat() {
   renderAIThread();
   loadAISessions();
   loadGatewayModels(ai.lifecycle.signal);
-  $('ai-chat-input').focus({ preventScroll: true });
+  $('ai-chat-title').focus({ preventScroll: true });
   return true;
 }
 
@@ -3930,7 +3919,6 @@ async function lookupNoteAIEntry(note) {
 async function openNoteAIChat(note, starter = null, { extraPinIds = [], fromWalk = false } = {}) {
   if (!note || ai.sending || state.detailWorking || !mayCloseNote()) return;
   if ($('note-dialog').open) closeNote(true);
-  closeRandomWalk({ restore: false });
   if (!openAIChat()) return;
   const view = ai;
   newAISession(note, null, { extraPinIds, fromWalk });
@@ -3969,9 +3957,10 @@ function toggleInsTags(open, focus = false) {
 function renderInsControls() {
   const { tab, report, run, attempt, stats, lenses, lensId } = ins;
   const viewingReport = Boolean(report || attempt);
-  for (const name of ['new', 'history']) $('ins-panel-' + name).hidden = viewingReport || name !== tab;
+  for (const name of ['new', 'history', 'profile']) $('ins-panel-' + name).hidden = viewingReport || name !== tab;
   $('ins-report-view').hidden = !viewingReport;
   $('ins-scope').hidden = viewingReport || tab !== 'new';
+  insButton('new-lens').hidden = tab === 'profile';
   $('ins-report-actions').hidden = !report;
   insButton('cancel').hidden = !run;
   insButton('retry').hidden = !attempt || Boolean(run || report);
@@ -4129,12 +4118,10 @@ async function loadInsReports(view) {
 function openInsights(opener) {
   if (ins) { sidebar(false); return; }
   if (!state.loaded) { notify('请先登录并完成同步'); return; }
-  const profileScrollY = prof?.scrollY;
-  closeRandomWalk({ restore: false });
-  closeProfile({ restore: false });
+  closeRandomWalk();
   closeAIChat();
   const view = ins = {
-    opener, scrollY: profileScrollY ?? window.scrollY, tab: 'new', cat: '精选', range: '7d', tags: new Set(),
+    opener, scrollY: window.scrollY, tab: 'new', cat: '精选', range: '7d', tags: new Set(),
     lifecycle: new AbortController(), lenses: [], categories: [], lensId: null, lensRevision: 0, lensesLoaded: false,
     stats: null, reports: [], historyRevision: 0,
     report: null, reportRevision: 0, preview: null, run: null, lensDraft: null, attempt: null,
@@ -4149,7 +4136,7 @@ function openInsights(opener) {
   syncNavActive();
   window.scrollTo(0, 0);
   $('ins-scroll').scrollTop = 0;
-  insButton('close').focus({ preventScroll: true });
+  $('ins-title').focus({ preventScroll: true });
   renderInsTags();
   renderInsLenses();
   renderInsHistory();
@@ -4163,6 +4150,7 @@ function closeInsights({ restore = true } = {}) {
   if (!view) return;
   ins = null;
   view.lifecycle.abort();
+  closeProfile();
   view.preview?.abort();
   view.run?.abort();
   insView.hidden = true;
@@ -4206,6 +4194,7 @@ function setInsTab(tab) {
   setError('ins-error', '');
   renderInsControls();
   if (tab === 'history') loadInsReports(ins);
+  if (tab === 'profile') initProfile();
 }
 
 function openInsLens(id) {
@@ -4498,7 +4487,6 @@ $('sign-out').addEventListener('contextmenu', event => event.preventDefault());
 
 const actions = {
   'open-ai-insights': openInsights,
-  'ins-close': () => closeInsights(),
   'ins-tab': button => setInsTab(button.dataset.tab),
   'ins-mobile-menu': () => sidebar(!$('sidebar').classList.contains('open')),
   'ins-tag-popover': () => toggleInsTags($('ins-tag-popover').hidden, true),
@@ -4542,7 +4530,7 @@ const actions = {
   },
   'ins-continue-chat': continueInsightChat,
   'open-random-walk': openRandomWalk,
-  'rw-close': () => closeRandomWalk(),
+  'rw-mobile-menu': () => sidebar(!$('sidebar').classList.contains('open')),
   'rw-shuffle': shuffleWalk,
   'rw-pivot': (button) => pivotWalk(button.dataset.noteId),
   'rw-prev': walkBack,
@@ -4554,7 +4542,6 @@ const actions = {
   'rw-copy-focus': () => walkNoteAction('copy'),
   'rw-delete-focus': () => walkNoteAction('delete'),
   'open-ai-chat': openAIChat,
-  'ai-close': () => closeAIChat({ focus: true }),
   'ai-mobile-menu': () => { setAISessionRail(false); sidebar(!$('sidebar').classList.contains('open')); },
   'ai-toggle-sessions': () => setAISessionRail(!$('ai-session-rail').classList.contains('open')),
   'ai-filter-origin': button => { ai.origin = button.dataset.origin; renderAISessions(); },
@@ -4565,10 +4552,7 @@ const actions = {
   'ai-new-session': () => { if (newAISession()) $('ai-chat-input').focus({ preventScroll: true }); },
   'ai-select-session': (button) => selectAISession('/api/ai/sessions/' + button.dataset.sessionId, null, { id: button.dataset.sessionId }),
   'ai-delete-session': (button) => deleteAISession(button.dataset.sessionId),
-  'open-ai-profile': openProfile,
-  'profile-close': () => closeProfile(),
   'profile-reload': () => loadProfile(prof),
-  'profile-mobile-menu': () => sidebar(!$('sidebar').classList.contains('open')),
   'profile-generate': generateProfile,
   'profile-edit': () => setProfileEditing(true),
   'profile-cancel-edit': () => setProfileEditing(false),
@@ -4579,6 +4563,10 @@ const actions = {
     ai.insightContext = null;
     $('ai-chat-input').placeholder = '问问你的笔记…';
     renderAIThread();
+  },
+  'open-import-hub': () => {
+    if (!state.loaded || !state.user?.id) { notify('请先登录并完成同步'); return; }
+    $('import-hub-dialog').showModal();
   },
   'open-import': openImport,
   'open-flomo-import': () => openFileImport('flomo'),
@@ -4703,7 +4691,7 @@ const actions = {
 
 document.addEventListener('click', (event) => {
   if (!event.target.closest) return;
-  if (!$('sidebar').contains(event.target) && !event.target.closest('#mobile-toggle, [data-action="ins-mobile-menu"], [data-action="ai-mobile-menu"], [data-action="profile-mobile-menu"]')) sidebar(false);
+  if (!$('sidebar').contains(event.target) && !event.target.closest('[aria-controls="sidebar"]')) sidebar(false);
   if (ins && !$('ins-tag-popover').hidden && !event.target.closest('.ins-tags')) toggleInsTags(false);
   if (state.openMenuId && !event.target.closest('.card-menu-wrap')) closeCardMenu();
   if (state.tagSuggest.open && !event.target.closest('.composer-input-wrap')) closeTagSuggest();
@@ -4736,9 +4724,9 @@ document.addEventListener('click', (event) => {
     return;
   }
   if (button.dataset.day) {
+    closeRandomWalk();
     closeAIChat();
     closeInsights({ restore: false });
-    closeProfile({ restore: false });
     const day = button.dataset.day;
     state.dayFilter = state.dayFilter === day ? null : day;
     sidebar(false);
@@ -4760,6 +4748,7 @@ document.addEventListener('click', (event) => {
   }
   if (button.dataset.close) {
     if (button.dataset.close === 'note-dialog') closeNote();
+    if (button.dataset.close === 'import-hub-dialog') $('import-hub-dialog').close();
     if (button.dataset.close === 'settings-dialog') $('settings-dialog').close();
     if (button.dataset.close === 'import-dialog' && !state.importWorking && !state.wereadImport?.saving) $('import-dialog').close();
     if (button.dataset.close === 'flomo-dialog' && !state.flomoWorking) $('flomo-dialog').close();
@@ -4771,11 +4760,13 @@ document.addEventListener('click', (event) => {
     openNote(button.dataset.openNote);
   }
   if (button.dataset.filter) {
+    const switchingView = $('notes-topbar').hidden;
     const sameChatFilter = ai.lifecycle && state.filter === button.dataset.filter;
+    closeRandomWalk();
     closeAIChat();
     closeInsights({ restore: false });
-    closeProfile({ restore: false });
     sidebar(false);
+    if (switchingView) (button.getClientRects().length ? button : $('mobile-toggle')).focus({ preventScroll: true });
     if (sameChatFilter) return;
     state.filter = button.dataset.filter;
     renderFeedList({ reset: true });
@@ -4890,11 +4881,15 @@ document.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
   if (event.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
-    if (prof) {
+    if ($('sidebar').classList.contains('open')) {
       event.preventDefault();
-      if (prof.editing && prof.saving) return;
-      if (prof.editing) setProfileEditing(false);
-      else closeProfile();
+      sidebar(false);
+      [...document.querySelectorAll('[aria-controls="sidebar"]')].find(button => button.getClientRects().length)?.focus();
+      return;
+    }
+    if (!profileView.hidden && prof?.editing) {
+      event.preventDefault();
+      if (!prof.saving) setProfileEditing(false);
       return;
     }
     if (ins && !$('ins-tag-popover').hidden) {
@@ -4909,8 +4904,10 @@ document.addEventListener('keydown', (event) => {
     }
     if (ai.lifecycle || ins || !$('random-walk-overlay').hidden) {
       event.preventDefault();
-      if (!$('random-walk-overlay').hidden) closeRandomWalk();
-      else if (!$('ai-note-picker').hidden) closeNotePicker(true);
+      if (!$('random-walk-overlay').hidden) {
+        closeRandomWalk();
+        (rw.opener.getClientRects().length ? rw.opener : $('mobile-toggle')).focus({ preventScroll: true });
+      } else if (!$('ai-note-picker').hidden) closeNotePicker(true);
       else if ($('ai-session-rail').classList.contains('open')) setAISessionRail(false);
       else if (ai.lifecycle) closeAIChat({ focus: true });
       else closeInsights();

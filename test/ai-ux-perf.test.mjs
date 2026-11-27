@@ -604,7 +604,13 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
 
     await until(() => page.evaluate("document.getElementById('sync-state').dataset.status === 'ok'"), 'initial 304 applied');
     await page.evaluate(`
-      document.querySelector('[data-action=open-flomo-import]').click();
+      document.querySelector('[data-action=open-import-hub]').click();
+      const source = document.querySelector('#import-hub-dialog [data-action=open-flomo-import]');
+      if (!source.getClientRects().length) throw new Error('flomo source is not visible');
+      source.click();
+      if (!document.getElementById('flomo-dialog').open || document.getElementById('import-hub-dialog').open) {
+        throw new Error('flomo dialog did not replace the import hub');
+      }
       const files = new DataTransfer();
       files.items.add(new File(['<div class="memo" data-memo-id="tombstone-case"><div class="time">2026-11-24 12:00:00</div><div class="content">已删除的导入记录</div></div>'], 'notes.html', { type: 'text/html' }));
       document.getElementById('flomo-file').files = files.files;
@@ -880,6 +886,8 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     let deletedNotes = [];
     let getNotesCount = 0;
     let postDeleteCount = 0;
+    let relatedRequests = 0;
+    let profileLoads = 0;
     const nextInCycle = new Map([[noteA.id, noteB], [noteB.id, noteC], [noteC.id, noteA]]);
     const json = (res, value, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(value));
     const web = createServer(async (req, res) => {
@@ -912,8 +920,14 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
       });
       if (pathname === '/api/insights/lenses') return json(res, { lenses: [], categories: [] });
       if (pathname === '/api/insights/preview') return json(res, { noteCount: 2, tagCount: 0, dayCount: 1, willSample: false });
+      if (pathname === '/api/ai/sessions') return json(res, { sessions: [] });
+      if (pathname === '/api/ai/profile') {
+        profileLoads++;
+        return json(res, { profile: { content: '画像测试正文', enabled: true, noteCount: 2, updatedAt: createdAt } });
+      }
       const relatedMatch = pathname.match(/^\/api\/notes\/([^/]+)\/related$/);
       if (relatedMatch) {
+        relatedRequests++;
         const focus = noteMap.get(relatedMatch[1]) ?? noteA;
         const other = nextInCycle.get(focus.id) ?? noteB;
         return json(res, { focus, related: [{ id: other.id, note: other, relevancePercent: 92 }] });
@@ -932,6 +946,17 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
     await page.navigate(local + '/');
     await until(() => page.evaluate("document.getElementById('sync-state')?.dataset.status === 'ok'"), 'notes loaded');
+
+    assert.equal(await page.evaluate(`document.querySelectorAll(
+      '[data-action=ins-close], [data-action=ai-close], [data-action=rw-close], [data-action=profile-close], #sidebar [data-action=open-ai-profile], #ai-profile-view'
+    ).length`), 0);
+    assert.deepEqual(await page.evaluate(`['notes-topbar', 'main', 'random-walk-overlay', 'ai-chat-view', 'ai-insights-view']
+      .map(id => document.getElementById(id).parentElement.classList.contains('workspace'))`), [true, true, true, true, true]);
+    const clickNav = selector => page.evaluate(`document.querySelector('#sidebar ' + ${JSON.stringify(selector)}).click()`);
+    const currentNav = () => page.evaluate(`[...document.querySelectorAll('#sidebar .nav-item.active, #sidebar [aria-current=page]')]
+      .map(button => [button.dataset.action ?? button.dataset.filter, button.classList.contains('active'), button.getAttribute('aria-current')])`);
+    const assertNav = async name => assert.deepEqual(await currentNav(), [[name, true, 'page']]);
+    await assertNav('all');
 
     // 1. AI Insights filter bar uniform control height & searchable model picker
     await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
@@ -999,12 +1024,35 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     assert.equal(await page.evaluate("document.getElementById('ins-model-popover').hidden"), false);
     await page.evaluate("document.getElementById('ins-model-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
     assert.equal(await page.evaluate("document.getElementById('ins-model-popover').hidden"), true);
-    await page.evaluate("document.querySelector('[data-action=ins-close]').click()");
+    await assertNav('open-ai-insights');
+    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=profile]').click()");
+    await until(() => page.evaluate(`document.querySelector('#ai-insights-view .ins-content #ins-panel-profile')
+      .getClientRects().length && document.querySelector('#profile-body').textContent.includes('画像测试正文')`), 'profile loaded inside insights');
+    assert.deepEqual(await page.evaluate(`['ai-insights-view', 'ins-panel-profile', 'ins-scope', 'ins-panel-new', 'ins-panel-history', 'ins-report-view']
+      .map(id => document.getElementById(id).hidden)`), [false, false, true, true, true, true]);
+    await assertNav('open-ai-insights');
+    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=new]').click()");
+    assert.equal(await page.evaluate("document.querySelector('#ins-model-toggle').textContent"), 'GPT-6.2 Sol', 'profile tab preserves insights scope and model');
+    await clickNav('[data-filter=all]');
+    await assertNav('all');
+    await clickNav('[data-action=open-ai-insights]');
+    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=profile]').click()");
+    await until(() => page.evaluate("document.querySelector('#profile-body').textContent.includes('画像测试正文')"), 'profile reloaded on re-entry');
+    assert.equal(profileLoads, 2);
+    await clickNav('[data-action=open-ai-chat]');
+    await assertNav('open-ai-chat');
+    assert.equal(await page.evaluate("document.activeElement.id"), 'ai-chat-title');
+    await clickNav('[data-filter=all]');
+    await assertNav('all');
 
     // 2. Random Walk previous-hop card on left + curved link + back navigation
     await page.evaluate("document.querySelector('[data-action=open-random-walk]').click()");
     await until(() => page.evaluate("Boolean(document.querySelector('#rw-focus .rw-focus-card') && document.querySelector('#rw-related .rw-related-card'))"),
       'random walk initial card and related list loaded');
+    await assertNav('open-random-walk');
+    assert.equal(await page.evaluate("document.activeElement.id"), 'rw-title');
+    assert.equal(await page.evaluate("document.getElementById('refresh-button').closest('header').id"), 'notes-topbar');
+    assert.equal(await page.evaluate("document.getElementById('notes-topbar').hidden"), true);
     const initialWalk = await page.evaluate(`({
       focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
       relatedId: document.querySelector('#rw-related .rw-related-card').dataset.noteId,
@@ -1036,6 +1084,24 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
       `previous-hop card must be strictly to the left of focus card: ${JSON.stringify(pivotedWalk)}`);
     assert.match(pivotedWalk.prevPathD, /^M\s+-?\d+\s+-?\d+\s+C\s+/);
     assert.ok(pivotedWalk.prevText.includes('上一跳'));
+
+    await until(() => page.evaluate("!!document.querySelector('#rw-related .rw-related-card')"), 'walk related cards loaded after pivot');
+    const preservedWalk = () => page.evaluate(`({
+      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
+      prevCard: document.querySelector('#rw-prev-slot .rw-prev-card').outerHTML,
+      related: document.querySelector('#rw-related').innerHTML,
+    })`);
+    const beforeSwitch = await preservedWalk();
+    const requestsBeforeSwitch = relatedRequests;
+    await clickNav('[data-filter=all]');
+    await assertNav('all');
+    assert.deepEqual(await page.evaluate(`['random-walk-overlay', 'notes-topbar', 'main']
+      .map(id => document.getElementById(id).hidden)`), [true, false, false]);
+    await clickNav('[data-action=open-random-walk]');
+    await assertNav('open-random-walk');
+    await until(() => page.evaluate("!!document.querySelector('svg.rw-links path.rw-link-prev')"), 'walk redrew the previous hop after re-entry');
+    assert.deepEqual(await preservedWalk(), beforeSwitch);
+    assert.equal(relatedRequests, requestsBeforeSwitch, 'reopening walk does not fetch related notes again');
 
     await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
     await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.focusId)}`),
@@ -1072,7 +1138,13 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     // Delete hop2 on server and sync -> right column must immediately remove hop2, left card keeps hop3
     liveNotes = liveNotes.filter(n => n.id !== hop2Id);
     deletedNotes = [{ id: hop2Id, revision: 2 }];
-    await page.evaluate("document.getElementById('refresh-button').click()");
+    await clickNav('[data-filter=all]');
+    await page.evaluate(`(() => {
+      const refresh = document.getElementById('refresh-button');
+      if (!refresh.getClientRects().length) throw new Error('notes sync button is not visible');
+      refresh.click();
+    })()`);
+    await clickNav('[data-action=open-random-walk]');
     await until(() => page.evaluate(`document.getElementById('sync-state')?.dataset.status === 'ok' && !document.getElementById('refresh-button').disabled && !document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop2Id)} + '"]')`),
       'deleted hop2 pruned from right related column after sync');
     const afterRevisitSync = await page.evaluate(`({
@@ -1103,6 +1175,7 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
 
     // 4. Local POST delete via mutate() (NO GET /api/notes sync!) -> immediately clears both left prev card and right related card
     const getsBeforeLocalDelete = getNotesCount;
+    await clickNav('[data-filter=all]');
     await page.evaluate(`(() => {
       const menuBtn = document.querySelector('[data-action="card-menu"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]');
       if (!menuBtn) throw new Error('missing card menu button for hop1');
@@ -1116,6 +1189,7 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     await page.evaluate(`document.querySelector('[data-action="confirm-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]').click()`);
     await until(() => page.evaluate(`!document.querySelector('#rw-prev-slot .rw-prev-card') && !document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop1Id)} + '"]')`),
       'local POST delete pruned both prev card and right related card without sync');
+    await clickNav('[data-action=open-random-walk]');
     const afterLocalDelete = await page.evaluate(`({
       hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
       hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
@@ -1292,12 +1366,17 @@ test('Material Design 3 light and dark theme maintains unified surfaces and read
       const notes = await measureMaterial(page, [
         ['body'], ['.topbar h1'], ['.nav-item.active'], ['.activity-numbers span'],
         ['.card-body'], ['.card-time'], ['.inline-tag'], ['#note-body', '::placeholder'],
+        ['nav[aria-label=主视图] .nav-label'], ['#note-filters-title'],
       ]);
       assert.equal(await page.evaluate("document.querySelector('.topbar').getBoundingClientRect().height"), 64);
       const primary = await page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-primary').trim()");
       assert.equal(primary, scheme === 'light' ? '#2d6a4f' : '#7ad4aa');
       assert.deepEqual(notes.body.bg, scheme === 'light' ? [246, 245, 240, 255] : [23, 22, 20, 255]);
 
+      await page.evaluate("document.querySelector('[data-action=open-import-hub]').click()");
+      const imports = await measureMaterial(page, [['#import-hub-title'], ...['open-flomo-import', 'open-joplin-import', 'open-import']
+        .map(action => ['#import-hub-dialog [data-action=' + action + ']'])]);
+      await page.evaluate("document.querySelector('[data-close=import-hub-dialog]').click()");
       await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
       await until(() => page.evaluate("!!document.querySelector('[data-action=ai-select-session]')"), 'AI session listed');
       await page.evaluate("document.querySelector('[data-action=ai-select-session]').click()");
@@ -1322,7 +1401,7 @@ test('Material Design 3 light and dark theme maintains unified surfaces and read
       const login = await measureMaterial(page, [['.auth-shell'], ['.auth-page h1'], ['.auth-providers a'], ['.auth-footer a']]);
       assert.deepEqual(login['.auth-shell'].bg, notes.body.bg);
 
-      for (const [selector, sample] of Object.entries({ ...notes, ...chat, ...insights, ...login })) {
+      for (const [selector, sample] of Object.entries({ ...notes, ...imports, ...chat, ...insights, ...login })) {
         assert.equal(sample.bg[3], 255, `${scheme} ${selector} should resolve to an opaque surface`);
         assert.ok(sample.ratio >= 4.5, `${scheme} ${selector} contrast ${sample.ratio.toFixed(3)}:1`);
         if (scheme === 'dark') {
@@ -1396,4 +1475,17 @@ test('Material Design 3 mobile 375px layout enforces 48px touch targets without 
     await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
     await until(() => page.evaluate("document.querySelector('#ins-model-toggle').textContent.includes('Gemini')"), 'mobile insights filters loaded');
     check(await layout([['#ins-range-select'], ['#ins-tag-trigger'], ['#ins-model-toggle'], ['.ins-profile-toggle']]));
+    check(await layout([['[data-action=ins-mobile-menu]', true], ['.ins-tabs button', true], ['[data-action=ins-new-lens]', true]]));
+    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=profile]').click()");
+    check(await layout([['#ins-panel-profile .profile-actions button', true], ['.profile-toggle', true]]));
+    await page.evaluate("document.querySelector('[data-action=ins-mobile-menu]').click(); document.querySelector('[data-action=open-random-walk]').click()");
+    check(await layout([['.rw-toolbar button', true], ['.rw-card-actions button', true]]));
+    await page.evaluate("document.querySelector('[data-action=rw-mobile-menu]').click()");
+    assert.equal(await page.evaluate("document.querySelector('[data-action=rw-mobile-menu]').getAttribute('aria-expanded')"), 'true');
+    await page.evaluate("document.querySelector('[data-action=open-import-hub]').click()");
+    const sources = await layout([['#import-hub-dialog .import-sources button', true]]);
+    assert.equal(sources.targets.length, 3);
+    check(sources);
+    await page.evaluate("document.querySelector('#import-hub-dialog [data-action=open-import]').click()");
+    assert.equal(await page.evaluate("document.querySelector('#import-dialog').open && !document.querySelector('#import-hub-dialog').open"), true);
   });

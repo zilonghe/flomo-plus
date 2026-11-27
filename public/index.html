@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f5f0">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#171614">
-  <meta name="description" content="微记，随手记录日志和摘录，与 AI 继续思考。">
+  <meta name="description" content="微记，记录随记和读书笔记，与 AI 继续思考。">
   <title>微记 · 我的笔记</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" type="module"></script>
@@ -47,36 +47,37 @@
         <button class="icon-button profile-settings" type="button" data-action="open-settings" aria-label="设置" title="设置"><svg><use href="#i-settings"></use></svg></button>
         <a class="icon-button" id="sign-out" href="/signout-with-chatgpt?return_to=/" target="_top" aria-label="退出登录" title="退出登录" hidden><svg><use href="#i-logout"></use></svg></a>
       </div>
-      <section class="activity" aria-label="记录统计">
-        <div class="activity-numbers" id="activity-numbers">
-          <div><strong id="activity-memos">0</strong><span>笔记</span></div>
-          <div><strong id="activity-tags">0</strong><span>标签</span></div>
-          <div><strong id="activity-days">0</strong><span>记录天数</span></div>
-        </div>
-        <div class="heatmap" id="heatmap" aria-label="最近十五周的记录"></div>
-        <div class="heatmap-months" id="heatmap-months" aria-hidden="true"></div>
-      </section>
-      <nav class="side-section" aria-label="笔记分类">
+      <nav class="side-section" aria-label="主视图">
+        <span class="nav-label">工作区</span>
         <button class="nav-item active" type="button" data-filter="all" aria-current="page"><svg><use href="#i-grid"></use></svg><span>全部笔记</span><span class="nav-count" id="count-all"></span></button>
-        <button class="nav-item" type="button" data-filter="journal"><svg><use href="#i-note"></use></svg><span>日志</span><span class="nav-count" id="count-journal"></span></button>
-        <button class="nav-item" type="button" data-filter="reading"><svg><use href="#i-book"></use></svg><span>读书摘录</span><span class="nav-count" id="count-reading"></span></button>
         <button class="nav-item" type="button" data-action="open-random-walk"><svg><use href="#i-shuffle"></use></svg><span>随机漫步</span></button>
-        <button class="nav-item" type="button" data-action="open-ai-insights"><svg><use href="#i-spark"></use></svg><span>AI 洞察</span></button>
         <button class="nav-item" type="button" data-action="open-ai-chat"><svg><use href="#i-chat"></use></svg><span>AI 对话</span></button>
-        <button class="nav-item" type="button" data-action="open-ai-profile"><svg><use href="#i-user"></use></svg><span>个人画像</span></button>
+        <button class="nav-item" type="button" data-action="open-ai-insights"><svg><use href="#i-spark"></use></svg><span>AI 洞察</span></button>
       </nav>
-      <div class="side-section tag-section" id="tag-section" hidden>
-        <div class="nav-label-row">
-          <span class="nav-label">标签</span>
-          <button type="button" class="tag-sort-btn" id="tag-sort-btn" data-action="toggle-tag-sort" title="切换标签排序">按数量</button>
+      <section class="side-section" aria-labelledby="note-filters-title">
+        <span class="nav-label" id="note-filters-title">笔记筛选</span>
+        <button class="nav-item" type="button" data-filter="journal"><svg><use href="#i-note"></use></svg><span>随记</span><span class="nav-count" id="count-journal"></span></button>
+        <button class="nav-item" type="button" data-filter="reading"><svg><use href="#i-book"></use></svg><span>读书</span><span class="nav-count" id="count-reading"></span></button>
+        <section class="activity" aria-label="记录统计">
+          <div class="activity-numbers" id="activity-numbers">
+            <div><strong id="activity-memos">0</strong><span>笔记</span></div>
+            <div><strong id="activity-tags">0</strong><span>标签</span></div>
+            <div><strong id="activity-days">0</strong><span>记录天数</span></div>
+          </div>
+          <div class="heatmap" id="heatmap" aria-label="最近十五周的记录"></div>
+          <div class="heatmap-months" id="heatmap-months" aria-hidden="true"></div>
+        </section>
+        <div class="side-section tag-section" id="tag-section" hidden>
+          <div class="nav-label-row">
+            <span class="nav-label">标签</span>
+            <button type="button" class="tag-sort-btn" id="tag-sort-btn" data-action="toggle-tag-sort" title="切换标签排序">按数量</button>
+          </div>
+          <div id="tag-list"></div>
         </div>
-        <div id="tag-list"></div>
-      </div>
+      </section>
       <div class="side-footer">
         <div class="side-section side-tools">
-          <button class="nav-item" type="button" data-action="open-flomo-import"><svg><use href="#i-import"></use></svg><span>导入 flomo</span></button>
-          <button class="nav-item" type="button" data-action="open-joplin-import"><svg><use href="#i-import"></use></svg><span>导入 Joplin</span></button>
-          <button class="nav-item" type="button" data-action="open-import"><svg><use href="#i-import"></use></svg><span>导入微信读书</span></button>
+          <button class="nav-item" type="button" data-action="open-import-hub"><svg><use href="#i-import"></use></svg><span>导入笔记</span></button>
         </div>
       </div>
     </aside>
@@ -133,13 +134,13 @@
         <header class="ins-toolbar">
           <div class="ins-toolbar-inner">
             <button class="icon-button mobile-toggle" type="button" data-action="ins-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
-            <h2 id="ins-title">AI 洞察</h2>
+            <h2 id="ins-title" tabindex="-1">AI 洞察</h2>
             <nav class="ins-tabs" aria-label="洞察视图">
               <button type="button" data-action="ins-tab" data-tab="new">新洞察</button>
               <button type="button" data-action="ins-tab" data-tab="history">历史</button>
+              <button type="button" data-action="ins-tab" data-tab="profile">个人画像</button>
             </nav>
             <button class="button button-secondary" type="button" data-action="ins-new-lens"><svg><use href="#i-plus"></use></svg>自定义视角</button>
-            <button class="icon-button" type="button" data-action="ins-close" aria-label="关闭 AI 洞察"><svg><use href="#i-close"></use></svg></button>
           </div>
         </header>
         <div id="ins-scroll" class="ins-scroll">
@@ -222,23 +223,12 @@
                 <button class="button button-danger" type="button" data-action="ins-delete-report">删除</button>
               </div>
             </article>
-          </div>
-        </div>
-      </section>
-      <section id="ai-profile-view" aria-labelledby="profile-view-title" hidden>
-        <header class="ins-toolbar">
-          <div class="ins-toolbar-inner">
-            <button class="icon-button mobile-toggle" type="button" data-action="profile-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
-            <h2 id="profile-view-title">个人画像</h2>
-            <select id="profile-model-select" class="field ins-model" aria-label="生成模型" hidden></select>
-            <button class="button button-primary" type="button" data-action="profile-generate">生成画像</button>
-            <button class="button button-secondary" type="button" data-action="profile-edit">编辑</button>
-            <button class="icon-button" type="button" data-action="profile-close" aria-label="关闭个人画像"><svg><use href="#i-close"></use></svg></button>
-          </div>
-        </header>
-        <div class="ins-scroll">
-          <div class="ins-content">
-            <div class="ins-surface">
+            <section id="ins-panel-profile" class="ins-surface" aria-label="个人画像" hidden>
+              <div class="profile-actions">
+                <select id="profile-model-select" class="field ins-model" aria-label="生成模型" hidden></select>
+                <button class="button button-primary" type="button" data-action="profile-generate">生成画像</button>
+                <button class="button button-secondary" type="button" data-action="profile-edit">编辑</button>
+              </div>
               <div class="profile-meta-bar">
                 <label class="profile-toggle"><input type="checkbox" id="profile-enabled" checked>对话自动带入个人画像</label>
                 <span id="profile-meta" class="ai-profile-meta"></span>
@@ -260,7 +250,7 @@
                   <button class="button button-primary" type="button" data-action="profile-save">保存</button>
                 </div>
               </div>
-            </div>
+            </section>
           </div>
         </div>
       </section>
@@ -283,10 +273,9 @@
         </aside>
         <div class="ai-chat-main">
           <header class="ai-chat-toolbar">
-            <button class="icon-button" type="button" data-action="ai-mobile-menu" aria-label="打开侧栏"><svg><use href="#i-menu"></use></svg></button>
+            <button class="icon-button" type="button" data-action="ai-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
             <button class="button button-secondary" type="button" data-action="ai-toggle-sessions" aria-controls="ai-session-rail" aria-expanded="false">历史</button>
-            <h2 id="ai-chat-title">AI 对话</h2>
-            <button class="icon-button" type="button" data-action="ai-close" aria-label="关闭 AI 对话"><svg><use href="#i-close"></use></svg></button>
+            <h2 id="ai-chat-title" tabindex="-1">AI 对话</h2>
           </header>
           <div id="ai-chat-thread" role="log" aria-live="polite"></div>
           <form id="ai-chat-form">
@@ -319,32 +308,32 @@
           </form>
         </div>
       </section>
+
+      <section id="random-walk-overlay" aria-labelledby="rw-title" hidden>
+        <header class="rw-toolbar">
+          <button class="icon-button mobile-toggle" type="button" data-action="rw-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
+          <h2 id="rw-title" tabindex="-1">随机漫步</h2>
+          <div class="rw-controls">
+            <button class="icon-button" type="button" data-action="rw-prev" aria-label="上一步" title="上一步">←</button>
+            <button class="button button-secondary" type="button" data-action="rw-shuffle"><svg><use href="#i-shuffle"></use></svg>换一条</button>
+            <button class="icon-button" type="button" data-action="rw-zoom-out" aria-label="缩小">−</button>
+            <span id="rw-zoom-label">100%</span>
+            <button class="icon-button" type="button" data-action="rw-zoom-in" aria-label="放大">+</button>
+            <button class="button button-secondary" type="button" data-action="rw-center">居中</button>
+          </div>
+        </header>
+        <div class="rw-viewport">
+          <div id="rw-stage">
+            <svg class="rw-links" aria-hidden="true"></svg>
+            <div id="rw-prev-slot" class="rw-prev-slot" aria-label="上一跳笔记"></div>
+            <div id="rw-focus"></div>
+            <div class="rw-related-list" id="rw-related" aria-label="相关笔记"></div>
+          </div>
+          <p id="rw-status" role="status" hidden></p>
+        </div>
+      </section>
     </div>
   </div>
-
-  <section id="random-walk-overlay" aria-labelledby="rw-title" hidden>
-    <header class="rw-toolbar">
-      <h2 id="rw-title">随机漫步</h2>
-      <div class="rw-controls">
-        <button class="icon-button" type="button" data-action="rw-prev" aria-label="上一步" title="上一步">←</button>
-        <button class="button button-secondary" type="button" data-action="rw-shuffle"><svg><use href="#i-shuffle"></use></svg>换一条</button>
-        <button class="icon-button" type="button" data-action="rw-zoom-out" aria-label="缩小">−</button>
-        <span id="rw-zoom-label">100%</span>
-        <button class="icon-button" type="button" data-action="rw-zoom-in" aria-label="放大">+</button>
-        <button class="button button-secondary" type="button" data-action="rw-center">居中</button>
-        <button class="icon-button" type="button" data-action="rw-close" aria-label="关闭随机漫步"><svg><use href="#i-close"></use></svg></button>
-      </div>
-    </header>
-    <div class="rw-viewport">
-      <div id="rw-stage">
-        <svg class="rw-links" aria-hidden="true"></svg>
-        <div id="rw-prev-slot" class="rw-prev-slot" aria-label="上一跳笔记"></div>
-        <div id="rw-focus"></div>
-        <div class="rw-related-list" id="rw-related" aria-label="相关笔记"></div>
-      </div>
-      <p id="rw-status" role="status" hidden></p>
-    </div>
-  </section>
 
   <dialog id="insight-lens-dialog" class="dialog" aria-labelledby="ins-lens-title">
     <div class="dialog-header">
@@ -407,8 +396,20 @@
     </div>
   </dialog>
 
+  <dialog id="import-hub-dialog" class="dialog" aria-labelledby="import-hub-title">
+    <div class="dialog-header">
+      <h2 id="import-hub-title">导入笔记</h2>
+      <button class="icon-button" type="button" data-close="import-hub-dialog" aria-label="关闭"><svg><use href="#i-close"></use></svg></button>
+    </div>
+    <div class="dialog-scroll import-sources">
+      <button class="button button-secondary" type="button" data-action="open-flomo-import">导入 flomo</button>
+      <button class="button button-secondary" type="button" data-action="open-joplin-import">导入 Joplin</button>
+      <button class="button button-secondary" type="button" data-action="open-import">导入微信读书</button>
+    </div>
+  </dialog>
+
   <dialog id="import-dialog" class="dialog" aria-labelledby="import-title">
-    <div class="dialog-header"><div><div class="date-line"><svg><use href="#i-book"></use></svg>读书摘录</div><h2 id="import-title">导入微信读书</h2></div><button class="icon-button" type="button" data-close="import-dialog" aria-label="关闭导入"><svg><use href="#i-close"></use></svg></button></div>
+    <div class="dialog-header"><div><div class="date-line"><svg><use href="#i-book"></use></svg>读书</div><h2 id="import-title">导入微信读书</h2></div><button class="icon-button" type="button" data-close="import-dialog" aria-label="关闭导入"><svg><use href="#i-close"></use></svg></button></div>
     <div class="dialog-scroll">
       <div class="import-modes" role="group" aria-label="导入方式">
         <button class="button button-secondary" id="weread-mode-official" type="button" data-action="weread-mode-official" aria-pressed="true">官方接口</button>

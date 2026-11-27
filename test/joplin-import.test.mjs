@@ -442,7 +442,17 @@ test('Joplin E2E: desktop JEX and directory import, retry, tombstone, and 375px 
     await send('DOM.setFileInputFiles', { nodeId: input.nodeId, files: paths });
   };
   const click = selector => evaluate('document.querySelector(' + JSON.stringify(selector) + ').click()');
-  const openImport = () => click('[data-action="open-joplin-import"]');
+  const openImportInPage = () => {
+    const entry = document.querySelector('[data-action="open-import-hub"]');
+    if (!entry.getClientRects().length) throw new Error('Import hub entry is not visible');
+    entry.click();
+    const hub = document.querySelector('#import-hub-dialog');
+    const source = hub.querySelector('[data-action="open-joplin-import"]');
+    if (!hub.open || !source.getClientRects().length) throw new Error('Joplin source is not visible');
+    source.click();
+    if (hub.open || !document.querySelector('#joplin-dialog').open) throw new Error('Joplin dialog did not replace the import hub');
+  };
+  const openImport = () => evaluate(`(${openImportInPage})()`);
   const submit = () => click('#joplin-submit');
   const wait = (expression, description) => until(() => evaluate(expression), description);
   const preview = async count => {
@@ -531,14 +541,14 @@ test('Joplin E2E: desktop JEX and directory import, retry, tombstone, and 375px 
   const reopenRace = await evaluate(`(async () => {
     const dialog = document.querySelector('#joplin-dialog');
     const fileInput = document.querySelector('#joplin-file');
-    document.querySelector('[data-action="open-joplin-import"]').click();
+    (${openImportInPage})();
     let closeDelivered = false;
     const closed = new Promise(resolve => dialog.addEventListener('close', () => {
       closeDelivered = true;
       resolve();
     }, { once: true }));
     dialog.close();
-    document.querySelector('[data-action="open-joplin-import"]').click();
+    (${openImportInPage})();
     const transfer = new DataTransfer();
     transfer.items.add(new File(['快速重开保留'], '快速重开.md', { type: 'text/markdown' }));
     fileInput.files = transfer.files;
