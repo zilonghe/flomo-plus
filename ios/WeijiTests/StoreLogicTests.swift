@@ -421,6 +421,8 @@ final class StoreLogicTests: XCTestCase {
             case "/api/notes": return .init(status: 200, body: notesFixture)
             case "/api/ai/sessions", "/api/ai/sessions/reader-session":
                 return .init(status: 200, body: readerSessionFixture)
+            case "/api/ai/sessions/active-session":
+                return .init(status: 200, body: readerSessionFixture.replacingOccurrences(of: "reader-session", with: "active-session"))
             default:
                 XCTFail("Unexpected request: \(request.url?.path ?? "")")
                 return .init(status: 404, body: "{}")
@@ -464,10 +466,13 @@ final class StoreLogicTests: XCTestCase {
             }),
         ]
 
+        await store.chat.select("active-session", api: api).value
+        XCTAssertEqual(store.chat.session?.id, "active-session")
         for item in cases {
             store.tab = item.originTab
             store.detail = item.setDetail ? .init(note: note, source: .notes) : nil
-            store.chat.draft = "在途提问-\(item.name)"
+            let question = "在途提问-\(item.name)"
+            store.chat.draft = question
             store.chat.send(api: api, options: .init(), profile: store.insights)
             XCTAssertTrue(store.chat.sending, "\(item.name): stream should be active")
 
@@ -481,6 +486,7 @@ final class StoreLogicTests: XCTestCase {
             XCTAssertNil(store.pendingChatSwitch, "\(item.name): cancel clears pending switch")
             XCTAssertTrue(store.chat.sending, "\(item.name): cancel keeps stream running")
             XCTAssertEqual(store.tab, item.originTab, "\(item.name): cancel stays on origin tab")
+            if item.setDetail { XCTAssertEqual(store.detail?.id, note.id, "\(item.name): cancel keeps detail open") }
 
             item.trigger()
             XCTAssertNotNil(store.pendingChatSwitch, "\(item.name): re-trigger sets pending switch")
@@ -489,7 +495,66 @@ final class StoreLogicTests: XCTestCase {
             XCTAssertFalse(store.chat.sending, "\(item.name): confirm stops previous stream")
             try await waitUntil("\(item.name): 会话加载完成") { !store.chat.loadingSession }
             item.assertConfirmed()
+            XCTAssertEqual(store.chat.draft, "", "\(item.name): interrupted draft stays out of the target")
+
+            store.requestSelectChatSession("active-session")
+            try await waitUntil("\(item.name): 返回原会话") { !store.chat.loadingSession }
+            XCTAssertEqual(store.chat.session?.id, "active-session")
+            XCTAssertEqual(store.chat.draft, question, "\(item.name): restore the interrupted question in its original context")
         }
+    }
+
+    func testDeletingPendingChatNoteKeepsTheOriginalStreamAndReader() async throws {
+        let requested = OSAllocatedUnfairLock(initialState: false)
+        let release = DispatchSemaphore(value: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes": return .init(status: 200, body: notesFixture)
+            case "/api/ai/chat":
+                requested.withLock { $0 = true }
+                _ = release.wait(timeout: .now() + 8)
+                return .init(status: 200, body: "event: done\ndata: \(readerSessionFixture)\n\n",
+                             headers: ["Content-Type": "text/event-stream"])
+            default:
+                XCTFail("Unexpected request: \(request.url?.path ?? "")")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        let store = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        defer {
+            store.chat.stop()
+            release.signal()
+            transport.invalidateAndCancel()
+            StubProtocol.remove(config)
+        }
+        store.start()
+        try await waitUntil("完成初始同步") { store.api != nil && !store.syncing }
+        let api = try XCTUnwrap(store.api)
+        let note = try XCTUnwrap(store.notesById["note"])
+        store.tab = .notes
+        store.detail = .init(note: note, source: .notes)
+        store.chat.draft = "正在发送"
+        store.chat.send(api: api, options: .init(), profile: store.insights)
+        try await waitUntil("原对话请求已在途") { requested.withLock { $0 } }
+
+        store.askAbout(note)
+        guard case .note(let pending) = store.pendingChatSwitch else { return XCTFail("Expected pending note") }
+        XCTAssertEqual(pending.id, note.id)
+
+        await store.applyRecord(nil, id: note.id)
+        XCTAssertNil(store.pendingChatSwitch)
+        XCTAssertTrue(store.chat.sending)
+        XCTAssertEqual(store.detail?.id, note.id)
+        XCTAssertEqual(store.tab, .notes)
+
+        store.confirmChatSwitch()
+        XCTAssertTrue(store.chat.sending)
+        XCTAssertEqual(store.detail?.id, note.id)
+        XCTAssertEqual(store.tab, .notes)
+
+        store.askAbout(note)
+        XCTAssertNil(store.pendingChatSwitch, "A deleted note cannot reopen confirmation")
     }
 
     func test409ConflictPreservesDraftWithoutOverwritingServer() async throws {

@@ -447,6 +447,9 @@ final class AppStore {
         let validIds = Set(updated.byId.keys)
         walk.syncValidIds(validIds)
         chat.syncValidIds(validIds)
+        if case .note(let pending) = pendingChatSwitch, !validIds.contains(pending.id) {
+            pendingChatSwitch = nil
+        }
         if refresh == refreshGeneration { notesETag = etag }
         scheduleSearch()
         if persist, let key = accountKey {
@@ -569,6 +572,9 @@ final class AppStore {
     }
 
     private func requestChatSwitch(_ target: PendingChatSwitch) {
+        if case .note(let note) = target {
+            guard chat.canReference(note.id) else { return }
+        }
         if chat.sending { pendingChatSwitch = target }
         else { switchChat(to: target) }
     }
@@ -576,6 +582,7 @@ final class AppStore {
     private func switchChat(to target: PendingChatSwitch) {
         switch target {
         case .note(let note):
+            guard chat.canReference(note.id) else { return }
             detail = nil
             chat.start(source: note.id)
             if let api { chat.loadSource(note.id, api: api) }
