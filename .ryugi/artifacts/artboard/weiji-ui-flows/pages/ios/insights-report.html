@@ -19,15 +19,12 @@
 <body>
   <ryugi-ios-shell time="17:48" appearance="light">
     <div class="screen">
-      <div class="sheet-backdrop">
-        <div class="sheet-card full">
-          <div class="sheet-grabber"></div>
-          <div class="sheet-bar">
-            <span class="action muted">关闭</span>
-            <span class="ios-nav-title">近 7 天设计重构洞察</span>
-            <span class="action bold">继续追问</span>
-          </div>
-          <div class="rep-body">
+      <div class="ios-nav">
+        <span class="ios-glass-btn"><ryugi-icon symbol="chevron.left" name="chevron-left" size="18"></ryugi-icon><span>返回</span></span>
+        <span class="ios-nav-title">近 7 天设计重构洞察</span>
+        <span class="ios-glass-btn" style="color:var(--color-accent-text);font-weight:600;padding:0 12px;">继续追问</span>
+      </div>
+      <div class="rep-body">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <span style="font:var(--type-meta);color:var(--color-danger)">删除报告</span>
               <span style="font:var(--type-meta);color:var(--color-text-tertiary)">2026-11-27 · 默认洞察</span>
@@ -47,8 +44,6 @@
               • 用 Ryugi 画板把每一跳 UI 路径沉淀为仓库文件，评审改版时先对齐画板再动代码 <span class="cite">[3]</span>。
             </div>
           </div>
-        </div>
-      </div>
     </div>
   </ryugi-ios-shell>
 </body>

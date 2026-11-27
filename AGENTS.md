@@ -13,7 +13,7 @@
 
 1. **先读设计规范**：阅读根目录 [`DESIGN.md`](./DESIGN.md)，确认 HIG / M3 规范与 7 条 UI 硬红线。
 2. **先对齐 Ryugi 画板**：
-   - 画板路径：`.artideck/artifacts/artboard/weiji-ui-flows/`（模块词表 `.artideck/modules.json`）。
+   - 画板路径：`.ryugi/artifacts/artboard/weiji-ui-flows/`（模块词表 `.ryugi/modules.json`）。
    - 若用户已在画板留评，先读取未处理评论与选区；若涉及结构、跳转、状态或 Token 变更，先更新对应 `pages/**/*.html`、`pages/tokens.css` 或 `canvas.json`。
    - 改动画板后必须跑通 `ryugi check`（0 跨板连线、0 裁剪、0 未知图标）并经浏览器加载清理 pending。
 3. **再同步改代码**：

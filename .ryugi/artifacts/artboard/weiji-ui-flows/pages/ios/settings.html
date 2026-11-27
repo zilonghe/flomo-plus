@@ -20,13 +20,13 @@
           <div class="sheet-grabber"></div>
           <div class="sheet-bar">
             <span class="action">关闭</span>
-            <span class="ios-nav-title">连接设置</span>
-            <span style="width:44px"></span>
+            <span class="ios-nav-title">设置</span>
+            <span class="action bold">完成</span>
           </div>
 
           <div class="form-section-title">外观</div>
           <div class="form-group">
-            <div style="padding:12px 14px 0;font:500 14px/20px var(--font-body);">主题色</div>
+            <div style="padding:10px 14px 0;font:500 14px/20px var(--font-body);">主题色</div>
             <div class="swatches">
               <div class="sw active"><span class="sw-ring"><span class="sw-dot" style="background:#2d6a4f"><ryugi-icon symbol="checkmark" name="check" size="14"></ryugi-icon></span></span><span>松针</span></div>
               <div class="sw"><span class="sw-dot" style="background:#2553a6"></span><span>靛青</span></div>
@@ -36,6 +36,17 @@
             </div>
           </div>
 
+          <div class="form-section-title">AI 模型与偏好</div>
+          <div class="form-group">
+            <div style="padding:10px 14px;display:flex;flex-direction:column;gap:8px;">
+              <ryugi-ios-segmented value="codex" size="sm" block>
+                <ryugi-ios-segment value="codex">服务器内置</ryugi-ios-segment>
+                <ryugi-ios-segment value="openai">自定义 OpenAI</ryugi-ios-segment>
+              </ryugi-ios-segmented>
+            </div>
+            <div class="form-row"><span>结合个人画像回答</span><ryugi-ios-switch checked></ryugi-ios-switch></div>
+          </div>
+
           <div class="form-section-title">自托管服务</div>
           <div class="form-group">
             <div class="form-row"><span>服务器地址</span><span class="form-val">weiji.18818888.xyz</span></div>
@@ -43,16 +54,10 @@
             <div class="form-row"><span style="color:var(--color-danger)">退出登录</span></div>
           </div>
 
-          <div class="form-section-title">语义检索索引</div>
+          <div class="form-section-title">语义索引与 Obsidian 同步</div>
           <div class="form-group">
             <div class="form-row"><span>已索引笔记</span><span class="form-val">128 / 128</span></div>
-            <div class="form-row"><span style="color:var(--color-accent-text)">重建语义索引</span></div>
-          </div>
-
-          <div class="form-section-title">Obsidian 同步</div>
-          <div class="form-group">
-            <div class="form-row"><span>上次同步</span><span class="form-val">今天 16:40</span></div>
-            <div class="form-row"><span style="color:var(--color-accent-text)">立即同步 Obsidian</span></div>
+            <div class="form-row"><span>上次同步 Obsidian</span><span class="form-val">今天 16:40</span></div>
           </div>
         </div>
       </div>

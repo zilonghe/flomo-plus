@@ -38,7 +38,7 @@
       "x": 0,
       "y": 0,
       "text": "iOS · 入口与笔记流",
-      "description": "覆盖启动鉴权、笔记主页（原生 TabView / .searchable / FAB）、实底侧栏抽屉、日历筛选、连接设置、快速记与全屏 Zoom 精读编辑。"
+      "description": "覆盖启动鉴权、笔记主页（多维独立筛选胶囊 / 搜索态不隐藏快记 / 顶栏统一设置齿轮）、实底侧栏抽屉、单层全宽图形日历 Sheet、统一设置页（外观+AI+连接+同步）与全屏 Zoom 精读编辑。"
     },
     "c-ios-auth": {
       "kind": "condition",
@@ -47,13 +47,21 @@
       "y": 1985,
       "text": "已登录？"
     },
+    "s-entry-cross": {
+      "kind": "sticky",
+      "page": "ios-entry",
+      "x": 2542,
+      "y": 420,
+      "w": 280,
+      "text": "跨 Tab 循环：\n• 精读点「聊这条」→ 切 AI Tab（按上下文保草稿，在途流确认）\n• 精读点 #标签 → 切笔记 Tab 按标签筛选"
+    },
     "t-ios-walk": {
       "kind": "title",
       "page": "ios-walk",
       "x": 0,
       "y": 0,
       "text": "iOS · 随机漫步流",
-      "description": "语义引力图谱：焦点卡轻点精读、长按关联卡精读、点击关联卡跃迁并压入上一跳栈、右上角一键带组聊 AI。"
+      "description": "语义引力图谱：顶栏左侧随时快记；焦点卡轻点精读、长按关联卡精读、点击关联卡跃迁并压入上一跳栈、右上角一键带组聊 AI（独立 pins 草稿槽 + 在途流保护）。"
     },
     "t-ios-ai": {
       "kind": "title",
@@ -61,7 +69,15 @@
       "x": 0,
       "y": 0,
       "text": "iOS · AI 对话流",
-      "description": "以空态/对话态为核心，向外连接历史会话抽屉、@ 置顶引用、模型选择、AI 设置短 Sheet 及引用笔记精读回跳。"
+      "description": "按上下文固定 Key 保存/恢复草稿，在途流切换弹窗确认；模型胶囊始终打开 ModelPickerSheet（Codex 1 步直选）；顶栏齿轮直达统一设置页 AI 分区；AI 引用精读点置顶不关页。"
+    },
+    "s-ai-guard": {
+      "kind": "sticky",
+      "page": "ios-ai",
+      "x": 2646,
+      "y": 420,
+      "w": 280,
+      "text": "状态保护契约：\n• 切会话/跨 Tab 追问按固定 draftContextKey 保草稿\n• 流式生成中切换弹确认 Alert（取消则流继续）\n• AI 引用精读点「加入/移出引用」不关闭页面"
     },
     "t-ios-insights": {
       "kind": "title",
@@ -69,7 +85,15 @@
       "x": 0,
       "y": 0,
       "text": "iOS · 洞察与画像流",
-      "description": "顶栏原生分段切换「洞察｜画像」；配方画板支持选视角配置范围 → 生成报告 → Push 精读引用，以及历史报告与自定义视角。"
+      "description": "顶栏左侧随时快记 + 分段切换「洞察｜画像」；全链路改用原生 NavigationStack Push（画板 → 配方/历史 → 报告 → 引用精读），出栈后台继续生成且与查看历史报告完全解耦。"
+    },
+    "s-ins-bg": {
+      "kind": "sticky",
+      "page": "ios-insights",
+      "x": 3528,
+      "y": 420,
+      "w": 280,
+      "text": "后台生成与跨 Tab：\n• 离开生成中的报告不中止任务，回画板显示状态条并可随时看历史报告\n• 报告「继续追问」→ 走 AI 在途流保护切至 AI Tab"
     },
     "t-web": {
       "kind": "title",
@@ -77,7 +101,7 @@
       "x": 0,
       "y": 0,
       "text": "Web · M3 桌面与移动流",
-      "description": "Material Design 3 暖纸浅色与炭灰深色系统：独立登录页、桌面笔记主界面、详情/导入弹窗、漫步/AI/洞察工作区及 375px 48px 热区适配。"
+      "description": "4 个平级主工作区（笔记 / 随机漫步 / AI 对话 / AI 洞察[含个人画像]），去浮层 ✕ 关闭；漫步居于 .workspace 内且切走保留焦点与上一跳；侧栏三分区 + 底部单一「导入笔记」入口。"
     },
     "t-tokens": {
       "kind": "title",
@@ -101,7 +125,7 @@
     "ios-login": {
       "file": "pages/ios/login.html",
       "page": "ios-entry",
-      "x": 882,
+      "x": 620,
       "y": 420,
       "w": 402,
       "h": 874,
@@ -122,7 +146,7 @@
     "ios-composer": {
       "file": "pages/ios/composer.html",
       "page": "ios-entry",
-      "x": 2542,
+      "x": 1340,
       "y": 420,
       "w": 402,
       "h": 874,
@@ -168,16 +192,16 @@
       "y": 2820,
       "w": 402,
       "h": 874,
-      "title": "08 日历筛选 Sheet"
+      "title": "08 日历筛选 (单层 Sheet)"
     },
     "ios-settings": {
       "file": "pages/ios/settings.html",
       "page": "ios-entry",
-      "x": 1660,
-      "y": 4020,
+      "x": 1980,
+      "y": 420,
       "w": 402,
       "h": 874,
-      "title": "09 连接与外观设置"
+      "title": "09 统一设置（外观/AI/连接/同步）"
     },
     "walk-main": {
       "file": "pages/ios/walk.html",
@@ -243,7 +267,7 @@
       "y": 420,
       "w": 402,
       "h": 874,
-      "title": "02 AI 设置 (短 Sheet)"
+      "title": "02 统一设置 · AI 分区"
     },
     "ai-empty": {
       "file": "pages/ios/ai-chat.html",
@@ -315,7 +339,7 @@
       "y": 420,
       "w": 402,
       "h": 874,
-      "title": "02 历史报告 Sheet"
+      "title": "02 历史报告 (Push)"
     },
     "ins-board": {
       "file": "pages/ios/insights.html",
@@ -333,7 +357,7 @@
       "y": 1620,
       "w": 402,
       "h": 874,
-      "title": "04 运行范围配置 Sheet"
+      "title": "04 配方范围配置 (Push)"
     },
     "ins-report": {
       "file": "pages/ios/insights-report.html",
@@ -342,7 +366,7 @@
       "y": 1620,
       "w": 402,
       "h": 874,
-      "title": "05 洞察报告 Sheet"
+      "title": "05 洞察报告 (Push · 后台生成)"
     },
     "ins-cited-note": {
       "file": "pages/ios/reader.html",
@@ -372,7 +396,7 @@
       "y": 420,
       "w": 1280,
       "h": 800,
-      "title": "02 导入弹窗 (微信读书 / Joplin)"
+      "title": "02 统一导入入口 (flomo / Joplin / 微信读书)"
     },
     "web-walk": {
       "file": "pages/web/walk.html",
@@ -524,12 +548,12 @@
     "e-sidebar-date": {
       "from": "ios-sidebar",
       "to": "ios-date-sheet",
-      "label": "点「按日期筛选」"
+      "label": "关抽屉 → 单层全宽图形日历"
     },
-    "e-sidebar-settings": {
-      "from": "ios-sidebar",
+    "e-notes-settings": {
+      "from": "ios-notes",
       "to": "ios-settings",
-      "label": "点「连接设置」"
+      "label": "点右上齿轮「设置」"
     },
     "e-walk-reader": {
       "from": "walk-main",
@@ -554,12 +578,17 @@
     "e-ai-settings": {
       "from": "ai-empty",
       "to": "ai-settings",
-      "label": "点右上设置"
+      "label": "点右上齿轮 (统一设置 AI 分区)"
     },
     "e-ai-models": {
       "from": "ai-empty",
       "to": "ai-models",
-      "label": "点模型胶囊"
+      "label": "点模型胶囊 (始终开选型)"
+    },
+    "e-ai-models-settings": {
+      "from": "ai-models",
+      "to": "ai-settings",
+      "label": "页内前往 AI 设置"
     },
     "e-ai-pins": {
       "from": "ai-empty",
@@ -584,22 +613,22 @@
     "e-ins-history": {
       "from": "ins-board",
       "to": "ins-history",
-      "label": "点右上历史"
+      "label": "点右上历史 (Push)"
     },
     "e-ins-recipe": {
       "from": "ins-board",
       "to": "ins-recipe-run",
-      "label": "点配方卡"
+      "label": "点配方卡 (Push)"
     },
     "e-ins-run": {
       "from": "ins-recipe-run",
       "to": "ins-report",
-      "label": "点「开始分析」"
+      "label": "点「开始分析」(Push · 后台生成)"
     },
     "e-ins-hist-open": {
       "from": "ins-history",
       "to": "ins-report",
-      "label": "点历史报告"
+      "label": "点历史报告 (不中断后台生成)"
     },
     "e-ins-cite": {
       "from": "ins-report",
@@ -619,7 +648,7 @@
     "e-web-import": {
       "from": "web-notes",
       "to": "web-import-dialog",
-      "label": "导入微信读书 / Joplin"
+      "label": "底部单一「导入笔记」入口"
     },
     "e-web-detail": {
       "from": "web-notes",

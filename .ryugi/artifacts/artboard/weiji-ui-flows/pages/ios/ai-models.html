@@ -25,11 +25,17 @@
           <div class="sheet-bar">
             <span class="action">关闭</span>
             <span class="ios-nav-title">选择模型</span>
-            <span style="width:44px"></span>
+            <span class="action">AI 设置</span>
           </div>
           <div class="ios-search">
             <ryugi-icon symbol="magnifyingglass" name="search" size="16"></ryugi-icon>
             <span>搜索模型</span>
+          </div>
+          <div style="padding:0 16px 6px;">
+            <ryugi-ios-segmented value="codex" size="sm" block>
+              <ryugi-ios-segment value="codex">服务器内置</ryugi-ios-segment>
+              <ryugi-ios-segment value="openai">自定义 OpenAI</ryugi-ios-segment>
+            </ryugi-ios-segmented>
           </div>
 
           <div class="form-section-title">OpenAI</div>

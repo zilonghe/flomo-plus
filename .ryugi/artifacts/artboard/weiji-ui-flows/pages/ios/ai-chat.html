@@ -114,11 +114,11 @@
 
     document.getElementById("root").innerHTML = `
       <div class="ios-nav">
-        <span class="ios-glass-btn" aria-label="历史会话"><ryugi-icon symbol="clock.arrow.circlepath" name="history" size="17"></ryugi-icon></span>
+        <span class="ios-glass-btn" aria-label="历史会话"><ryugi-icon symbol="clock.arrow.circlepath" name="clock" size="17"></ryugi-icon></span>
         <span class="ios-nav-title">${title}</span>
         <div class="ios-glass-pill">
-          <span class="pill-item"><ryugi-icon symbol="slider.horizontal.3" name="sliders-horizontal" size="17"></ryugi-icon></span>
-          <span class="pill-item"><ryugi-icon symbol="square.and.pencil" name="square-pen" size="17"></ryugi-icon></span>
+          <span class="pill-item" aria-label="设置"><ryugi-icon symbol="gearshape" name="settings" size="17"></ryugi-icon></span>
+          <span class="pill-item" aria-label="新建会话"><ryugi-icon symbol="square.and.pencil" name="square-pen" size="17"></ryugi-icon></span>
         </div>
       </div>
       ${pinsHTML}
