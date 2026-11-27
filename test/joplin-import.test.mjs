@@ -172,6 +172,13 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
   const commentedContinuation = await parseJoplinFiles([md('原文.md',
     '---\ntitle: # 项目名\n  预算\n---\n正文')]);
   assert.equal(commentedContinuation.notes[0].body, '# 预算\n\n正文');
+  for (const validMultiline of [
+    '---\ntitle: "预\n  算" # 注释\n---\n正文',
+    "---\ntitle: '预\n  算' # 注释\n---\n正文",
+  ]) {
+    const { notes: [note] } = await parseJoplinFiles([md('原文.md', validMultiline)]);
+    assert.equal(note.body, '# 预 算\n\n正文');
+  }
 
   for (const text of ['---\n# 预算\n---\n正文', '---\ntitle: 正文\n仍然是正文',
     '---\n普通正文\n---\n下一段', '---\nunknown: value\n---\n正文',
@@ -185,6 +192,10 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     '---\ntitle: 预算\ndraft: # 备注\n  &drafts {未闭合\n---\n正文',
     '---\ntitle: 预算\ndraft: # 备注\n  !!seq [未闭合\n---\n正文',
     '---\ntitle: 预算 # 注释\n  续行\n---\n正文',
+    '---\ntitle: "预\n  算" # 注释\n  续行\n---\n正文',
+    "---\ntitle: '预\n  算' # 注释\n  续行\n---\n正文",
+    '---\ntitle: 预算\ntags: [甲,\n  乙] # 注释\n  续行\n---\n正文',
+    '---\ntitle: 预算\ndraft: - [未闭合\n---\n正文',
     '---\ntitle: 预算\ndraft: {未闭合\n---\n正文']) {
     const { notes: [note] } = await parseJoplinFiles([md('原文.md', text)]);
     assert.equal(note.body, '# 原文\n\n' + text);

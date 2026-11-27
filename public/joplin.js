@@ -281,7 +281,7 @@ function yamlScalar(raw) {
   if (text.startsWith('#')) return '';
   const plain = text.replace(/\s+#.*$/, '');
   if (!plain) return '';
-  if (/^[\[\]{},&*!%@`|>]/.test(plain)) return null;
+  if (/^[\[\]{},&*!%@`|>]/.test(plain) || /^[-?:](?:\s|$)/.test(plain)) return null;
   return /:\s|:$/.test(plain) ? null : plain;
 }
 
@@ -394,8 +394,12 @@ function yamlValue(key, raw, lines, listIndent) {
     ? [raw, ...meaningful.map(line => line.trim())]
     : meaningful.map(line => line.trim());
   if (parts.length > 1) {
-    if (/^['"]/.test(parts[0]) && yamlScalar(parts[0]) !== null) return null;
-    if (!/^[\['"]/.test(parts[0]) && parts.slice(0, -1).some(part => /\s#/.test(part))) return null;
+    if (/^[\['"]/.test(parts[0])) {
+      const parsePrefix = parts[0].startsWith('[') ? parseFlowArray : yamlScalar;
+      for (let k = 1; k < parts.length; k++) {
+        if (parsePrefix(parts.slice(0, k).join(' ')) !== null) return null;
+      }
+    } else if (parts.slice(0, -1).some(part => /\s#/.test(part))) return null;
   }
   const scalar = parts.join(' ').trim();
   if (scalar.startsWith('[')) return parseFlowArray(scalar);
