@@ -3,6 +3,10 @@ import SwiftUI
 struct SidebarSheetView: View {
     @Bindable var store: AppStore
     let onClose: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var showDatePicker = false
+    @State private var draftDate = Date()
+    @State private var closeAfterDatePickerDismisses = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,6 +65,12 @@ struct SidebarSheetView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 16)
         }
+        .sheet(isPresented: $showDatePicker, onDismiss: {
+            if closeAfterDatePickerDismisses {
+                closeAfterDatePickerDismisses = false
+                onClose()
+            }
+        }) { datePickerSheet }
     }
 
     private func metric(_ title: String, _ value: Int) -> some View {
@@ -98,38 +108,81 @@ struct SidebarSheetView: View {
     }
 
     private var dateFilter: some View {
-        let currentDay = store.filter.day
-        let fallback = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
-        let selection = Binding(
-            get: { currentDay.flatMap { Self.dayFormatter.date(from: $0) } ?? fallback },
-            set: applyDate
-        )
-        return VStack(alignment: .leading, spacing: 0) {
-            DatePicker("按日期筛选", selection: selection, displayedComponents: .date)
-                .datePickerStyle(.compact)
-                .minTapHeight()
-                .accessibilityIdentifier("notes-filter-date")
-            if currentDay != nil {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                draftDate = store.filter.day.flatMap { Self.dayFormatter.date(from: $0) } ?? Date()
+                showDatePicker = true
+            } label: {
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("按日期筛选")
+                            dateFilterValue
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        HStack {
+                            Text("按日期筛选")
+                            Spacer(minLength: 8)
+                            dateFilterValue
+                        }
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(Theme.ink)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .noteCard(padding: 10, cornerRadius: 14)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("notes-filter-date")
+
+            if store.filter.day != nil {
                 Button {
                     store.filter.day = nil
                     onClose()
                 } label: {
-                    Text("清除日期").minTapHeight()
-                }
-            } else {
-                // The compact picker may not emit a change when the displayed date is selected again.
-                Button {
-                    applyDate(selection.wrappedValue)
-                } label: {
-                    Text("筛选所选日期").minTapHeight()
+                    Text("清除日期").minTouchTarget()
                 }
             }
         }
     }
 
-    private func applyDate(_ date: Date) {
-        store.filter.day = Self.dayFormatter.string(from: date)
-        onClose()
+    private var dateFilterValue: some View {
+        HStack(spacing: 6) {
+            Text(store.filter.day ?? "选择日期")
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .accessibilityHidden(true)
+        }
+        .foregroundStyle(Theme.ink2)
+    }
+
+    private var datePickerSheet: some View {
+        NavigationStack {
+            ScrollView {
+                DatePicker("按日期筛选", selection: $draftDate, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .padding(.horizontal, 16)
+            }
+            .weijiSheetBackground()
+            .navigationTitle("按日期筛选")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showDatePicker = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("筛选") {
+                        store.filter.day = Self.dayFormatter.string(from: draftDate)
+                        closeAfterDatePickerDismisses = true
+                        showDatePicker = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .tint(Theme.active)
     }
 
     private static var dayFormatter: DateFormatter {

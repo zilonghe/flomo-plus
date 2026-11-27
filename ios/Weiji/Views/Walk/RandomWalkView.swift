@@ -220,9 +220,10 @@ struct RandomWalkView: View {
         }
         .buttonStyle(.plain)
         .disabled(store.api == nil)
+        .matchedTransitionSource(id: NoteZoomID(source: .walk, id: item.note.id), in: noteZoom)
         .contextMenu {
             Button("精读这条", systemImage: "book") {
-                Task { await store.openNote(item.id, from: .walk) }
+                Task { await store.openNote(item.note.id, from: .walk) }
             }
         }
         .accessibilityIdentifier("walk-related-card-" + item.id)

@@ -3,6 +3,7 @@ import SwiftUI
 struct InsightsTabView: View {
     private enum Segment: String { case insights, profile }
     @Bindable var store: AppStore
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var segment: Segment = .insights
     @State private var selectedCategory: String?
     @State private var activeRecipe: InsightLens?
@@ -114,6 +115,9 @@ struct InsightsTabView: View {
     private var recipeBoard: some View {
         let insights = store.insights
         let recipes = InsightsStore.filteredLenses(insights.lenses, category: selectedCategory)
+        let columns = dynamicTypeSize.isAccessibilitySize
+            ? [GridItem(.flexible())]
+            : [GridItem(.flexible(), spacing: 10), GridItem(.flexible())]
         return VStack(spacing: 0) {
             ScrollView(.horizontal) {
                 HStack(spacing: 7) {
@@ -135,7 +139,7 @@ struct InsightsTabView: View {
                     if insights.error != nil { InlineError(message: insights.error).padding(16) }
                     else { Text("暂无配方").foregroundStyle(Theme.ink3).padding(.top, 32) }
                 } else {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+                    LazyVGrid(columns: columns, spacing: 10) {
                         ForEach(recipes) { lens in
                             Button {
                                 insights.prepareRecipe(lens, api: store.api)
@@ -161,22 +165,39 @@ struct InsightsTabView: View {
         default: ("slider.horizontal.3", .graphite)
         }
         let shape = RoundedRectangle(cornerRadius: 18)
+        let accessibilitySize = dynamicTypeSize.isAccessibilitySize
+        let description = Text(lens.description).font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
+        let category = Text(lens.category).foregroundStyle(accent.active)
+        let range = Text(recipeRangeLabel(lens.suggestedRange ?? "7d")).foregroundStyle(Theme.ink3)
         return VStack(alignment: .leading, spacing: 8) {
             Image(systemName: symbol)
                 .font(Theme.TypeScale.body.weight(.semibold)).foregroundStyle(accent.active)
                 .frame(width: 34, height: 34)
                 .background(accent.accentSoft, in: .rect(cornerRadius: 10))
                 .accessibilityHidden(true)
-            Text(lens.name).font(Theme.TypeScale.itemTitle).foregroundStyle(Theme.ink).lineLimit(1)
-            Text(lens.description).font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
-                .lineLimit(2, reservesSpace: true)
-            HStack(spacing: 4) {
-                Text(lens.category).foregroundStyle(accent.active)
-                Spacer(minLength: 0)
-                Text(recipeRangeLabel(lens.suggestedRange ?? "7d")).foregroundStyle(Theme.ink3)
+            Text(lens.name).font(Theme.TypeScale.itemTitle).foregroundStyle(Theme.ink)
+                .lineLimit(accessibilitySize ? nil : 1)
+            if accessibilitySize {
+                description
+            } else {
+                description.lineLimit(2, reservesSpace: true)
+            }
+            Group {
+                if accessibilitySize {
+                    VStack(alignment: .leading, spacing: 2) {
+                        category
+                        range
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        category
+                        Spacer(minLength: 0)
+                        range
+                    }
+                    .lineLimit(1)
+                }
             }
             .font(Theme.TypeScale.meta)
-            .lineLimit(1)
         }
         .multilineTextAlignment(.leading)
         .padding(13)

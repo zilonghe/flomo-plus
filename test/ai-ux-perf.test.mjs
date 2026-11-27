@@ -1378,9 +1378,10 @@ test('Material Design 3 mobile 375px layout enforces 48px touch targets without 
         drawerTop: document.querySelector('.sidebar').getBoundingClientRect().top,
         drawerHeight: document.querySelector('.sidebar').getBoundingClientRect().height,
         cells: buttons.map(button => {
-          const { left, top, right, bottom } = button.getBoundingClientRect();
+          const { left, top, right, bottom, width, height } = button.getBoundingClientRect();
           const hit = [left + 2, right - 2].every(x => [top + 2, bottom - 2].every(y => document.elementFromPoint(x, y) === button));
-          return { left, top, right, bottom, hit };
+          const centerHit = document.elementFromPoint(left + width / 2, top + height / 2) === button;
+          return { left, top, right, bottom, hit, centerHit };
         }) };
     })()`);
     assert.equal(cells.drawerTop, 0);
@@ -1390,6 +1391,7 @@ test('Material Design 3 mobile 375px layout enforces 48px touch targets without 
     const [a, b] = cells.cells;
     assert.equal(b.top - a.bottom, 4, 'adjacent date cells must have a 4px gap');
     assert.ok(a.hit && b.hit, 'all four corners inset by 2px must hit their own date button');
+    assert.ok(a.centerHit && b.centerHit, 'both date button centers must hit their own date button');
 
     await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
     await until(() => page.evaluate("document.querySelector('#ins-model-toggle').textContent.includes('Gemini')"), 'mobile insights filters loaded');
