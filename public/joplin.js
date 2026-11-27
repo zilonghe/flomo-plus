@@ -351,6 +351,7 @@ function parseFlowArray(scalar) {
   return null;
 }
 
+// shortcut: zero-dependency YAML subset for Joplin front matter; unsupported multiline constructs return null to preserve source verbatim, upgrade only if a real exporter emits them.
 function scanMultiline(raw, lines) {
   const all = [raw, ...lines].map(line => line.trim());
   let start = 0;
@@ -363,6 +364,7 @@ function scanMultiline(raw, lines) {
     const out = [];
     for (let li = start; li < all.length; li++) {
       const line = all[li];
+      if (!line) return null;
       let p = li === start ? 1 : 0;
       let closedAt = -1;
       while (p < line.length) {
@@ -379,6 +381,7 @@ function scanMultiline(raw, lines) {
         out.push(line.slice(0, closedAt + 1));
         return out.join(' ');
       }
+      if (first === '"' && p > line.length) return null;
       out.push(line);
     }
     return null;
@@ -388,8 +391,10 @@ function scanMultiline(raw, lines) {
     const out = [];
     let quote = null;
     let expectValue = true;
+    let needComma = false;
     for (let li = start; li < all.length; li++) {
       const line = all[li];
+      if (quote && !line) return null;
       let p = li === start ? 1 : 0;
       let end = line.length;
       let closedAt = -1;
@@ -403,22 +408,24 @@ function scanMultiline(raw, lines) {
             if (line[p + 1] === "'") { p += 2; continue; }
             quote = null;
           }
-        } else if (expectValue && (ch === '"' || ch === "'")) {
-          quote = ch;
-          expectValue = false;
         } else if (ch === '#' && (p === 0 || /\s/.test(line[p - 1]))) {
+          if (!expectValue) needComma = true;
           end = p;
           break;
         } else if (ch === ']') {
           closedAt = p;
           break;
         } else if (ch === ',') {
+          needComma = false;
           expectValue = true;
         } else if (!/\s/.test(ch)) {
+          if (needComma) return null;
+          if (expectValue && (ch === '"' || ch === "'")) quote = ch;
           expectValue = false;
         }
         p++;
       }
+      if (quote === '"' && p > line.length) return null;
       if (closedAt >= 0) {
         if (!/^\s*(?:#.*)?$/.test(line.slice(closedAt + 1)) || !trailingClear(li + 1)) return null;
         out.push(line.slice(0, closedAt + 1));

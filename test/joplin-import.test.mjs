@@ -182,6 +182,9 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
   const quotedHash = await parseJoplinFiles([md('原文.md',
     '---\ntitle: "预算\n  #项目\n  计划"\n---\n正文')]);
   assert.equal(quotedHash.notes[0].body, '# 预算 #项目 计划\n\n正文');
+  const commentedFlow = await parseJoplinFiles([md('原文.md',
+    '---\ntitle: 预算\ntags: [甲, # 注释\n  乙, 丙]\n---\n正文')]);
+  assert.deepEqual(tagsFor(commentedFlow.notes[0].body), ['甲', '乙', '丙']);
 
   const manyTags = Array.from({ length: 2000 }, (_, i) => `  tag_${i}`).join(',\n');
   const startMs = performance.now();
@@ -205,6 +208,9 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     '---\ntitle: "预算\n  #项目" # 注释\n  计划"\n---\n正文',
     "---\ntitle: '预\n  算' # 注释\n  续行\n---\n正文",
     '---\ntitle: 预算\ntags: [甲,\n  乙] # 注释\n  续行\n---\n正文',
+    '---\ntitle: 预算\ntags: [甲 # 注释\n  乙, 丙]\n---\n正文',
+    '---\ntitle: "预算\\\n  #项目"\n---\n正文',
+    '---\ntitle: "预算\n\n  计划"\n---\n正文',
     '---\ntitle: 预算\ndraft: - [未闭合\n---\n正文',
     '---\ntitle: 预算\ndraft: {未闭合\n---\n正文']) {
     const { notes: [note] } = await parseJoplinFiles([md('原文.md', text)]);
