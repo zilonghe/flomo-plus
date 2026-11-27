@@ -83,7 +83,7 @@ async function fixture(t) {
     }), { ...env, ...options });
   const put = (user, item, revision = 1) => db.prepare('INSERT OR REPLACE INTO journal_notes VALUES (?, ?, ?, ?)')
     .run(user, item.id, revision, JSON.stringify(item));
-  return { db, call, put };
+  return { db, call, put, env };
 }
 
 test('Notes validators bind the full ordered snapshot and authenticated page identity', async t => {
@@ -269,6 +269,38 @@ test('Model catalog and chat stream honor capacity and preserve only completed s
     assert.equal(Object.hasOwn(calls.at(-1).body, 'reasoning_effort'), false);
   }
   assert.deepEqual(Object.keys(calls.at(-1).body), ['note', 'history']);
+});
+
+test('Chat falls back to the source only when referencedNoteIds is omitted', async t => {
+  const { put, env } = await fixture(t);
+  const gateway = await upstream(t);
+  const sourceBody = '只存在于来源笔记正文里的检索标记';
+  put('A', note(sourceBody));
+  const send = async (body) => {
+    const response = await worker.fetch(new Request(origin + '/api/ai/chat', {
+      method: 'POST',
+      headers: { 'oai-authenticated-user-id': 'A', Origin: origin, 'Content-Type': 'application/json' },
+      body,
+    }), { ...env, ...gateway.env });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const initial = await send(JSON.stringify({ message: '第一问', provider: 'codex', sourceNoteId: id, useAllNotes: false }));
+  assert.equal(initial.session.sourceNoteId, id);
+  assert.equal(initial.citations[0].noteId, id);
+  const sessionId = initial.session.id;
+  const followUp = await send(JSON.stringify({ message: '第二问', provider: 'codex', sessionId, expectedVersion: 1, useAllNotes: false }));
+  assert.equal(followUp.citations[0].noteId, id);
+  const cleared = await send(JSON.stringify({ message: '第三问', provider: 'codex', sessionId, expectedVersion: 2, referencedNoteIds: [], useAllNotes: false }));
+  assert.deepEqual(cleared.citations, []);
+  assert.equal(gateway.calls.length, 3);
+  const messages = gateway.calls.map(({ body }) => body.messages.map(message => message.content).join('\n'));
+  for (const context of messages.slice(0, 2)) {
+    assert.match(context, /<相关历史笔记>/);
+    assert.ok(context.includes(sourceBody));
+  }
+  assert.doesNotMatch(messages[2], /<相关历史笔记>/);
+  assert.ok(!messages[2].includes(sourceBody));
 });
 
 class Element {
@@ -878,7 +910,7 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     assert.ok(chrome, 'Chromium binary is required (set WEIJI_TEST_CHROME)');
     const tab = await headless(t);
     const thirdId = '33333333-3333-4333-8333-333333333333';
-    const noteA = { ...note('随机漫步起点笔记 A，用于验证上一跳卡片展示和返回导航。', id), revision: 1 };
+    const noteA = { ...note('随机漫步起点笔记 A，用于验证上一步卡片展示和返回导航。', id), revision: 1 };
     const noteB = { ...note('随机漫步中继笔记 B，用于验证聚焦切换和同步删除回退。', anotherId), revision: 1 };
     const noteC = { ...note('随机漫步终点笔记 C，用于验证三跳历史清理。', thirdId), revision: 1 };
     const noteMap = new Map([[noteA.id, noteA], [noteB.id, noteB], [noteC.id, noteC]]);
@@ -920,7 +952,14 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
       });
       if (pathname === '/api/insights/lenses') return json(res, { lenses: [], categories: [] });
       if (pathname === '/api/insights/preview') return json(res, { noteCount: 2, tagCount: 0, dayCount: 1, willSample: false });
-      if (pathname === '/api/ai/sessions') return json(res, { sessions: [] });
+      if (pathname === '/api/ai/sessions') {
+        const source = new URL(req.url, origin).searchParams.get('sourceNoteId');
+        if (!source) return json(res, { sessions: [] });
+        return json(res, { session: source === anotherId ? {
+          id: thirdId, sourceNoteId: anotherId, title: '已有笔记对话', version: 1, origin: 'note', updatedAt: createdAt,
+          turns: [{ role: 'assistant', text: '历史回答' }],
+        } : null });
+      }
       if (pathname === '/api/ai/profile') {
         profileLoads++;
         return json(res, { profile: { content: '画像测试正文', enabled: true, noteCount: 2, updatedAt: createdAt } });
@@ -957,6 +996,21 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
       .map(button => [button.dataset.action ?? button.dataset.filter, button.classList.contains('active'), button.getAttribute('aria-current')])`);
     const assertNav = async name => assert.deepEqual(await currentNav(), [[name, true, 'page']]);
     await assertNav('all');
+
+    // Open both new and existing note chats through the reader button.
+    const chatEntry = `document.querySelector('#note-dialog [data-action="open-note-ai-chat"]')`;
+    for (const [current, label] of [[noteA, '问 AI'], [noteB, '继续对话']]) {
+      await page.evaluate(`document.querySelector('[data-open-note="${current.id}"]').click()`);
+      await until(() => page.evaluate(`document.getElementById('note-dialog').open && ${chatEntry}.textContent.trim() === ${JSON.stringify(label)}`), label);
+      await page.evaluate(`${chatEntry}.click()`);
+      await until(() => page.evaluate(`!document.getElementById('note-dialog').open && !document.getElementById('ai-chat-send').disabled &&
+        !document.getElementById('ai-pinned-notes').closest('[hidden]') &&
+        document.querySelector('#ai-pinned-notes [data-remove-pin="${current.id}"] .ai-pin-label')?.textContent === ${JSON.stringify(current.body.slice(0, 24))}`),
+      'source note appears as an automatic reference after loading');
+      await assertNav('open-ai-chat');
+      await clickNav('[data-filter=all]');
+      await assertNav('all');
+    }
 
     // 1. AI Insights filter bar uniform control height & searchable model picker
     await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
@@ -1050,6 +1104,8 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     await until(() => page.evaluate("Boolean(document.querySelector('#rw-focus .rw-focus-card') && document.querySelector('#rw-related .rw-related-card'))"),
       'random walk initial card and related list loaded');
     await assertNav('open-random-walk');
+    assert.equal(await page.evaluate(`document.querySelector('[data-action="rw-shuffle"]').textContent.trim()`), '随机');
+    assert.equal(await page.evaluate(`document.getElementById('rw-prev-slot').getAttribute('aria-label')`), '上一步笔记');
     assert.equal(await page.evaluate("document.activeElement.id"), 'rw-title');
     assert.equal(await page.evaluate("document.getElementById('refresh-button').closest('header').id"), 'notes-topbar');
     assert.equal(await page.evaluate("document.getElementById('notes-topbar').hidden"), true);
@@ -1083,7 +1139,7 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     assert.ok(pivotedWalk.prevRect.right <= pivotedWalk.focusRect.left,
       `previous-hop card must be strictly to the left of focus card: ${JSON.stringify(pivotedWalk)}`);
     assert.match(pivotedWalk.prevPathD, /^M\s+-?\d+\s+-?\d+\s+C\s+/);
-    assert.ok(pivotedWalk.prevText.includes('上一跳'));
+    assert.ok(pivotedWalk.prevText.includes('← 上一步'));
 
     await until(() => page.evaluate("!!document.querySelector('#rw-related .rw-related-card')"), 'walk related cards loaded after pivot');
     const preservedWalk = () => page.evaluate(`({

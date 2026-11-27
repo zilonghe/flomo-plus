@@ -915,8 +915,9 @@ async function chatSession(env, account, input, requestSignal) {
     const retrieveLabel = useAllNotes ? "检索相关笔记" : "准备笔记上下文";
     const retrieveStarted = performance.now();
     step("retrieve", "running", retrieveLabel);
+    const effectiveIds = referencedNoteIds !== undefined ? ids : [existing?.source_note_id ?? sourceId].filter(Boolean);
     const [pins, source, profile] = await Promise.all([
-      Promise.all(ids.map(noteId => activeNote(db, account, noteId))),
+      Promise.all(effectiveIds.map(noteId => activeNote(db, account, noteId))),
       !existing && sourceId ? activeNote(db, account, sourceId) : null,
       useProfile ? profileRow(db, account) : null,
     ]);

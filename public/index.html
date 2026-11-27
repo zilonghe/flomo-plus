@@ -315,7 +315,7 @@
           <h2 id="rw-title" tabindex="-1">随机漫步</h2>
           <div class="rw-controls">
             <button class="icon-button" type="button" data-action="rw-prev" aria-label="上一步" title="上一步">←</button>
-            <button class="button button-secondary" type="button" data-action="rw-shuffle"><svg><use href="#i-shuffle"></use></svg>换一条</button>
+            <button class="button button-secondary" type="button" data-action="rw-shuffle"><svg><use href="#i-shuffle"></use></svg>随机</button>
             <button class="icon-button" type="button" data-action="rw-zoom-out" aria-label="缩小">−</button>
             <span id="rw-zoom-label">100%</span>
             <button class="icon-button" type="button" data-action="rw-zoom-in" aria-label="放大">+</button>
@@ -325,7 +325,7 @@
         <div class="rw-viewport">
           <div id="rw-stage">
             <svg class="rw-links" aria-hidden="true"></svg>
-            <div id="rw-prev-slot" class="rw-prev-slot" aria-label="上一跳笔记"></div>
+            <div id="rw-prev-slot" class="rw-prev-slot" aria-label="上一步笔记"></div>
             <div id="rw-focus"></div>
             <div class="rw-related-list" id="rw-related" aria-label="相关笔记"></div>
           </div>
@@ -386,7 +386,7 @@
         <div class="dialog-actions"><button class="button button-secondary" type="button" data-action="cancel-delete">保留笔记</button><button class="button button-danger" type="button" data-action="confirm-delete">确认删除</button></div>
       </div>
       <section class="note-ai-entry" aria-label="AI 对话">
-        <button class="button button-primary" type="button" data-action="open-note-ai-chat">和 AI 聊这条笔记</button>
+        <button class="button button-primary" type="button" data-action="open-note-ai-chat">问 AI</button>
         <div class="starter-row">
           <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="帮我梳理这条笔记，尽量保留我的原意。">梳理成要点</button>
           <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="结合这条笔记，问我一个能让我想得更深的问题。">追问一个问题</button>

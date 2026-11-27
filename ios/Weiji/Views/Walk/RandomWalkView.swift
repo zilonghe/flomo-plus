@@ -25,7 +25,7 @@ struct RandomWalkView: View {
                                 } else {
                                     VStack(spacing: 12) {
                                         Text("当前焦点已移除").font(Theme.TypeScale.body).foregroundStyle(Theme.ink2)
-                                        Button("换一条继续漫步", action: shuffle)
+                                        Button("随机浏览", action: shuffle)
                                             .buttonStyle(.weijiSecondary)
                                             .disabled(store.api == nil)
                                     }
@@ -61,10 +61,10 @@ struct RandomWalkView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if walk.loading { ProgressView().controlSize(.small).accessibilityLabel("正在寻找关联笔记") }
-                    Button("换一条", action: shuffle)
+                    Button("随机", action: shuffle)
                         .disabled(store.index.entries.isEmpty || walk.loading || store.api == nil)
                         .accessibilityIdentifier("walk-shuffle-button")
-                    Button("聊这组") { if let result = walk.result { store.askAbout(result) } }
+                    Button("问 AI") { if let result = walk.result { store.askAbout(result) } }
                         .disabled(walk.result == nil || walk.loading)
                         .accessibilityIdentifier("walk-chat-button")
                 }
@@ -100,7 +100,7 @@ struct RandomWalkView: View {
             connector(hasRightBranch: result.related.count > 1)
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 12, alignment: .top), GridItem(.flexible(), alignment: .top)], spacing: 10) {
                 ForEach(Array(result.related.prefix(4).enumerated()), id: \.element.id) { index, item in
-                    relatedNode(item, focus: result.focus, compact: false)
+                    relatedNode(item, compact: false)
                         .padding(.top, index.isMultiple(of: 2) ? 0 : 7)
                 }
             }
@@ -111,7 +111,7 @@ struct RandomWalkView: View {
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel("更多关联")
                 ForEach(result.related.dropFirst(4)) { item in
-                    relatedNode(item, focus: result.focus, compact: true)
+                    relatedNode(item, compact: true)
                 }
             }
             .padding(.top, 20)
@@ -147,7 +147,7 @@ struct RandomWalkView: View {
     private func previousCard(_ note: RelatedNoteSummary) -> some View {
         Button { walk.previous() } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("← 上一跳 · \(sourceTitle(note))")
+                Text("← 上一步 · \(sourceTitle(note))")
                     .font(Theme.TypeScale.meta.weight(.semibold)).foregroundStyle(Theme.active)
                     .lineLimit(1)
                 Text(note.body).font(Theme.TypeScale.meta).foregroundStyle(Theme.ink2).lineLimit(1)
@@ -177,10 +177,10 @@ struct RandomWalkView: View {
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
-                Label("轻点精读", systemImage: "arrow.up.right")
-                    .font(Theme.TypeScale.meta.weight(.medium)).foregroundStyle(Theme.active)
-                Spacer(minLength: 4)
                 Text(String(note.createdAt.prefix(10))).font(Theme.TypeScale.meta.monospacedDigit()).foregroundStyle(Theme.ink3)
+                Spacer(minLength: 4)
+                Image(systemName: "arrow.up.right")
+                    .font(Theme.TypeScale.meta.weight(.semibold)).foregroundStyle(Theme.active).accessibilityHidden(true)
             }
         }
         .padding(18).padding(.leading, 8)
@@ -197,28 +197,35 @@ struct RandomWalkView: View {
         .contentShape(.rect(cornerRadius: 22))
     }
 
-    private func relatedNode(_ item: RelatedNotes.Item, focus: RelatedNoteSummary, compact: Bool) -> some View {
-        let relation = WalkRelationKind.classify(focusBook: focus.reading?.bookTitle, candidateBook: item.note.reading?.bookTitle)
-        let accent: ThemeAccent = switch relation {
-        case .memo: .clay
-        case .sameBook: .graphite
-        case .crossBook: .indigo
-        }
+    private func relatedNode(_ item: RelatedNotes.Item, compact: Bool) -> some View {
+        let badges = WalkCardBadge.badges(for: item)
         return Button {
             if let api = store.api { walk.pivot(to: item.id, api: api) }
         } label: {
             VStack(alignment: .leading, spacing: 8) {
-                Text(relation.badgeText)
-                    .font(Theme.TypeScale.meta.weight(.medium)).foregroundStyle(accent.active).lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 8).padding(.vertical, 4).background(accent.accentSoft, in: Capsule())
+                if !badges.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(Array(badges.enumerated()), id: \.offset) { _, badge in
+                            let accent = WalkCardBadge.accent(for: badge.kind)
+                            HStack(spacing: 3) {
+                                if badge.kind == .book {
+                                    Image(systemName: "book.closed").accessibilityHidden(true)
+                                }
+                                Text(badge.text).lineLimit(1)
+                            }
+                            .font(Theme.TypeScale.meta.weight(.medium)).foregroundStyle(accent.active)
+                            .padding(.horizontal, 8).padding(.vertical, 4).background(accent.accentSoft, in: Capsule())
+                        }
+                    }
+                }
                 Text(item.note.body).font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
                     .lineSpacing(3).lineLimit(compact ? 1 : 3, reservesSpace: !compact)
                     .multilineTextAlignment(.leading)
                 HStack(spacing: 4) {
                     Text("\(item.relevancePercent)%").monospacedDigit().foregroundStyle(Theme.ink2)
                     Spacer(minLength: 0)
-                    Text("跃迁 →").foregroundStyle(Theme.active)
+                    Image(systemName: "arrow.right")
+                        .font(Theme.TypeScale.meta.weight(.semibold)).foregroundStyle(Theme.active).accessibilityHidden(true)
                 }
                 .font(Theme.TypeScale.meta.weight(.medium))
             }
@@ -228,7 +235,7 @@ struct RandomWalkView: View {
         .disabled(store.api == nil)
         .matchedTransitionSource(id: NoteZoomID(source: .walk, id: item.note.id), in: noteZoom)
         .contextMenu {
-            Button("精读这条", systemImage: "book") {
+            Button("查看全文", systemImage: "book") {
                 Task { await store.openNote(item.note.id, from: .walk) }
             }
         }

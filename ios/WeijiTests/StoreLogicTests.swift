@@ -97,7 +97,171 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertNil(store.detail)
         XCTAssertNil(store.chat.session)
         XCTAssertTrue(store.chat.draft.isEmpty)
-        XCTAssertTrue(store.chat.pins.isEmpty)
+        XCTAssertEqual(store.chat.pins, [note.id])
+    }
+
+    func testAskAboutNotePinsImmediatelySendsSourceAndPreservesLegacyTurns() async throws {
+        let lookups = OSAllocatedUnfairLock(initialState: 0)
+        let legacyNotes = #"{"notes":[{"id":"note","body":"  1234567890\n  1234567890\t  12345  ","createdAt":"2025-02-01","turns":[{"role":"assistant","text":"旧回答"}],"revision":1}],"deleted":[]}"#
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes": return .init(status: 200, body: legacyNotes)
+            case "/api/ai/sessions":
+                XCTAssertEqual(request.url?.query, "sourceNoteId=note")
+                let first = lookups.withLock { $0 += 1; return $0 == 1 }
+                return .init(status: 200, body: first ? #"{"session":null}"# : sourceSessionFixture)
+            case "/api/ai/chat":
+                XCTAssertEqual(request.httpMethod, "POST")
+                let body = jsonBody(request)
+                XCTAssertEqual(body?["sourceNoteId"] as? String, "note")
+                XCTAssertEqual(body?["referencedNoteIds"] as? [String], ["note"])
+                return .init(status: 200, body: "event: done\ndata: \(sourceSessionFixture)\n\n",
+                             headers: ["Content-Type": "text/event-stream"])
+            default: return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let store = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("同步旧笔记") { !store.syncing && store.notesById["note"] != nil }
+        let api = try XCTUnwrap(store.api)
+        let note = try XCTUnwrap(store.notesById["note"])
+        let chat = store.chat
+        func displayed() -> [String]? {
+            AIChatView.displayedTurns(session: chat.session, loadingSession: chat.loadingSession,
+                                      sourceNoteId: chat.sourceNoteId, notesById: store.notesById)?.map(\.text)
+        }
+        store.askAbout(note)
+        XCTAssertEqual(chat.pins, [note.id])
+        XCTAssertEqual(chat.sourceNoteId, note.id)
+        XCTAssertTrue(chat.loadingSession)
+        XCTAssertNil(displayed())
+        try await waitUntil("旧笔记无正式会话") { !chat.loadingSession }
+        XCTAssertNil(chat.session)
+        XCTAssertEqual(displayed(), ["旧回答"])
+        XCTAssertEqual(AIChatView.pinChipTitle(for: note), "1234567890 1234567890 123")
+        let book = Note(id: "book", body: " \n ", createdAt: "2025-02-01", reading: .init(bookTitle: " Silo \n"), revision: 1)
+        XCTAssertEqual(AIChatView.pinChipTitle(for: book), "Silo")
+        XCTAssertEqual(AIChatView.pinChipTitle(for: nil), "引用笔记")
+
+        chat.draft = "第一问"
+        chat.send(api: api, options: store.options, profile: store.insights)
+        try await waitUntil("完成首轮对话") { !chat.sending }
+        XCTAssertEqual(chat.session?.id, "s1")
+        XCTAssertNil(chat.error)
+        XCTAssertEqual(displayed(), ["会话回答"])
+
+        store.askAbout(note)
+        XCTAssertTrue(chat.loadingSession)
+        chat.togglePin(note.id)
+        try await waitUntil("来源会话加载完成") { !chat.loadingSession }
+        XCTAssertEqual(chat.session?.id, "s1")
+        XCTAssertEqual(chat.sourceNoteId, note.id)
+        XCTAssertTrue(chat.pins.isEmpty)
+    }
+
+    func testHistoryReferenceRestoresUnlessEditedOrDeleted() async throws {
+        let sends = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes": return .init(status: 200, body: notesFixture)
+            case "/api/ai/sessions/s1": return .init(status: 200, body: sourceSessionFixture)
+            case "/api/ai/chat":
+                XCTAssertEqual(request.httpMethod, "POST")
+                let body = jsonBody(request)
+                XCTAssertEqual(body?["sessionId"] as? String, "s1")
+                XCTAssertEqual(body?["expectedVersion"] as? Int, 1)
+                XCTAssertNil(body?["sourceNoteId"])
+                XCTAssertEqual(body?["referencedNoteIds"] as? [String], [])
+                if sends.withLock({ $0 += 1; return $0 == 1 }) {
+                    return .init(status: 409, body: #"{"error":"版本已更新","current":\#(sourceSessionJSON)}"#)
+                }
+                return .init(status: 200, body: "event: done\ndata: \(sourceSessionFixture)\n\n",
+                             headers: ["Content-Type": "text/event-stream"])
+            default: return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let store = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        store.start()
+        try await waitUntil("同步可引用笔记") { !store.syncing && store.notesById["note"] != nil }
+        let api = try XCTUnwrap(store.api)
+        let chat = store.chat
+        let other = Note(id: "other", body: "另一个引用", createdAt: "2025-02-01", revision: 1)
+        await store.applyRecord(.init(note: other, deleted: nil), id: other.id)
+
+        chat.select("s1", api: api)
+        XCTAssertTrue(chat.loadingSession)
+        chat.togglePin(other.id)
+        try await waitUntil("保留手动引用") { !chat.loadingSession }
+        XCTAssertEqual(chat.pins, [other.id])
+        XCTAssertEqual(chat.sourceNoteId, "note")
+
+        chat.select("s1", api: api)
+        try await waitUntil("恢复来源引用") { !chat.loadingSession }
+        XCTAssertEqual(chat.pins, ["note"])
+        XCTAssertEqual(chat.sourceNoteId, "note")
+        await store.applyRecord(nil, id: "note")
+        XCTAssertTrue(chat.pins.isEmpty)
+        XCTAssertNil(chat.sourceNoteId)
+        XCTAssertEqual(chat.session?.id, "s1")
+
+        chat.draft = "删除后继续提问"
+        chat.send(api: api, options: store.options, profile: store.insights)
+        try await waitUntil("收到版本冲突") { !chat.sending }
+        XCTAssertEqual(chat.error, "版本已更新")
+        XCTAssertNil(chat.sourceNoteId)
+        chat.send(api: api, options: store.options, profile: store.insights)
+        try await waitUntil("继续原历史对话") { !chat.sending }
+        XCTAssertNil(chat.error)
+        XCTAssertNil(chat.sourceNoteId)
+        XCTAssertEqual(sends.withLock { $0 }, 2)
+
+        chat.select("s1", api: api)
+        try await waitUntil("重新打开已删除来源的会话") { !chat.loadingSession }
+        XCTAssertEqual(chat.session?.id, "s1")
+        XCTAssertTrue(chat.pins.isEmpty)
+        XCTAssertNil(chat.sourceNoteId)
+    }
+
+    func testHistorySelectionIgnoresSupersededResponseAndChecksSyncState() async throws {
+        let (config, fast) = try StubProtocol.make { _ in .init(status: 200, body: sourceSessionFixture) }
+        let slowConfig = URLSessionConfiguration.ephemeral
+        slowConfig.protocolClasses = [DelayedResponseProtocol.self]
+        let slow = URLSession(configuration: slowConfig)
+        defer {
+            slow.invalidateAndCancel(); fast.invalidateAndCancel(); StubProtocol.remove(config)
+            DelayedResponseProtocol.pending.withLock { $0 = nil }
+        }
+        let fastAPI = WeijiAPIClient(configuration: config, transport: fast)
+        let chat = AIChatStore()
+        let old = chat.select("s0", api: WeijiAPIClient(configuration: config, transport: slow))
+        try await waitUntil("旧会话请求已在途") { DelayedResponseProtocol.pending.withLock { $0 != nil } }
+        let finishOld = try XCTUnwrap(DelayedResponseProtocol.pending.withLock { $0 })
+        await chat.select("s1", api: fastAPI).value
+        finishOld(sourceSessionFixture.replacingOccurrences(of: "s1", with: "s0").replacingOccurrences(of: "note", with: "stale"))
+        await old.value
+        XCTAssertEqual(chat.session?.id, "s1")
+        XCTAssertEqual(chat.sourceNoteId, "note")
+        XCTAssertEqual(chat.pins, ["note"], "尚未同步时可引用来源")
+
+        chat.syncValidIds([])
+        XCTAssertNil(chat.sourceNoteId)
+        XCTAssertTrue(chat.pins.isEmpty)
+        chat.start(source: "note", pins: ["note"])
+        chat.togglePin("note")
+        XCTAssertNil(chat.sourceNoteId)
+        XCTAssertTrue(chat.pins.isEmpty)
+        chat.select("s1", api: fastAPI)
+        try await waitUntil("已同步空集合拦截来源") { !chat.loadingSession }
+        XCTAssertNil(chat.sourceNoteId)
+        XCTAssertTrue(chat.pins.isEmpty)
+        chat.reset()
+        chat.start(source: "note", pins: ["note", "another", "another"])
+        XCTAssertEqual(chat.sourceNoteId, "note")
+        XCTAssertEqual(chat.pins, ["note", "another"])
     }
 
     private func loadReaderSession(in store: AppStore, api: WeijiAPIClient) async throws {
@@ -943,7 +1107,7 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(walk.result?.focus.id, "a")
         XCTAssertEqual(walk.result?.related.map(\.id), ["b", "c"])
         walk.pivot(to: "b", api: api)
-        try await waitUntil("跃迁至 B") { !walk.loading }
+        try await waitUntil("切换焦点至 B") { !walk.loading }
         XCTAssertEqual(walk.result?.focus.id, "b")
         XCTAssertEqual(walk.previousFocus?.id, "a")
         walk.previous()
@@ -952,12 +1116,12 @@ final class StoreLogicTests: XCTestCase {
         // 1. Out-of-order response: slow B starts first, fast C finishes first, then B completes and must not overwrite C.
         do {
             let transportConfig = URLSessionConfiguration.ephemeral
-            transportConfig.protocolClasses = [DelayedWalkProtocol.self]
+            transportConfig.protocolClasses = [DelayedResponseProtocol.self]
             let transport = URLSession(configuration: transportConfig)
-            defer { transport.invalidateAndCancel(); DelayedWalkProtocol.pending.withLock { $0 = nil } }
+            defer { transport.invalidateAndCancel(); DelayedResponseProtocol.pending.withLock { $0 = nil } }
             let slowBTask = try XCTUnwrap(walk.pivot(to: "b", api: WeijiAPIClient(configuration: config, transport: transport)))
-            try await waitUntil("慢 B 请求已在途") { DelayedWalkProtocol.pending.withLock { $0 != nil } }
-            let finishSlowB = try XCTUnwrap(DelayedWalkProtocol.pending.withLock { $0 })
+            try await waitUntil("慢 B 请求已在途") { DelayedResponseProtocol.pending.withLock { $0 != nil } }
+            let finishSlowB = try XCTUnwrap(DelayedResponseProtocol.pending.withLock { $0 })
             let fastCTask = try XCTUnwrap(walk.pivot(to: "c", api: api))
             await fastCTask.value
             XCTAssertEqual(walk.result?.focus.id, "c")
@@ -972,12 +1136,12 @@ final class StoreLogicTests: XCTestCase {
         // 2. In-flight deletion: request B is deleted before its response arrives; late response must be discarded.
         do {
             let transportConfig = URLSessionConfiguration.ephemeral
-            transportConfig.protocolClasses = [DelayedWalkProtocol.self]
+            transportConfig.protocolClasses = [DelayedResponseProtocol.self]
             let transport = URLSession(configuration: transportConfig)
-            defer { transport.invalidateAndCancel(); DelayedWalkProtocol.pending.withLock { $0 = nil } }
+            defer { transport.invalidateAndCancel(); DelayedResponseProtocol.pending.withLock { $0 = nil } }
             let slowDeletedTask = try XCTUnwrap(walk.pivot(to: "b", api: WeijiAPIClient(configuration: config, transport: transport)))
-            try await waitUntil("待删 B 请求已在途") { DelayedWalkProtocol.pending.withLock { $0 != nil } }
-            let finishDeletedB = try XCTUnwrap(DelayedWalkProtocol.pending.withLock { $0 })
+            try await waitUntil("待删 B 请求已在途") { DelayedResponseProtocol.pending.withLock { $0 != nil } }
+            let finishDeletedB = try XCTUnwrap(DelayedResponseProtocol.pending.withLock { $0 })
             await app.applyRecord(nil, id: "b")
             XCTAssertNil(app.notesById["b"])
             XCTAssertEqual(walk.result?.related.map(\.id), ["a"])
@@ -997,11 +1161,27 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertNil(walk.previousFocus)
         await app.applyRecord(nil, id: "a")
         XCTAssertNil(walk.result)
-        XCTAssertEqual(WalkRelationKind.classify(focusBook: nil, candidateBook: nil), .memo)
-        XCTAssertEqual(WalkRelationKind.classify(focusBook: "Dune", candidateBook: " \n"), .memo)
-        XCTAssertEqual(WalkRelationKind.classify(focusBook: " dune ", candidateBook: " DUNE "), .sameBook("DUNE"))
-        XCTAssertEqual(WalkRelationKind.classify(focusBook: "Dune", candidateBook: " Silo "), .crossBook("Silo"))
-        XCTAssertEqual(WalkRelationKind.classify(focusBook: nil, candidateBook: "Silo"), .crossBook("Silo"))
+    }
+
+    func testWalkBadgesUseOnlyActualTagsAndBookTitles() {
+        func badges(_ body: String, shared: [String] = [], book: String? = nil) -> [WalkCardBadge] {
+            let note = RelatedNoteSummary(id: "related", body: body, createdAt: "2025-02-01",
+                                          reading: book.map { Reading(bookTitle: $0) })
+            return WalkCardBadge.badges(for: .init(id: note.id, score: 0.5, relevancePercent: 50, sharedTags: shared, note: note))
+        }
+        XCTAssertEqual(badges("正文"), [])
+        XCTAssertEqual(badges("正文", shared: ["ghost"], book: " \n"), [])
+        XCTAssertEqual(badges("#Alpha #Work/架构", shared: ["ghost", " WORK/架构 ", "alpha"]),
+                       [.init(text: "#work/架构", kind: .tag(root: "work"))])
+        XCTAssertEqual(badges("#Alpha #Work/架构", shared: ["ghost"]), [.init(text: "#alpha", kind: .tag(root: "alpha"))])
+        XCTAssertEqual(badges("正文", book: " Silo "), [.init(text: "Silo", kind: .book)])
+        XCTAssertEqual(badges("正文 #思考", book: "Dune"), [.init(text: "#思考", kind: .tag(root: "思考")), .init(text: "Dune", kind: .book)])
+        XCTAssertEqual(WalkCardBadge.accent(for: .tag(root: "work")), .pine)
+        XCTAssertEqual(WalkCardBadge.accent(for: .tag(root: "WORK")), .pine)
+        XCTAssertEqual(WalkCardBadge.accent(for: .tag(root: "思考")), .plum)
+        XCTAssertEqual(WalkCardBadge.accent(for: .tag(root: "工作")), .indigo)
+        XCTAssertEqual(WalkCardBadge.accent(for: .tag(root: "c")), .clay)
+        XCTAssertEqual(WalkCardBadge.accent(for: .book), .graphite)
     }
 
     func testInsightsPrepareRecipeAppliesSuggestedRangeClearsTagsAndFiltersCategories() async throws {
@@ -1671,8 +1851,11 @@ final class StoreLogicTests: XCTestCase {
 }
 
 private let readerSessionFixture = #"{"session":{"id":"reader-session","title":"会话","version":7,"updatedAt":"2026-11-25T00:00:00Z","origin":"chat"}}"#
+private let sourceSessionJSON = #"{"id":"s1","title":"会话","version":1,"updatedAt":"2025-02-01","origin":"note","sourceNoteId":"note","turns":[{"role":"assistant","text":"会话回答"}]}"#
+private let sourceSessionFixture = #"{"session":\#(sourceSessionJSON)}"#
+
 // Hold a response without blocking URLProtocol's shared request queue.
-private final class DelayedWalkProtocol: URLProtocol, @unchecked Sendable {
+private final class DelayedResponseProtocol: URLProtocol, @unchecked Sendable {
     static let pending = OSAllocatedUnfairLock<(@Sendable (String) -> Void)?>(initialState: nil)
     private let stopped = OSAllocatedUnfairLock(initialState: false)
 
@@ -1681,7 +1864,7 @@ private final class DelayedWalkProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         guard let url = request.url else { return }
-        XCTAssertEqual(url.path, "/api/notes/b/related")
+        XCTAssertTrue(["/api/notes/b/related", "/api/ai/sessions/s0"].contains(url.path))
         Self.pending.withLock { pending in
             pending = { body in
                 guard !self.stopped.withLock({ $0 }),

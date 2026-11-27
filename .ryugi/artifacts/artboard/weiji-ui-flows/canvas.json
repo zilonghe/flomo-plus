@@ -53,7 +53,7 @@
       "x": 2542,
       "y": 420,
       "w": 280,
-      "text": "跨 Tab 循环：\n• 精读点「聊这条」→ 切 AI Tab（按上下文保草稿，在途流确认）\n• 精读点 #标签 → 切笔记 Tab 按标签筛选"
+      "text": "跨 Tab 循环：\n• 精读点「问 AI」→ 切 AI Tab（按上下文保草稿，在途流确认）\n• 精读点 #标签 → 切笔记 Tab 按标签筛选"
     },
     "t-ios-walk": {
       "kind": "title",
@@ -61,7 +61,7 @@
       "x": 0,
       "y": 0,
       "text": "iOS · 随机漫步流",
-      "description": "语义引力图谱：顶栏左侧随时快记；焦点卡轻点精读、长按关联卡精读、点击关联卡跃迁并压入上一跳栈、右上角一键带组聊 AI（独立 pins 草稿槽 + 在途流保护）。"
+      "description": "语义引力图谱：顶栏左侧随时快记；点击焦点卡或长按关联卡查看全文、点击关联卡切换焦点并压入上一步栈、右上角「问 AI」（独立 pins 草稿槽 + 在途流保护）。"
     },
     "t-ios-ai": {
       "kind": "title",
@@ -69,7 +69,7 @@
       "x": 0,
       "y": 0,
       "text": "iOS · AI 对话流",
-      "description": "按上下文固定 Key 保存/恢复草稿，在途流切换弹窗确认；模型胶囊始终打开 ModelPickerSheet（Codex 1 步直选）；顶栏齿轮直达统一设置页 AI 分区；AI 引用精读点置顶不关页。"
+      "description": "按上下文固定 Key 保存/恢复草稿，在途流切换弹窗确认；模型胶囊始终打开 ModelPickerSheet（Codex 1 步直选）；顶栏齿轮直达统一设置页 AI 分区；AI 引用精读可加入或移出引用，不关闭页面。"
     },
     "s-ai-guard": {
       "kind": "sticky",
@@ -101,7 +101,7 @@
       "x": 0,
       "y": 0,
       "text": "Web · M3 桌面与移动流",
-      "description": "4 个平级主工作区（笔记 / 随机漫步 / AI 对话 / AI 洞察[含个人画像]），去浮层 ✕ 关闭；漫步居于 .workspace 内且切走保留焦点与上一跳；侧栏三分区 + 底部单一「导入笔记」入口。"
+      "description": "4 个平级主工作区（笔记 / 随机漫步 / AI 对话 / AI 洞察[含个人画像]），去浮层 ✕ 关闭；漫步居于 .workspace 内且切走保留焦点与上一步；侧栏三分区 + 底部单一「导入笔记」入口。"
     },
     "t-tokens": {
       "kind": "title",
@@ -234,7 +234,7 @@
       "y": 1620,
       "w": 402,
       "h": 874,
-      "title": "03 跃迁后（含上一跳）",
+      "title": "03 切换焦点后（含上一步）",
       "props": {
         "pivoted": true
       }
@@ -288,7 +288,7 @@
       "y": 2820,
       "w": 402,
       "h": 874,
-      "title": "04 @ 置顶笔记选择"
+      "title": "04 @ 引用笔记选择"
     },
     "ai-models": {
       "file": "pages/ios/ai-models.html",
@@ -563,12 +563,12 @@
     "e-walk-pivot": {
       "from": "walk-main",
       "to": "walk-pivoted",
-      "label": "点关联卡跃迁 →"
+      "label": "点关联卡切换 →"
     },
     "e-walk-ai": {
       "from": "walk-main",
       "to": "walk-to-ai",
-      "label": "点右上「聊这组」"
+      "label": "点右上「问 AI」"
     },
     "e-ai-sessions": {
       "from": "ai-empty",
@@ -603,7 +603,7 @@
     "e-ai-cite": {
       "from": "ai-thread",
       "to": "ai-cited-reader",
-      "label": "点 [1] 引用 / 置顶条"
+      "label": "点 [1] 引用 / 引用胶囊"
     },
     "e-ins-new": {
       "from": "ins-board",

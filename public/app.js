@@ -2597,7 +2597,7 @@ function renderWalkPrev() {
   card.type = 'button';
   card.dataset.action = 'rw-prev';
   const head = el('div', 'rw-prev-head');
-  head.append(el('span', 'rw-prev-badge', '← 上一跳'));
+  head.append(el('span', 'rw-prev-badge', '← 上一步'));
   const metaText = prevNote.reading?.bookTitle || dateLong.format(new Date(prevNote.createdAt));
   if (metaText) head.append(el('span', 'rw-prev-meta', metaText));
   card.append(head, el('p', 'rw-prev-excerpt', prevNote.body.slice(0, 180)));
@@ -3895,7 +3895,7 @@ async function sendAIChat(event) {
 function renderNoteAIEntry(note) {
   const button = $('note-dialog').querySelector('[data-action="open-note-ai-chat"]');
   button.textContent = ai.upgradedNoteIds.has(note.id) || note.turns?.length
-    ? '继续和 AI 聊这条笔记' : '和 AI 聊这条笔记';
+    ? '继续对话' : '问 AI';
 }
 
 let noteSessionLookup = null;

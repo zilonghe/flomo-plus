@@ -105,10 +105,10 @@
     ` : `
       <div class="empty-center">
         <div class="spark-badge"><ryugi-icon symbol="sparkles" name="sparkles" size="22"></ryugi-icon></div>
-        <div style="font:600 18px/24px var(--font-body);">${isWalk ? "围绕这组漫步笔记聊聊" : "和你的笔记聊聊"}</div>
-        <div class="prompt-pill">${isWalk ? "这两条设计规范笔记有什么共同点？" : "最近我在关注什么？"}</div>
-        <div class="prompt-pill">帮我回顾这周的读书摘录</div>
-        <div class="prompt-pill">我的笔记里有哪些反复出现的想法？</div>
+        <div style="font:600 18px/24px var(--font-body);">${isWalk ? "围绕引用笔记提问" : "和你的笔记聊聊"}</div>
+        <div class="prompt-pill">${isWalk ? "梳理核心要点" : "最近我在关注什么？"}</div>
+        <div class="prompt-pill">${isWalk ? "结合笔记追问一个问题" : "帮我回顾这周的读书摘录"}</div>
+        <div class="prompt-pill">${isWalk ? "和我的其他笔记有什么关联？" : "我的笔记里有哪些反复出现的想法？"}</div>
       </div>
     `;
 
@@ -124,14 +124,14 @@
       ${pinsHTML}
       ${bodyHTML}
       <div class="composer-box">
-        <div style="font:400 15px/20px var(--font-body);color:${isWalk ? "var(--color-text)" : "var(--color-text-tertiary)"};padding:2px 2px 4px;">
-          ${isWalk ? "对比一下 Apple HIG 与 M3 在暗色模式上的差异" : "问一问你的笔记"}
+        <div style="font:400 15px/20px var(--font-body);color:var(--color-text-tertiary);padding:2px 2px 4px;">
+          ${(isThread || isWalk) ? "围绕引用笔记提问" : "问一问你的笔记"}
         </div>
         <div class="composer-row">
           <ryugi-icon symbol="at" name="at-sign" size="17" style="color:var(--color-text-secondary);padding:0 4px;"></ryugi-icon>
           <span class="model-pill"><ryugi-icon symbol="brain" name="brain" size="13" style="color:var(--color-accent-text)"></ryugi-icon>GPT-4.1 Mini ▾</span>
           <span class="model-pill">思考：中</span>
-          <span class="send-btn" style="opacity:${isWalk ? "1" : "0.4"}"><ryugi-icon symbol="arrow.up" name="arrow-up" size="16"></ryugi-icon></span>
+          <span class="send-btn" style="opacity:0.4"><ryugi-icon symbol="arrow.up" name="arrow-up" size="16"></ryugi-icon></span>
         </div>
       </div>
 

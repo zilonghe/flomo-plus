@@ -194,7 +194,7 @@ struct NoteReaderView: View {
             else { store.performReaderPrimaryAction(for: current, source: source) }
         } label: {
             let isPinned = store.chat.pins.contains(current.id)
-            let title = source == .ai ? (isPinned ? "移出引用" : "加入引用") : "聊这条"
+            let title = source == .ai ? (isPinned ? "移出引用" : "加入引用") : "问 AI"
             let icon = source == .ai ? (isPinned ? "pin.slash" : "pin") : "bubble.left"
             // The bottom bar otherwise reduces a Label to its icon, hiding the pin action's state.
             HStack(spacing: 6) {

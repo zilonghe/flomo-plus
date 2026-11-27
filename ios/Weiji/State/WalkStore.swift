@@ -1,21 +1,34 @@
 import Foundation
 import Observation
 
-enum WalkRelationKind: Equatable, Sendable {
-    case memo, sameBook(String), crossBook(String)
+struct WalkCardBadge: Equatable, Sendable {
+    enum Kind: Equatable, Sendable { case tag(root: String), book }
 
-    static func classify(focusBook: String?, candidateBook: String?) -> Self {
-        guard let title = candidateBook?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return .memo }
-        let focus = focusBook?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return focus == title.lowercased() ? .sameBook(title) : .crossBook(title)
+    let text: String
+    let kind: Kind
+
+    static func accent(for kind: Kind) -> ThemeAccent {
+        guard case let .tag(root) = kind else { return .graphite }
+        var h: UInt32 = 2_166_136_261
+        for byte in root.lowercased().utf8 {
+            h = (h ^ UInt32(byte)) &* 16_777_619
+        }
+        return [ThemeAccent.pine, .indigo, .clay, .plum][Int(h % 4)]
     }
 
-    var badgeText: String {
-        switch self {
-        case .memo: "随记呼应"
-        case .sameBook: "同书"
-        case .crossBook(let title): "跨书 · \(title)"
+    static func badges(for item: RelatedNotes.Item) -> [Self] {
+        let bodyTags = TagParser.tags(in: item.note.body)
+        let bodyTagSet = Set(bodyTags)
+        let shared = item.sharedTags.lazy.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        var badges: [Self] = []
+        if let tag = shared.first(where: bodyTagSet.contains) ?? bodyTags.first {
+            let root = String(tag.split(separator: "/").first ?? Substring(tag))
+            badges.append(Self(text: "#" + tag, kind: .tag(root: root)))
         }
+        if let book = item.note.reading?.bookTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !book.isEmpty {
+            badges.append(Self(text: book, kind: .book))
+        }
+        return badges
     }
 }
 

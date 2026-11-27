@@ -49,7 +49,9 @@ final class AIChatStore {
     private(set) var sessions: [ChatSession] = []
     private(set) var cursor: String?
     private(set) var loadingList = false
-    private var source: String?
+    private(set) var sourceNoteId: String?
+    @ObservationIgnored private var validNoteIds: Set<String>?
+    @ObservationIgnored private var pinsEditedDuringLoad = false
     @ObservationIgnored private var draftContextKey = "new"
     @ObservationIgnored private var draftsByKey: [String: String] = [:]
     @ObservationIgnored private var requestID = ChatRequestID()
@@ -70,9 +72,10 @@ final class AIChatStore {
             ?? insight.map { "insight:\($0.id)" }
             ?? (pins.isEmpty ? "new" : "pins:" + pins.joined(separator: ","))
         switchDraftContext(to: nextKey, resetNew: true)
-        self.source = source
+        sourceNoteId = validSource(source)
         var seen = Set<String>()
-        self.pins = Array(pins.filter { seen.insert($0).inserted }.prefix(10))
+        let candidates = (source.map { [$0] } ?? []) + pins
+        self.pins = Array(candidates.filter { isValidNote($0) && seen.insert($0).inserted }.prefix(10))
         self.insight = insight
     }
 
@@ -93,13 +96,16 @@ final class AIChatStore {
         }
         requestID.clear()
         session = nil
-        source = nil
+        sourceNoteId = nil
         pins = []
+        pinsEditedDuringLoad = false
         insight = nil
         error = nil
     }
 
     func reset() {
+        validNoteIds = nil
+        pinsEditedDuringLoad = false
         start()
         draftsByKey = [:]
         draftContextKey = "new"
@@ -112,9 +118,20 @@ final class AIChatStore {
         useProfile = true
     }
 
+    func syncValidIds(_ ids: Set<String>) {
+        validNoteIds = ids
+        pins.removeAll { !ids.contains($0) }
+        sourceNoteId = validSource(sourceNoteId)
+    }
+
+    private func isValidNote(_ id: String) -> Bool { validNoteIds?.contains(id) ?? true }
+
+    private func validSource(_ id: String?) -> String? { id.flatMap { isValidNote($0) ? $0 : nil } }
+
     func togglePin(_ id: String) {
+        pinsEditedDuringLoad = true
         if pins.contains(id) { pins.removeAll { $0 == id } }
-        else if pins.count < 10 { pins.append(id) }
+        else if isValidNote(id) && pins.count < 10 { pins.append(id) }
     }
 
     func stop() {
@@ -133,31 +150,46 @@ final class AIChatStore {
     }
 
     func loadSource(_ source: String, api: WeijiAPIClient) {
-        load(WeijiAPIClient.withQuery("/api/ai/sessions", [URLQueryItem(name: "sourceNoteId", value: source)]), api: api)
+        let path = WeijiAPIClient.withQuery("/api/ai/sessions", [URLQueryItem(name: "sourceNoteId", value: source)])
+        _ = load(path, api: api, restoreSourcePin: false)
     }
 
-    func select(_ id: String, api: WeijiAPIClient) {
+    @discardableResult
+    func select(_ id: String, api: WeijiAPIClient) -> Task<Void, Never> {
         switchDraftContext(to: "session:\(id)")
-        load("/api/ai/sessions/\(id)", api: api)
+        return load("/api/ai/sessions/\(id)", api: api, restoreSourcePin: true)
     }
 
-    private func load(_ path: String, api: WeijiAPIClient) {
+    private func load(_ path: String, api: WeijiAPIClient, restoreSourcePin: Bool) -> Task<Void, Never> {
         generation += 1
         let stamp = generation
         sessionTask?.cancel()
         loadingSession = true
-        sessionTask = Task {
+        let currentTask = Task {
             defer { if stamp == generation { loadingSession = false } }
             do {
                 try Task.checkCancellation()
                 let response: ChatResponse = try await api.get(path)
                 guard stamp == generation, !Task.isCancelled else { return }
                 session = response.session
+                if let rawSource = response.session?.sourceNoteId {
+                    let source = validSource(rawSource)
+                    if restoreSourcePin {
+                        sourceNoteId = source
+                        if !pinsEditedDuringLoad, let source, !pins.contains(source), pins.count < 10 {
+                            pins.insert(source, at: 0)
+                        }
+                    } else if sourceNoteId == nil {
+                        sourceNoteId = source
+                    }
+                }
             } catch is CancellationError {
             } catch {
                 if stamp == generation { self.error = error.localizedDescription }
             }
         }
+        sessionTask = currentTask
+        return currentTask
     }
 
     func refreshSessions(api: WeijiAPIClient, more: Bool = false) {
@@ -224,7 +256,7 @@ final class AIChatStore {
                 guard stamp == generation else { return }
                 let message = Self.message(typed, insight: session == nil ? insight : nil)
                 let signature = ChatSignature(sessionId: session?.id, expectedVersion: session?.version,
-                                              sourceNoteId: session?.sourceNoteId ?? source, message: message,
+                                              sourceNoteId: validSource(sourceNoteId), message: message,
                                               referencedNoteIds: pins, model: options.model, provider: options.provider,
                                               useProfile: useProfile, reasoningEffort: options.reasoningEffort)
                 var fields = options.fields
@@ -239,7 +271,7 @@ final class AIChatStore {
                     await self?.receive(frame, generation: stamp)
                 }
                 guard stamp == generation, !Task.isCancelled, let latest = response.session else { return }
-                session = latest
+                updateSession(latest)
                 draftsByKey.removeValue(forKey: draftContextKey)
                 draftContextKey = "session:\(latest.id)"
                 insight = nil
@@ -248,11 +280,11 @@ final class AIChatStore {
             } catch is CancellationError {
             } catch let failure as WeijiAPIError where failure.status == 409 {
                 guard stamp == generation else { return }
-                if let current = failure.current(ChatSession.self) { session = current }
+                if let current = failure.current(ChatSession.self) { updateSession(current) }
                 else if let id = session?.id {
                     let latest: ChatResponse? = try? await api.get("/api/ai/sessions/\(id)")
                     guard stamp == generation else { return }
-                    if let updated = latest?.session { session = updated }
+                    if let updated = latest?.session { updateSession(updated) }
                 }
                 if draft.isEmpty, let unsent = inflightDraft { draft = unsent }
                 error = failure.message
@@ -263,6 +295,11 @@ final class AIChatStore {
                 }
             }
         }
+    }
+
+    private func updateSession(_ latest: ChatSession) {
+        session = latest
+        sourceNoteId = validSource(latest.sourceNoteId)
     }
 
     func receive(_ frame: SSEParser.Frame, generation stamp: Int) {

@@ -42,12 +42,14 @@
       display: flex; flex-direction: column; gap: 7px;
     }
     .badge {
-      display: inline-block; align-self: flex-start;
+      display: inline-flex; align-items: center; gap: 3px; min-width: 0;
       padding: 3px 8px; border-radius: 999px;
       font: 500 11px/15px var(--font-body);
     }
+    .badges { display: flex; gap: 6px; }
+    .badge span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .b-pine { background: var(--color-accent-soft); color: var(--color-accent-text); }
     .b-indigo { background: var(--color-indigo-soft); color: var(--color-indigo); }
-    .b-clay { background: var(--color-clay-soft); color: var(--color-clay); }
     .b-graph { background: var(--color-graphite-soft); color: var(--color-graphite); }
     .rel-text {
       font: 400 13px/19px var(--font-body); color: var(--color-text);
@@ -64,7 +66,7 @@
     const pivoted = Boolean((window.ryugiProps || {}).pivoted);
     const prevHTML = pivoted ? `
       <div class="prev-card">
-        <div style="font:600 12px/16px var(--font-body);color:var(--color-accent-text)">← 上一跳 · 随记</div>
+        <div style="font:600 12px/16px var(--font-body);color:var(--color-accent-text)">← 上一步 · 随记</div>
         <div style="font:400 12px/16px var(--font-body);color:var(--color-text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">今天按照 Apple HIG 重构了 iOS 导航层…</div>
       </div>
       <div class="conn-v"></div>
@@ -77,23 +79,23 @@
       : "今天按照 Apple HIG 重构了 iOS 导航层，原生 TabView 和 NavigationStack 让 Liquid Glass 效果自然融入系统。#设计/HIG";
 
     const related = pivoted ? [
-      { cls: "b-clay", tag: "随记呼应", body: "阅读类应用在深色模式下必须控制文本与占位符对比度，避免纯白刺眼…", pct: "24%" },
-      { cls: "b-indigo", tag: "跨书呼应", body: "好的设计规范不是限制创造力，而是把触控热区、动态字号变成默认能力…", pct: "19%" },
-      { cls: "b-graph", tag: "同书呼应", body: "设计 Token 的价值在于语义层与色板层分离，换主题无需改组件…", pct: "17%" },
-      { cls: "b-clay", tag: "随记呼应", body: "用 Ryugi 画板把每一跳交互串联起来，评审时一眼能看清全貌…", pct: "12%" }
+      { cls: "b-pine", tag: "#设计/M3", body: "阅读类应用在深色模式下必须控制文本与占位符对比度，避免纯白刺眼…", pct: "24%" },
+      { cls: "b-pine", tag: "#设计/HIG", body: "好的设计规范不是限制创造力，而是把触控热区、动态字号变成默认能力…", pct: "19%" },
+      { book: "设计系统实践", body: "设计 Token 的价值在于语义层与色板层分离，换主题无需改组件…", pct: "17%" },
+      { cls: "b-indigo", tag: "#工作/复盘", body: "用 Ryugi 画板把各步交互串联起来，评审时一眼能看清全貌…", pct: "12%" }
     ] : [
-      { cls: "b-indigo", tag: "跨书呼应", body: "Material Design 3 的 tonal surface 层级非常适合阅读类 Web 应用…", pct: "21%" },
-      { cls: "b-clay", tag: "随记呼应", body: "好的设计规范不是限制创造力，而是把触控热区和动态字号变成默认…", pct: "18%" },
-      { cls: "b-clay", tag: "随记呼应", body: "回顾这一周的笔记体系：把热力图保持为安静的视觉概览…", pct: "15%" },
-      { cls: "b-graph", tag: "同书呼应", body: "阅读类应用在深色模式下必须控制文本与占位符对比度…", pct: "11%" }
+      { cls: "b-pine", tag: "#设计/M3", book: "设计系统实践", body: "Material Design 3 的 tonal surface 层级非常适合阅读类 Web 应用…", pct: "21%" },
+      { cls: "b-pine", tag: "#设计/HIG", body: "好的设计规范不是限制创造力，而是把触控热区和动态字号变成默认…", pct: "18%" },
+      { cls: "b-indigo", tag: "#工作/复盘", body: "回顾这一周的笔记体系：把热力图保持为安静的视觉概览…", pct: "15%" },
+      { book: "设计系统实践", body: "阅读类应用在深色模式下必须控制文本与占位符对比度…", pct: "11%" }
     ];
 
     document.getElementById("root").innerHTML = `
       <div class="ios-nav">
         <span class="ios-glass-btn" aria-label="快速记"><ryugi-icon symbol="square.and.pencil" name="square-pen" size="17"></ryugi-icon></span>
         <div class="ios-glass-pill">
-          <span class="pill-item">换一条</span>
-          <span class="pill-item accent">聊这组</span>
+          <span class="pill-item">随机</span>
+          <span class="pill-item accent">问 AI</span>
         </div>
       </div>
       <div class="ios-large-title">漫步</div>
@@ -107,10 +109,8 @@
           </div>
           <div class="focus-body">${focusBody}</div>
           <div style="display:flex;justify-content:space-between;align-items:center;font:500 13px/18px var(--font-body);">
-            <span style="display:inline-flex;align-items:center;gap:4px;color:var(--color-accent-text);">
-              <ryugi-icon symbol="arrow.up.right" name="arrow-up-right" size="13"></ryugi-icon>轻点精读
-            </span>
             <span style="color:var(--color-text-tertiary);font-variant-numeric:tabular-nums;">${focusDate}</span>
+            <ryugi-icon symbol="arrow.up.right" name="arrow-up-right" size="13" style="color:var(--color-accent-text)"></ryugi-icon>
           </div>
         </article>
         <svg viewBox="0 0 370 28" width="370" height="28" style="flex-shrink:0;display:block;margin:0 auto;">
@@ -120,11 +120,14 @@
         <div class="rel-grid">
           ${related.map(r => `
             <article class="rel-card">
-              <span class="badge ${r.cls}">${r.tag}</span>
+              ${r.tag || r.book ? `<div class="badges">
+                ${r.tag ? `<span class="badge ${r.cls}"><span>${r.tag}</span></span>` : ""}
+                ${r.book ? `<span class="badge b-graph"><ryugi-icon symbol="book.closed" name="book" size="11"></ryugi-icon><span>${r.book}</span></span>` : ""}
+              </div>` : ""}
               <div class="rel-text">${r.body}</div>
               <div class="rel-foot">
                 <span style="color:var(--color-text-secondary);font-variant-numeric:tabular-nums;">${r.pct}</span>
-                <span style="color:var(--color-accent-text)">跃迁 →</span>
+                <ryugi-icon symbol="arrow.right" name="arrow-right" size="13" style="color:var(--color-accent-text)"></ryugi-icon>
               </div>
             </article>
           `).join("")}

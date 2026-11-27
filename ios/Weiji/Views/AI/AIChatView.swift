@@ -10,8 +10,25 @@ struct AIChatView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var writing: Bool
 
+    static func pinChipTitle(for note: Note?) -> String {
+        let text = note?.body.split(whereSeparator: \.isWhitespace).joined(separator: " ") ?? ""
+        if !text.isEmpty { return String(text.prefix(24)) }
+        if let book = note?.reading?.bookTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !book.isEmpty { return book }
+        return "引用笔记"
+    }
+
+    static func displayedTurns(session: ChatSession?, loadingSession: Bool, sourceNoteId: String?,
+                               notesById: [String: Note]) -> [Turn]? {
+        if let turns = session?.turns, !turns.isEmpty { return turns }
+        if session == nil, !loadingSession, let sourceNoteId,
+           let turns = notesById[sourceNoteId]?.turns, !turns.isEmpty { return turns }
+        return session?.turns
+    }
+
     var body: some View {
         @Bindable var chat = store.chat
+        let turns = Self.displayedTurns(session: chat.session, loadingSession: chat.loadingSession,
+                                       sourceNoteId: chat.sourceNoteId, notesById: store.notesById)
         NavigationStack {
             VStack(spacing: 0) {
                 if !chat.pins.isEmpty {
@@ -22,7 +39,7 @@ struct AIChatView: View {
                                     writing = false
                                     Task { await store.openNote(id, from: .ai) }
                                 } label: {
-                                    Chip(text: store.notesById[id].map { String($0.body.prefix(25)) } ?? "引用笔记",
+                                    Chip(text: Self.pinChipTitle(for: store.notesById[id]),
                                          symbol: "pin.fill", selected: true)
                                         .minTapHeight()
                                 }
@@ -43,10 +60,10 @@ struct AIChatView: View {
                         .lineLimit(1).padding(.horizontal, 16).padding(.bottom, 6)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if chat.session == nil && chat.pendingQuestion.isEmpty && !chat.sending && !chat.loadingSession {
+                if (turns?.isEmpty ?? true) && chat.pendingQuestion.isEmpty && !chat.sending && !chat.loadingSession {
                     emptyState(chat)
                 } else {
-                    messages(chat)
+                    messages(chat, turns: turns)
                 }
                 InlineError(message: chat.error).padding(.horizontal, 16)
                 composer(chat)
@@ -90,15 +107,16 @@ struct AIChatView: View {
         let canSend = store.api != nil && !chat.loadingSession
             && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 4) {
-            TextField("问一问你的笔记", text: $chat.draft, axis: .vertical)
+            TextField(chat.pins.isEmpty ? "问一问你的笔记" : "围绕引用笔记提问", text: $chat.draft, axis: .vertical)
                 .id(chat.composerResetCount)
                 .lineLimit(1...6)
                 .focused($writing)
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
                 .accessibilityIdentifier("ai-input-field")
             HStack(spacing: 4) {
-                IconAction(symbol: "at", label: "置顶笔记", id: "ai-pin-picker-button") { showPins = true }
+                IconAction(symbol: "at", label: "引用笔记", id: "ai-pin-picker-button") { showPins = true }
                     .foregroundStyle(Theme.ink2)
+                    .disabled(chat.loadingSession)
                 modelControls
                 Spacer(minLength: 4)
                 if chat.sending {
@@ -182,11 +200,11 @@ struct AIChatView: View {
 
     @State private var nearBottom = true
 
-    private func messages(_ chat: AIChatStore) -> some View {
+    private func messages(_ chat: AIChatStore, turns: [Turn]?) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    if let turns = chat.session?.turns {
+                    if let turns {
                         ForEach(Array(turns.enumerated()), id: \.offset) { index, turn in
                             if turn.role == "user" { question(turn.text, insight: index == 0 && chat.session?.origin == "insight") }
                             else {
@@ -261,18 +279,21 @@ struct AIChatView: View {
     }
 
     private static let starters = ["最近我在关注什么？", "帮我回顾这周的读书摘录", "我的笔记里有哪些反复出现的想法？"]
+    private static let pinnedStarters = ["梳理核心要点", "结合笔记追问一个问题", "和我的其他笔记有什么关联？"]
 
     private func emptyState(_ chat: AIChatStore) -> some View {
-        VStack(spacing: 18) {
+        let hasPins = !chat.pins.isEmpty
+        return VStack(spacing: 18) {
             Spacer(minLength: 0)
             Image(systemName: "sparkles")
                 .font(.title2.weight(.medium)).foregroundStyle(Theme.active)
                 .frame(width: 56, height: 56)
                 .background(Theme.accentSoft, in: Circle())
                 .accessibilityHidden(true)
-            Text("和你的笔记聊聊").font(.title3.weight(.semibold)).foregroundStyle(Theme.ink)
+            Text(hasPins ? "围绕引用笔记提问" : "和你的笔记聊聊")
+                .font(.title3.weight(.semibold)).foregroundStyle(Theme.ink)
             VStack(spacing: 8) {
-                ForEach(Self.starters, id: \.self) { prompt in
+                ForEach(hasPins ? Self.pinnedStarters : Self.starters, id: \.self) { prompt in
                     Button {
                         chat.draft = prompt
                         guard let api = store.api else { writing = true; return }

@@ -18,7 +18,7 @@
     {
       "id": "walk",
       "name": "Random Walk",
-      "description": "Semantic gravity constellation graph with focus card, cross-book/same-book/memo related hops, previous-hop stack, and reader/AI handoff.",
+      "description": "Semantic gravity constellation graph with focus card, tag and book source badges on related cards, previous-step stack, and reader/AI handoff.",
       "paths": ["ios/Weiji/Views/Walk/**", "public/app.js"],
       "aliases": []
     },

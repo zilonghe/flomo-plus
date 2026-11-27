@@ -34,7 +34,7 @@ struct PinPickerSheet: View {
             }
             .weijiSheetBackground()
             .searchable(text: $query, prompt: "搜索笔记")
-            .navigationTitle("置顶笔记 · \(store.chat.pins.count)/10")
+            .navigationTitle("引用笔记 · \(store.chat.pins.count)/10")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .task(id: query) {
