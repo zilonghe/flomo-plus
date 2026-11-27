@@ -61,7 +61,8 @@ function assemble(title, source, sourceTags) {
   const seen = new Set(tagsFor(body).map(tag => tag.toLowerCase()));
   const tags = [];
   for (const value of sourceTags) {
-    let tag = value.split('/').map(part => part.replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^_+|_+$/g, ''))
+    const parts = Array.isArray(value) ? value : String(value || '').split('/');
+    let tag = parts.map(part => String(part).replace(/[^\p{L}\p{N}_]+/gu, '_').replace(/^_+|_+$/g, ''))
       .filter(Boolean).join('/');
     if (!tag) continue;
     if (/^\p{N}+$/u.test(tag)) tag = 'joplin/' + tag;
@@ -208,7 +209,7 @@ function folderPath(folders, id) {
     path.unshift(folder.title);
     id = folder.metadata.parent_id;
   }
-  return path.join('/');
+  return path;
 }
 
 export async function parseJoplinJex(file) {
@@ -279,7 +280,75 @@ function yamlScalar(raw) {
   }
   if (text.startsWith('#')) return '';
   const plain = text.replace(/\s+#.*$/, '');
+  if (!plain) return '';
+  if (/^[\[\]{},]/.test(plain)) return null;
   return /:\s|:$/.test(plain) ? null : plain;
+}
+
+function parseFlowArray(scalar) {
+  const match = /^\[([\s\S]*)\](?:\s+#.*)?$/.exec(scalar);
+  if (!match) return null;
+  const inner = match[1];
+  const values = [];
+  let i = 0;
+  const skipSpaces = () => { while (i < inner.length && /\s/.test(inner[i])) i++; };
+  skipSpaces();
+  if (i === inner.length) return values;
+  while (i < inner.length) {
+    skipSpaces();
+    if (i >= inner.length) break;
+    let rawItem = '';
+    const ch = inner[i];
+    if (ch === "'") {
+      let end = i + 1;
+      let closed = false;
+      while (end < inner.length) {
+        if (inner[end] === "'") {
+          if (inner[end + 1] === "'") { end += 2; continue; }
+          end++;
+          closed = true;
+          break;
+        }
+        end++;
+      }
+      if (!closed) return null;
+      rawItem = inner.slice(i, end);
+      i = end;
+      skipSpaces();
+      if (i < inner.length && inner[i] !== ',') return null;
+    } else if (ch === '"') {
+      let end = i + 1;
+      let closed = false;
+      while (end < inner.length) {
+        if (inner[end] === '\\') { end += 2; continue; }
+        if (inner[end] === '"') { end++; closed = true; break; }
+        end++;
+      }
+      if (!closed) return null;
+      rawItem = inner.slice(i, end);
+      i = end;
+      skipSpaces();
+      if (i < inner.length && inner[i] !== ',') return null;
+    } else {
+      const start = i;
+      while (i < inner.length && inner[i] !== ',') {
+        if ('[]{}'.includes(inner[i])) return null;
+        i++;
+      }
+      rawItem = inner.slice(start, i).trim();
+      if (!rawItem) return null;
+    }
+    const parsed = yamlScalar(rawItem);
+    if (parsed === null) return null;
+    values.push(parsed);
+    if (i < inner.length) {
+      if (inner[i] !== ',') return null;
+      i++;
+      skipSpaces();
+      if (i === inner.length) break;
+    }
+  }
+  return values;
 }
 
 function yamlValue(key, raw, lines, listIndent) {
@@ -322,12 +391,7 @@ function yamlValue(key, raw, lines, listIndent) {
     return values.includes(null) ? null : values;
   }
   const scalar = [raw, ...meaningful.map(line => line.trim())].join(' ').trim();
-  if (key === 'tags' && scalar.startsWith('[')) {
-    const array = /^\[(.*)\](?:\s+#.*)?$/.exec(scalar);
-    if (!array) return null;
-    const values = (array[1].match(/(?:[^,'"]+|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")+/g) ?? []).map(yamlScalar);
-    return values.includes(null) ? null : values;
-  }
+  if (scalar.startsWith('[')) return parseFlowArray(scalar);
   return yamlScalar(scalar);
 }
 

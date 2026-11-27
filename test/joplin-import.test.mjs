@@ -100,6 +100,18 @@ test('Joplin parser: JEX resolves USTAR, GNU and UTF-8 PAX entries and distingui
   const { notes } = await parseJoplinFiles([file]);
   assert.deepEqual(notes.map(note => note.id), result.notes.map(note => note.id));
   assert.ok(notes.every(note => /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(note.id)));
+
+  const slashArchive = archive(
+    tarEntry('f1.md', raw(30, 2, '客户/项目')),
+    tarEntry('f2.md', raw(31, 2, '客户')),
+    tarEntry('f3.md', raw(32, 2, '项目', { parent_id: id(31) })),
+    tarEntry('n1.md', rawNote(33, '单层含斜杠', '内容一', { parent_id: id(30) })),
+    tarEntry('n2.md', rawNote(34, '双层笔记本', '内容二', { parent_id: id(32) })),
+  );
+  const slashRes = await parseJoplinJex(slashArchive);
+  assert.equal(slashRes.notes.length, 2);
+  assert.deepEqual(tagsFor(slashRes.notes[0].body), ['客户_项目']);
+  assert.deepEqual(tagsFor(slashRes.notes[1].body), ['客户/项目']);
 });
 
 test('Joplin parser: preserves original Markdown and only deduplicates an actual matching H1', async () => {
@@ -147,9 +159,15 @@ test('Joplin parser: accepts upstream front matter, decodes BOMs and filters non
     assert.equal(note.body, '# 保留\n换行\n\n正文');
     assert.equal(note.createdAt, '2026-11-26T07:30:00.000Z');
   }
+  const apostrophe = await parseJoplinFiles([md('出版.md',
+    "---\ntitle: 书单\ntags: [O'Reilly, Work, 'it''s ok', \"a, b\"]\n---\n正文")]);
+  assert.deepEqual(tagsFor(apostrophe.notes[0].body), ['O_Reilly', 'Work', 'it_s_ok', 'a_b']);
+
   for (const text of ['---\n# 预算\n---\n正文', '---\ntitle: 正文\n仍然是正文',
     '---\n普通正文\n---\n下一段', '---\nunknown: value\n---\n正文',
-    '---\ntitle: 预算\n未缩进正文\n---\n正文']) {
+    '---\ntitle: 预算\n未缩进正文\n---\n正文',
+    '---\ntitle: 预算\ndraft: [未闭合\n---\n正文',
+    '---\ntitle: 预算\ndraft: {未闭合\n---\n正文']) {
     const { notes: [note] } = await parseJoplinFiles([md('原文.md', text)]);
     assert.equal(note.body, '# 原文\n\n' + text);
   }
@@ -463,6 +481,22 @@ test('Joplin E2E: desktop JEX and directory import, retry, tombstone, and 375px 
   assert.equal(await evaluate('document.querySelector("#joplin-submit").disabled'), true);
   assert.equal(requests.length, 2);
   assert.deepEqual(row(directoryId), tombstone);
+  await click('[data-close="joplin-dialog"]');
+
+  const reopenRace = await evaluate(`(async () => {
+    const dialog = document.querySelector('#joplin-dialog');
+    const fileInput = document.querySelector('#joplin-file');
+    document.querySelector('[data-action="open-joplin-import"]').click();
+    dialog.close();
+    document.querySelector('[data-action="open-joplin-import"]').click();
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['快速重开保留'], '快速重开.md', { type: 'text/markdown' }));
+    fileInput.files = transfer.files;
+    const before = fileInput.files.length;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    return { before, after: fileInput.files.length, open: dialog.open };
+  })()`);
+  assert.deepEqual(reopenRace, { before: 1, after: 1, open: true });
   await click('[data-close="joplin-dialog"]');
 
   await openImport();

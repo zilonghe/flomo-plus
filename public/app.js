@@ -2306,6 +2306,7 @@ function openFileImport(kind) {
     select.add(new Option('当前设备（' + browserZone + '）', browserZone), 1);
   }
   sidebar(false);
+  resetFileImport(kind, true);
   $(`${kind}-dialog`).showModal();
 }
 
@@ -4800,7 +4801,9 @@ $('import-dialog').addEventListener('cancel', (event) => {
 $('import-dialog').addEventListener('close', resetWereadImport);
 for (const kind of ['flomo', 'joplin']) {
   $(`${kind}-dialog`).addEventListener('cancel', event => { if (state[kind + 'Working']) event.preventDefault(); });
-  $(`${kind}-dialog`).addEventListener('close', () => resetFileImport(kind, true));
+  $(`${kind}-dialog`).addEventListener('close', () => {
+    if (!$(`${kind}-dialog`).open) resetFileImport(kind, true);
+  });
   $(`${kind}-form`).addEventListener('submit', event => importFileNotes(event, kind));
 }
 $('joplin-file').addEventListener('change', () => {
