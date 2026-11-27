@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -575,3 +576,94 @@ test("public auth HTML and admin sync guards preserve the other admin's real not
   assert.equal(unconfigured.status, 400);
   assert.equal((await unconfigured.json()).code, "obsidian_not_configured");
 });
+
+for (const client of ["android", "ios"]) {
+  test(`${client} OAuth PKCE exchanges a native session and preserves web login`, { timeout: 15_000 }, async t => {
+    const path = join(await scratch(t), "native.db");
+    const database = await databaseFor(t, path);
+    insertUser(database, "native", "user");
+    database.prepare("INSERT INTO auth_identities (provider, subject, user_id, created_at) VALUES ('github', '42', 'native', datetime())").run();
+
+    const providerPort = await listen(t, async (req, res) => {
+      if (req.url === "/login/oauth/access_token" && req.method === "POST") {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        const fields = new URLSearchParams(body);
+        assert.equal(fields.get("code"), "upstream-code");
+        assert.match(fields.get("code_verifier"), /^[A-Za-z0-9_-]{43}$/);
+        res.end(JSON.stringify({ access_token: "upstream-token" }));
+      } else {
+        assert.equal(req.url, "/user");
+        assert.equal(req.headers.authorization, "Bearer upstream-token");
+        res.end(JSON.stringify({ id: 42 }));
+      }
+    });
+    const provider = "http://127.0.0.1:" + providerPort;
+    const origin = "https://weiji.example.invalid";
+    const local = await preview(t, { PATH: process.env.PATH, PORT: "0", SQLITE_PATH: path, PUBLIC_ORIGIN: origin,
+      AUTH_MODE: "oauth", GITHUB_CLIENT_ID: "test-gh", GITHUB_CLIENT_SECRET: "test-gh-secret",
+      OAUTH_GITHUB_ORIGIN: provider, OAUTH_GITHUB_API_ORIGIN: provider, EMBEDDING_PROVIDER: "disabled" });
+    const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const label = client === "android" ? "Android (Test Phone)" : "iOS (Test Phone)";
+    const state = "test-native-state";
+    const call = (route, init) => fetch(local + route, { redirect: "manual", ...init });
+    async function flow(kind) {
+      const query = kind === "web" ? "" : "?" + new URLSearchParams({
+        client: kind, redirect_uri: "weiji://auth/callback", code_challenge: challenge, code_challenge_method: "S256", state,
+      });
+      const start = await call("/auth/github/start" + query);
+      assert.equal(start.status, 302);
+      const upstream = new URL(start.headers.get("location"));
+      assert.equal(upstream.origin, provider);
+      assert.equal(upstream.searchParams.get("code_challenge_method"), "S256");
+      const nonce = start.headers.get("set-cookie")?.split(";")[0];
+      const result = await call("/auth/github/callback?" + new URLSearchParams({
+        code: "upstream-code", state: upstream.searchParams.get("state"),
+      }), nonce ? { headers: { Cookie: nonce } } : {});
+      assert.equal(result.status, 302);
+      return result;
+    }
+
+    const callback = new URL((await flow(client)).headers.get("location"));
+    assert.equal(callback.href.split("?")[0], "weiji://auth/callback");
+    assert.equal(callback.searchParams.get("state"), state);
+    const code = callback.searchParams.get("code");
+    assert.ok(code);
+    function exchange(codeVerifier = verifier, requestOrigin = origin) {
+      return call("/api/auth/exchange", { method: "POST", headers: { Origin: requestOrigin, "Content-Type": "application/json" },
+        body: JSON.stringify({ code, codeVerifier, deviceLabel: label }) });
+    }
+    assert.equal((await exchange(verifier, "https://wrong.invalid")).status, 403);
+    assert.equal((await exchange("x".repeat(43))).status, 401);
+    const ok = await exchange();
+    assert.equal(ok.status, 200);
+    const { token, sessionId, expiresAt, user } = await ok.json();
+    assert.match(token, /^[A-Za-z0-9_-]+$/);
+    assert.ok(Date.parse(expiresAt) > Date.now());
+    assert.deepEqual(user, { id: "native", name: "我的笔记", email: "", role: "user" });
+    assert.equal((await exchange()).status, 401);
+
+    const headers = { Authorization: "Bearer " + token, "X-Journal-Account": user.id };
+    const sessions = await call("/api/auth/sessions", { headers });
+    assert.equal(sessions.status, 200);
+    assert.ok((await sessions.json()).sessions.some(s => s.id === sessionId && s.label === label && s.kind === "ios" && s.current));
+    const note = { id: "9e0cf24a-fe22-4b30-a7cf-0c8aad068807", body: "移动端笔记", createdAt: "2026-11-24T00:00:00Z" };
+    const write = await call("/api/notes", { method: "POST", headers: { ...headers, Origin: origin, "Content-Type": "application/json" },
+      body: JSON.stringify({ id: note.id, expectedRevision: 0, note }) });
+    assert.equal(write.status, 200);
+    const read = await call("/api/notes", { headers });
+    assert.equal(read.status, 200);
+    assert.equal((await read.json()).notes[0].body, note.body);
+
+    const web = await flow("web");
+    assert.equal(web.headers.get("location"), origin + "/");
+    const cookie = web.headers.getSetCookie().find(item => item.startsWith("weiji_session=")).split(";")[0];
+    assert.equal((await call("/api/session", { headers: { Cookie: cookie } })).status, 200);
+
+    database.prepare("UPDATE auth_users SET status = 'disabled' WHERE id = 'native'").run();
+    const disabled = new URL((await flow(client)).headers.get("location"));
+    assert.equal(disabled.href.split("?")[0], "weiji://auth/callback");
+    assert.deepEqual(Object.fromEntries(disabled.searchParams), { error: "account_disabled", state });
+  });
+}

@@ -114,3 +114,15 @@ xcrun devicectl device process launch --device "$WEIJI_DEVICE_ID" com.zilonghe.w
 ### 公开自托管
 
 公网环境使用 Caddy HTTPS、GitHub / Google OAuth 和邀请码准入，Web 与 iOS 共用账号。部署、迁移历史数据、管理员操作及 R2 备份见 [部署手册](deploy/DEPLOY.md)。本地开发仍可使用原有的 `PREVIEW_AUTH_TOKEN`。
+
+## Android 微记
+
+支持 Android 8.0（API 26）及以上。构建需要 JDK 17、Android SDK Platform 35 和 Build Tools 35.0.0，设置 `JAVA_HOME`、`ANDROID_HOME` 后从仓库根目录运行：
+
+```sh
+cd android
+./gradlew :app:testDebugUnitTest :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+也可以把 Debug APK 传到手机，在文件管理器中点开安装。首次启动可通过 GitHub / Google 登录；自托管的旧版服务可在「高级连接」输入服务地址与访问令牌。服务地址使用 HTTPS；同一设备的回环地址和 Android Emulator 的 `http://10.0.2.2` 可用于本地开发。公有部署需先升级服务端，才能用 Android 的 OAuth 登录。
