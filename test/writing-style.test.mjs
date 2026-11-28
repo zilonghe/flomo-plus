@@ -705,6 +705,48 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
   await click('#ai-style-toggle');
   assert.match(await evaluate(`${nodeExpr('#ai-chat-error')}.textContent`), /Codex 中转暂不支持/);
   assert.equal(web.chatRequests.length, successfulChats);
+
+  // Switch from OpenAI (style enabled) back to Codex relay: must keep selection, show error, and block send.
+  const realFetch = globalThis.fetch;
+  let relayCalls = 0;
+  t.mock.method(globalThis, 'fetch', (url, init) => {
+    if (String(url) === relay.CODEX_RELAY_URL) {
+      relayCalls++;
+      return Promise.resolve(Response.json({ reply: '中转普通回复。' }));
+    }
+    return realFetch(url, init);
+  });
+  await click(action('open-settings'));
+  await wait(`${nodeExpr('#settings-dialog')}.open`);
+  await value('#chat-provider', 'openai');
+  await value('#openai-key', 'sk-test-key-1234567890');
+  await click('#settings-form button[type=submit]');
+  await wait(`!${nodeExpr('#settings-dialog')}.open`);
+  await click('#ai-style-toggle');
+  assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed')`), 'true');
+  await value('#ai-chat-input', '切到中转后不能静默发普通对话');
+  await click(action('open-settings'));
+  await wait(`${nodeExpr('#settings-dialog')}.open`);
+  await value('#chat-provider', 'codex');
+  await click('#settings-form button[type=submit]');
+  await wait(`!${nodeExpr('#settings-dialog')}.open`);
+  assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed')`), 'true');
+  assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-disabled')`), 'false');
+  assert.match(await evaluate(`${nodeExpr('#ai-chat-error')}.textContent`), /Codex 中转暂不支持/);
+  await click('#ai-chat-send');
+  await delay(80);
+  assert.equal(web.chatRequests.length, successfulChats);
+  assert.equal(relayCalls, 0);
+  assert.equal(await evaluate(`${nodeExpr('#ai-chat-input')}.value`), '切到中转后不能静默发普通对话');
+  await click('#ai-style-toggle');
+  assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed')`), 'false');
+  assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-disabled')`), 'true');
+  assert.equal(await evaluate(`${nodeExpr('#ai-chat-error')}.textContent`), '');
+  await click('#ai-chat-send');
+  await wait(`${nodeExpr('#ai-chat-thread')}.textContent.includes('中转普通回复')`);
+  assert.equal(web.chatRequests.length, successfulChats + 1);
+  assert.notEqual(web.chatRequests.at(-1).useWritingStyle, true);
+  assert.equal(relayCalls, 1);
 });
 
 test('[WS-10] Chromium 保存失败拦截、跨视图等待、同文档恢复与切账号隔离', { timeout: 40_000 }, async t => {

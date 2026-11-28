@@ -3975,17 +3975,27 @@ function pinFromPicker(id) {
 }
 
 function syncAIStyleToggle() {
-  if (relayMode()) ai.useWritingStyle = false;
   const toggle = $('ai-style-toggle');
+  const blocked = relayMode() && !ai.useWritingStyle;
   insPressed(toggle, ai.useWritingStyle);
-  toggle.setAttribute('aria-disabled', String(relayMode() || Boolean(ai.sending)));
+  toggle.setAttribute('aria-disabled', String(blocked || Boolean(ai.sending)));
   toggle.title = relayMode() ? styleRelayMessage : '仅本轮使用写作风格';
+  if (ai.lifecycle) {
+    if (ai.useWritingStyle && relayMode()) setError('ai-chat-error', styleRelayMessage);
+    else if ($('ai-chat-error').textContent === styleRelayMessage) setError('ai-chat-error', '');
+  }
 }
 
 function toggleAIStyle() {
   if (ai.sending) return;
+  if (ai.useWritingStyle) {
+    ai.useWritingStyle = false;
+    setError('ai-chat-error', '');
+    syncAIStyleToggle();
+    return;
+  }
   if (relayMode()) { setError('ai-chat-error', styleRelayMessage); return; }
-  ai.useWritingStyle = !ai.useWritingStyle;
+  ai.useWritingStyle = true;
   setError('ai-chat-error', '');
   syncAIStyleToggle();
 }
