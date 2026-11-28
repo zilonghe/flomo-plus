@@ -164,7 +164,7 @@ export function lexicalFallbackSearch(query, allNotes, opts) {
 }
 
 export function escapeContextTags(text) {
-  return text.replace(/<(\/?(?:当前笔记|长期个人画像|相关历史笔记|画像生成任务|洞察笔记资料|洞察视角任务))>/g, '‹$1›');
+  return text.replace(/<(\/?(?:当前笔记|长期个人画像|相关历史笔记|画像生成任务|洞察笔记资料|洞察视角任务|写作风格资料|写作风格提炼任务))>/g, '‹$1›');
 }
 
 export function buildNoteContextBlock(entries, { maxTotalChars = 12000, pinBudget = maxTotalChars, pinnedMaxChars = 2000, retrievedMaxChars = 1000 } = {}) {

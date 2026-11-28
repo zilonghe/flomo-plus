@@ -15,7 +15,7 @@ function options(args, allowed, required = []) {
   return result;
 }
 
-const tables = ["journal_notes", "note_embeddings", "ai_sessions", "ai_profile", "ai_insight_lenses", "ai_insight_reports", "note_fts"];
+const tables = ["journal_notes", "note_embeddings", "ai_sessions", "ai_profile", "ai_writing_style", "ai_insight_lenses", "ai_insight_reports", "note_fts"];
 
 function migrate(db, args) {
   const { from, to } = options(args, ["from", "to"], ["from", "to"]);

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-web.css" />
+  <style>
+    .style-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+    .style-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .style-grid p { font-size:14px; line-height:1.6; }
+    .style-stack { display:grid; gap:12px; }
+  </style>
+</head>
+<body>
+  <div class="web-shell">
+    <aside class="web-sidebar">
+      <div class="web-brand"><div class="web-brand-left"><span class="web-brand-mark"><ryugi-icon name="text-align-start" size="17"></ryugi-icon></span><span>微记</span></div></div>
+      <nav class="web-nav">
+        <div class="web-nav-item"><ryugi-icon name="text-align-start" size="16"></ryugi-icon>全部笔记</div>
+        <div class="web-nav-item"><ryugi-icon name="waypoints" size="16"></ryugi-icon>随机漫步</div>
+        <div class="web-nav-item"><ryugi-icon name="message-circle" size="16"></ryugi-icon>AI 对话</div>
+        <div class="web-nav-item active"><ryugi-icon name="chart-no-axes-column-increasing" size="16"></ryugi-icon>AI 洞察</div>
+      </nav>
+    </aside>
+    <main class="web-main">
+      <header class="web-topbar"><div class="style-row"><strong>AI 洞察</strong><span class="web-btn">新洞察</span><span class="web-btn">历史</span><span class="web-btn soft">个人画像</span></div></header>
+      <div class="web-content">
+        <div class="style-row"><button class="web-btn" aria-pressed="false">个人画像</button><button class="web-btn soft" aria-pressed="true">写作风格</button></div>
+        <div class="style-row">
+          <span class="web-btn">默认模型 ▾</span><span class="web-btn">全部时间 ▾</span><span class="web-btn">全部标签 ▾</span>
+          <button class="web-btn primary"><ryugi-icon name="sparkles" size="14"></ryugi-icon>提炼风格</button><button class="web-btn">编辑</button>
+        </div>
+        <article class="web-card"><strong>风格规则</strong><p>先说结论，再补事实。长短句交替。少用形容词，不用「综上所述」。</p></article>
+        <article class="web-card style-stack">
+          <div class="style-row"><strong>原句锚点 1 / 5</strong><button class="web-btn">添加笔记</button><button class="web-btn soft">采纳推荐锚点</button></div>
+          <div class="style-row"><span>先把最小的那一步走通，剩下的用结果说话。</span><button class="web-btn">移除</button></div>
+        </article>
+        <article class="web-card style-stack">
+          <strong>盲测对比</strong>
+          <div class="style-row"><input class="web-btn" aria-label="自定义主题" placeholder="留空自动选一条笔记" /><button class="web-btn primary">开始盲测</button></div>
+          <div class="style-grid"><div class="web-card"><strong>A</strong><p>把第一步走通，再决定下一步。</p></div><div class="web-card"><strong>B</strong><p>从一项可以验证的小任务开始。</p></div></div>
+          <div class="style-row"><button class="web-btn">选 A</button><button class="web-btn">选 B</button><button class="web-btn">差不多</button></div>
+        </article>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

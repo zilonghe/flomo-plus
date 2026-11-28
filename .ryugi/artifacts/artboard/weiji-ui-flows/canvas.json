@@ -479,11 +479,20 @@
     "web-mobile": {
       "file": "pages/web/mobile.html",
       "page": "web-flows",
-      "x": 3520,
+      "x": 4380,
       "y": 2580,
       "w": 402,
       "h": 874,
       "title": "08 Web 移动端 (48px 热区)"
+    },
+    "web-writing-style": {
+      "file": "pages/web/writing-style.html",
+      "page": "web-flows",
+      "x": 3520,
+      "y": 3660,
+      "w": 1280,
+      "h": 800,
+      "title": "09 Web 写作风格"
     },
     "tokens-sheet": {
       "file": "pages/tokens/sheet.html",
@@ -529,6 +538,16 @@
     }
   },
   "edges": {
+    "e-web-style": {
+      "from": "web-insights",
+      "to": "web-writing-style",
+      "label": "个人画像 → 写作风格"
+    },
+    "e-web-detail-style-ai": {
+      "from": "web-note-dialog",
+      "to": "web-ai",
+      "label": "按我的风格改写"
+    },
     "e-launch-auth": {
       "from": "ios-launch",
       "to": "c-ios-auth",

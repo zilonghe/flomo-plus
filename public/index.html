@@ -224,6 +224,11 @@
               </div>
             </article>
             <section id="ins-panel-profile" class="ins-surface" aria-label="个人画像" hidden>
+              <div class="profile-subtabs ins-tabs" role="group" aria-label="画像工作区">
+                <button type="button" data-action="profile-pane" data-pane="bio" aria-controls="profile-pane-bio" aria-pressed="true">个人画像</button>
+                <button type="button" data-action="profile-pane" data-pane="style" aria-controls="profile-pane-style" aria-pressed="false">写作风格</button>
+              </div>
+              <div id="profile-pane-bio">
               <div class="profile-actions">
                 <select id="profile-model-select" class="field ins-model" aria-label="生成模型" hidden></select>
                 <button class="button button-primary" type="button" data-action="profile-generate">生成画像</button>
@@ -249,6 +254,68 @@
                   <button class="button button-secondary" type="button" data-action="profile-cancel-edit">取消</button>
                   <button class="button button-primary" type="button" data-action="profile-save">保存</button>
                 </div>
+              </div>
+              </div>
+              <div id="profile-pane-style" hidden>
+                <p id="style-relay" class="inline-error" hidden></p>
+                <div class="style-row">
+                  <select id="style-model-select" class="field ins-model" aria-label="提炼与盲测模型" hidden></select>
+                  <select id="style-range" class="field ins-model" aria-label="提炼范围">
+                    <option value="all">不限日期</option><option value="7d">最近 7 天</option><option value="week">本周</option>
+                    <option value="month">本月</option><option value="custom">自定义日期</option>
+                  </select>
+                  <button type="button" class="button button-secondary" id="style-tags-toggle" data-action="style-tags" aria-expanded="false" aria-controls="style-tags-picker">全部标签</button>
+                  <button type="button" class="button button-primary" data-action="style-generate">提炼风格</button>
+                  <button type="button" class="button button-secondary" data-action="style-edit">编辑</button>
+                </div>
+                <div class="style-row" id="style-custom-dates" hidden>
+                  <input type="date" class="field" id="style-start" aria-label="起始日期"><input type="date" class="field" id="style-end" aria-label="结束日期">
+                </div>
+                <div id="style-tags-picker" hidden>
+                  <input type="search" id="style-tags-search" class="field" aria-label="搜索提炼标签" placeholder="搜索标签">
+                  <div class="style-row ins-pills style-picker-results" id="style-tag-list"></div>
+                </div>
+                <p id="style-status" role="status"></p>
+                <p id="style-error" class="inline-error" role="alert" hidden></p>
+                <button type="button" class="button button-secondary" data-action="style-reload" hidden>重试</button>
+                <section class="style-section" aria-labelledby="style-rules-title">
+                  <h3 id="style-rules-title">风格规则</h3>
+                  <div id="style-rules" class="ai-msg ai-msg-assistant"></div>
+                  <div id="style-editor" hidden>
+                    <textarea class="field profile-textarea" id="style-text" aria-label="风格规则" rows="8" maxlength="1500"></textarea>
+                    <div class="style-row style-editor-actions">
+                      <output id="style-count" for="style-text">0 / 1500</output>
+                      <button type="button" class="button button-secondary" data-action="style-cancel-edit">取消</button>
+                      <button type="button" class="button button-primary" data-action="style-save">保存</button>
+                    </div>
+                  </div>
+                </section>
+                <section class="style-section" aria-labelledby="style-anchors-title">
+                  <div class="style-row">
+                    <h3 id="style-anchors-title">原句锚点 <span id="style-anchor-count">0 / 5</span></h3>
+                    <button type="button" class="button button-secondary" id="style-anchor-toggle" data-action="style-anchor-picker" aria-controls="style-anchor-picker" aria-expanded="false">添加笔记</button>
+                    <button type="button" class="button button-secondary" data-action="style-adopt" hidden>采纳推荐锚点</button>
+                  </div>
+                  <div id="style-anchor-picker" hidden>
+                    <input type="search" class="field" id="style-anchor-search" aria-label="搜索原创笔记" placeholder="搜索原创笔记">
+                    <div class="style-picker-results" id="style-anchor-options"></div>
+                  </div>
+                  <ul id="style-anchors"></ul>
+                </section>
+                <section class="style-section" aria-labelledby="style-blind-title">
+                  <h3 id="style-blind-title">盲测对比</h3>
+                  <div class="style-row">
+                    <input type="text" id="style-blind-prompt" class="field" aria-label="自定义主题" placeholder="留空自动选一条笔记" maxlength="500">
+                    <button type="button" class="button button-primary" data-action="style-blind">开始盲测</button>
+                  </div>
+                  <div id="style-candidates"></div>
+                  <div id="style-votes" class="style-row" role="group" aria-label="盲测投票" hidden>
+                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="A">选 A</button>
+                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="B">选 B</button>
+                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="tie">差不多</button>
+                  </div>
+                  <p id="style-reveal" role="status" hidden></p>
+                </section>
               </div>
             </section>
           </div>
@@ -302,6 +369,7 @@
                   <button id="ai-effort-toggle" class="ai-picker-pill" type="button" aria-label="思考档位" aria-expanded="false" aria-controls="ai-effort-popover"></button>
                   <div id="ai-effort-popover" class="ai-picker-popover" role="group" aria-label="思考档位" hidden></div>
                 </div>
+                <button class="ai-picker-pill" id="ai-style-toggle" type="button" data-action="ai-style-toggle" aria-pressed="false" title="仅本轮使用写作风格">写作风格</button>
                 <button class="button button-primary ai-send-btn" id="ai-chat-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
               </div>
             </div>
@@ -391,6 +459,7 @@
           <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="帮我梳理这条笔记，尽量保留我的原意。">梳理成要点</button>
           <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="结合这条笔记，问我一个能让我想得更深的问题。">追问一个问题</button>
           <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="结合这条笔记，我接下来可以尝试哪件具体的小事？">想下一步</button>
+          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-use-style="true" data-prompt="按我的写作风格改写这条笔记，保留原意和事实，只输出改写正文。">按我的风格改写</button>
         </div>
       </section>
     </div>

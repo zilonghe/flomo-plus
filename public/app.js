@@ -257,12 +257,14 @@ function updateProfile() {
 let accountLifecycle = new AbortController();
 let pendingProfileSave = null;
 let failedProfileSave = null;
+let pendingStyleSave = null;
+let failedStyleSave = null;
 function resetAccount() {
   state.syncEpoch++;
   accountLifecycle.abort();
   accountLifecycle = new AbortController();
-  pendingProfileSave = null;
-  failedProfileSave = null;
+  pendingProfileSave = pendingStyleSave = null;
+  failedProfileSave = failedStyleSave = null;
   closeInsights({ restore: false });
   closeAIChat({ restore: false });
   ai = emptyAIState();
@@ -2821,7 +2823,7 @@ function emptyAIState() {
     lifecycle: null, scrollY: 0, session: null, sessions: new Map(), sessionCache: new Map(), selectedSessionId: null, upgradedNoteIds: new Set(),
     origin: 'all', nextCursor: null, loadingSessions: false, sessionsLoaded: false,
     source: null, fromWalk: false, insightContext: null, pendingTurn: null, followBottom: true, pins: new Set(),
-    sending: null, loadingSession: false, sessionLoadSeq: 0, requestKey: null, atIndex: null,
+    sending: null, loadingSession: false, sessionLoadSeq: 0, requestKey: null, atIndex: null, useWritingStyle: false,
   };
 }
 let ai = emptyAIState();
@@ -2834,7 +2836,7 @@ function hasGatewayModels() {
   return gatewayMode() && state.gatewayModels.length > 0;
 }
 
-const gatewaySelectIds = ['ins-model-select', 'ins-rerun-model', 'profile-model-select'];
+const gatewaySelectIds = ['ins-model-select', 'ins-rerun-model', 'profile-model-select', 'style-model-select'];
 const modelVendors = { gemini: 'Gemini', openai: 'OpenAI', claude: 'Claude', other: '其他' };
 const effortLabels = { '': '默认', low: '低', medium: '中', high: '高', xhigh: '极高' };
 const vendorMarks = {
@@ -2995,6 +2997,8 @@ function renderGatewayModels() {
   }
   renderAIModelPicker();
   renderInsModelPicker();
+  syncAIStyleToggle();
+  if (writingStyleView) renderWritingStyle();
 }
 
 let gatewayModelsRevision = 0;
@@ -3218,6 +3222,322 @@ async function generateProfile() {
   }
 }
 
+const stylePath = '/api/ai/writing-style';
+const styleRelayMessage = '当前 Codex 中转暂不支持写作风格，请切换到服务端网关或 OpenAI 接口。';
+let writingStyleView = null;
+const styleButton = action => $('profile-pane-style').querySelector(`[data-action="style-${action}"]`);
+
+function relayMode() {
+  return state.chatProvider === 'codex' && state.codexMode === 'relay';
+}
+
+function setProfilePane(pane) {
+  for (const button of profileView.querySelectorAll('[data-action="profile-pane"]')) {
+    const selected = button.dataset.pane === pane;
+    insPressed(button, selected);
+    $('profile-pane-' + button.dataset.pane).hidden = !selected;
+  }
+  if (pane !== 'style' || writingStyleView) return;
+  const view = writingStyleView = { controller: new AbortController(), tags: new Set(), suggested: [], style: null };
+  $('style-range').value = 'all';
+  $('style-start').value = $('style-end').value = dayKey(new Date());
+  loadWritingStyle(view);
+}
+
+function closeWritingStyle() {
+  writingStyleView?.controller.abort();
+  writingStyleView = null;
+  pendingStyleSave = failedStyleSave = null;
+  setProfilePane('bio');
+  for (const id of ['style-status', 'style-rules', 'style-tag-list', 'style-anchors', 'style-anchor-options', 'style-candidates', 'style-reveal']) {
+    $(id).replaceChildren();
+  }
+  for (const id of ['style-text', 'style-blind-prompt', 'style-anchor-search', 'style-tags-search']) $(id).value = '';
+  for (const id of ['style-votes', 'style-reveal', 'style-editor', 'style-tags-picker', 'style-anchor-picker']) $(id).hidden = true;
+  $('style-tags-toggle').setAttribute('aria-expanded', 'false');
+  $('style-anchor-toggle').setAttribute('aria-expanded', 'false');
+  setError('style-error', '');
+}
+
+async function loadWritingStyle(view) {
+  view.loading = true;
+  setError('style-error', '');
+  $('style-status').textContent = '正在读取写作风格…';
+  renderWritingStyle();
+  try {
+    const { style } = await request(stylePath, undefined, view.controller.signal);
+    if (writingStyleView !== view) return;
+    view.style = style;
+    view.loaded = true;
+    const scope = style?.scope;
+    $('style-range').value = scope?.range ?? 'all';
+    $('style-start').value = scope?.startDate ?? dayKey(new Date());
+    $('style-end').value = scope?.endDate ?? $('style-start').value;
+    view.tags = new Set(scope?.tags ?? []);
+    view.tagMode = scope?.tagMode ?? 'any';
+  } catch (error) {
+    if (writingStyleView === view) setError('style-error', error.message);
+  } finally {
+    if (writingStyleView === view) {
+      view.loading = false;
+      $('style-status').textContent = '';
+      renderWritingStyle();
+    }
+  }
+}
+
+function styleAction(label, action, id) {
+  const button = actionButton(label, action);
+  button.className = 'button button-secondary';
+  if (id) button.dataset.id = id;
+  return button;
+}
+
+function renderStyleTags() {
+  const { tags } = writingStyleView;
+  const names = state.noteIndex?.tagNames ?? new Map();
+  const query = $('style-tags-search').value.trim().toLowerCase();
+  $('style-tags-toggle').textContent = tags.size ? `${tags.size} 个标签` : '全部标签';
+  const keys = [...tags, ...[...names.keys()].filter(tag => !tags.has(tag) && tag.includes(query)).slice(0, 24)];
+  $('style-tag-list').replaceChildren(...keys.map(tag => {
+    const button = actionButton('#' + (names.get(tag) ?? tag), 'style-tag');
+    button.dataset.tag = tag;
+    insPressed(button, tags.has(tag));
+    return button;
+  }));
+}
+
+function activeStyleAnchorIds(view) {
+  return (view.style?.anchors ?? []).map(anchor => anchor.id);
+}
+
+function renderStyleAnchorPicker() {
+  const view = writingStyleView;
+  const selected = new Set(activeStyleAnchorIds(view));
+  const query = $('style-anchor-search').value.trim().toLowerCase();
+  const matches = [];
+  for (const note of state.noteIndex?.all ?? []) {
+    if (selected.has(note.id)) continue;
+    const end = note.reading == null ? note.body.length : note.body.indexOf('\n\n原文：');
+    if (end < 0) continue;
+    const text = note.body.slice(0, end).trim();
+    if (!text || (query && !text.toLowerCase().includes(query) && !note.reading?.bookTitle?.toLowerCase().includes(query))) continue;
+    const button = styleAction(text.slice(0, 96), 'style-add-anchor', note.id);
+    button.disabled = Boolean(view.saving || view.generating || view.blinding || view.editing);
+    matches.push(button);
+    if (matches.length === 24) break;
+  }
+  $('style-anchor-options').replaceChildren(...(matches.length ? matches : [el('p', 'help-text', '没有匹配的原创笔记。')]));
+}
+
+function toggleStylePicker(kind, open) {
+  $(`style-${kind}-picker`).hidden = !open;
+  $(`style-${kind}-toggle`).setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  $(`style-${kind}-search`).value = '';
+  if (kind === 'tags') renderStyleTags();
+  else renderStyleAnchorPicker();
+  $(`style-${kind}-search`).focus();
+}
+
+function renderWritingStyle() {
+  const view = writingStyleView;
+  const { style, loaded, loading, saving, generating, editing, blinding } = view;
+  const relay = relayMode();
+  const busy = !loaded || saving || generating || editing || blinding;
+  setError('style-relay', relay ? styleRelayMessage : '');
+  styleButton('reload').hidden = loaded || loading;
+  styleButton('generate').textContent = generating ? '停止提炼' : '提炼风格';
+  styleButton('generate').disabled = !generating && Boolean(busy || relay);
+  styleButton('edit').disabled = Boolean(busy);
+  for (const id of ['style-model-select', 'style-range', 'style-start', 'style-end', 'style-tags-toggle']) $(id).disabled = Boolean(busy || relay);
+  $('style-custom-dates').hidden = $('style-range').value !== 'custom';
+  $('style-editor').hidden = !editing;
+  $('style-rules').hidden = Boolean(editing);
+  for (const action of ['save', 'cancel-edit']) styleButton(action).disabled = Boolean(saving);
+  $('style-text').disabled = Boolean(saving);
+  if (!generating) renderSafeMarkdown($('style-rules'), style?.rules || (loaded ? '尚未添加风格规则。' : ''), []);
+  renderStyleTags();
+  const anchors = style?.anchors ?? [];
+  $('style-anchor-count').textContent = `${anchors.length} / 5`;
+  $('style-anchor-toggle').disabled = Boolean(busy || anchors.length >= 5);
+  styleButton('adopt').hidden = !styleSuggestions(view).length;
+  styleButton('adopt').disabled = Boolean(busy);
+  $('style-anchors').replaceChildren(...(style?.anchorNoteIds ?? []).map(id => {
+    const anchor = anchors.find(item => item.id === id);
+    const row = el('li', 'style-row');
+    const remove = styleAction('移除', 'style-remove-anchor', id);
+    remove.setAttribute('aria-label', anchor ? '移除锚点：' + anchor.excerpt.slice(0, 24) : '移除失效锚点');
+    remove.disabled = Boolean(busy);
+    row.append(el('span', '', anchor?.excerpt ?? '该锚点已失效'), remove);
+    return row;
+  }));
+  if (!$('style-anchor-picker').hidden) renderStyleAnchorPicker();
+  styleButton('blind').disabled = Boolean(busy || relay || !style?.ready);
+}
+
+function styleSuggestions(view) {
+  const ids = activeStyleAnchorIds(view);
+  return view.suggested.filter(anchor => !ids.includes(anchor.id) && state.notes.has(anchor.id)).slice(0, 5 - ids.length);
+}
+
+function editStyleRules(editing) {
+  const view = writingStyleView;
+  view.editing = editing;
+  $('style-text').value = editing ? view.style?.rules ?? '' : '';
+  updateStyleCount();
+  setError('style-error', '');
+  renderWritingStyle();
+  (editing ? $('style-text') : styleButton('edit')).focus();
+}
+
+function updateStyleCount() {
+  $('style-count').textContent = `${$('style-text').value.length} / 1500`;
+}
+
+function saveStyle(changes) {
+  const view = writingStyleView;
+  if (!view?.loaded || view.saving || view.generating || view.blinding) return;
+  const { signal } = view.controller;
+  view.saving = true;
+  setError('style-error', '');
+  $('style-status').textContent = '正在保存…';
+  const save = pendingStyleSave = request(stylePath, changes, signal).then(({ style }) => {
+    if (writingStyleView !== view || signal.aborted) return false;
+    failedStyleSave = null;
+    view.style = style;
+    if (changes.rules !== undefined) {
+      view.editing = false;
+      $('style-text').value = '';
+    }
+    toggleStylePicker('anchor', false);
+    $('style-status').textContent = '已保存';
+    return true;
+  }).catch(error => {
+    if (writingStyleView === view && !signal.aborted) {
+      failedStyleSave = error.message;
+      setError('style-error', error.message);
+      $('style-status').textContent = '';
+    }
+    return false;
+  }).finally(() => {
+    if (pendingStyleSave === save) pendingStyleSave = null;
+    if (writingStyleView !== view) return;
+    view.saving = false;
+    renderWritingStyle();
+    if (!view.editing && changes.rules !== undefined) styleButton('edit').focus();
+  });
+  renderWritingStyle();
+}
+
+function styleProviderSettings() {
+  const settings = providerSettings();
+  const model = $('style-model-select').value;
+  if (gatewayMode() && model) settings.model = model;
+  if (settings.provider === 'openai' && !settings.apiKey) {
+    setError('style-error', '请先在设置里填写 OpenAI API Key。');
+    openSettings();
+    return null;
+  }
+  return settings;
+}
+
+async function generateWritingStyle() {
+  const view = writingStyleView;
+  if (view.generating) { view.generating.abort(); return; }
+  if (relayMode()) { setError('style-error', styleRelayMessage); return; }
+  const settings = styleProviderSettings();
+  if (!settings) return;
+  const range = $('style-range').value;
+  const scope = { range, tags: [...view.tags], tagMode: view.tagMode, tzOffsetMinutes: new Date().getTimezoneOffset(),
+    ...(range === 'custom' ? { startDate: $('style-start').value, endDate: $('style-end').value } : {}) };
+  const controller = view.generating = new AbortController();
+  const signal = AbortSignal.any([view.controller.signal, controller.signal]);
+  const status = $('style-status');
+  status.textContent = '正在整理原创笔记…';
+  setError('style-error', '');
+  toggleStylePicker('tags', false);
+  toggleStylePicker('anchor', false);
+  renderWritingStyle();
+  let result, preview = '';
+  try {
+    await requestStream(stylePath + '/generate', { ...settings, scope, stream: true }, {
+      signal,
+      onEvent(name, data) {
+        if (writingStyleView !== view || signal.aborted) return;
+        if (name === 'status') status.textContent = data.message || '正在提炼…';
+        if (name === 'delta') {
+          preview = (preview + data.text).slice(0, 1500);
+          renderStreamingMarkdown($('style-rules'), preview);
+        }
+        if (name === 'done') result = data;
+        if (name === 'error') throw new Error(data.error || '提炼失败，请重试。');
+      },
+    });
+    if (writingStyleView !== view) return;
+    if (!result?.style) throw new Error('风格提炼意外中断，请重试。');
+    view.style = result.style;
+    view.suggested = result.suggestedAnchors;
+    failedStyleSave = null;
+    status.textContent = '已提炼并保存';
+  } catch (error) {
+    if (writingStyleView !== view) return;
+    status.textContent = signal.aborted ? '已停止提炼' : '';
+    if (!signal.aborted) setError('style-error', error.message);
+  } finally {
+    if (writingStyleView === view) {
+      view.generating = null;
+      renderWritingStyle();
+    }
+  }
+}
+
+async function startStyleBlindTest() {
+  const view = writingStyleView;
+  if (relayMode()) { setError('style-error', styleRelayMessage); return; }
+  const settings = styleProviderSettings();
+  if (!settings) return;
+  view.blinding = true;
+  view.candidates = [];
+  $('style-candidates').replaceChildren();
+  $('style-votes').hidden = $('style-reveal').hidden = true;
+  $('style-status').textContent = '正在生成两版…';
+  setError('style-error', '');
+  renderWritingStyle();
+  try {
+    const { candidates } = await request(stylePath + '/blind-test', { ...settings, prompt: $('style-blind-prompt').value.trim() }, view.controller.signal);
+    if (writingStyleView !== view) return;
+    view.candidates = candidates;
+    $('style-candidates').replaceChildren(...candidates.map(({ slot, text }) => {
+      const card = el('article', 'style-candidate');
+      card.append(el('strong', '', slot), el('p', '', text));
+      return card;
+    }));
+    $('style-votes').hidden = false;
+  } catch (error) {
+    if (writingStyleView === view) setError('style-error', error.message);
+  } finally {
+    if (writingStyleView === view) {
+      view.blinding = false;
+      $('style-status').textContent = '';
+      renderWritingStyle();
+    }
+  }
+}
+
+function revealStyleVote(slot) {
+  const { candidates } = writingStyleView;
+  candidates.forEach((candidate, index) => {
+    $('style-candidates').children[index].firstElementChild.textContent = `${candidate.slot} · ${candidate.variant === 'styled' ? '写作风格' : '基准'}`;
+  });
+  const chosen = candidates.find(candidate => candidate.slot === slot);
+  const reveal = $('style-reveal');
+  reveal.textContent = chosen?.variant === 'styled' ? `你选了 ${slot}。觉得贴近的话，可以再换个主题试试。`
+    : `${chosen ? `你选了 ${slot}。` : '你觉得差不多。'}可以把想要的句式或措辞写进风格规则，再试一次。`;
+  $('style-votes').hidden = true;
+  reveal.hidden = false;
+}
+
 const aiChatView = $('ai-chat-view');
 const aiButton = action => aiChatView.querySelector('[data-action="ai-' + action + '"]');
 const aiOriginLabels = { insight: '洞察续聊', note: '笔记对话', global: '全局对话' };
@@ -3270,6 +3590,7 @@ function openAIChat() {
   syncNavActive();
   window.scrollTo(0, 0);
   renderAIThread();
+  syncAIControls();
   loadAISessions();
   loadGatewayModels(ai.lifecycle.signal);
   $('ai-chat-title').focus({ preventScroll: true });
@@ -3648,7 +3969,24 @@ function pinFromPicker(id) {
   closeNotePicker(true);
 }
 
+function syncAIStyleToggle() {
+  if (relayMode()) ai.useWritingStyle = false;
+  const toggle = $('ai-style-toggle');
+  insPressed(toggle, ai.useWritingStyle);
+  toggle.setAttribute('aria-disabled', String(relayMode() || Boolean(ai.sending)));
+  toggle.title = relayMode() ? styleRelayMessage : '仅本轮使用写作风格';
+}
+
+function toggleAIStyle() {
+  if (ai.sending) return;
+  if (relayMode()) { setError('ai-chat-error', styleRelayMessage); return; }
+  ai.useWritingStyle = !ai.useWritingStyle;
+  setError('ai-chat-error', '');
+  syncAIStyleToggle();
+}
+
 function syncAIControls() {
+  syncAIStyleToggle();
   const send = $('ai-chat-send');
   const stopping = Boolean(ai.sending);
   send.disabled = Boolean(ai.loadingSession);
@@ -3668,6 +4006,7 @@ function newAISession(source = null, session = null, { extraPinIds = [], fromWal
   ai.insightContext = null;
   ai.pendingTurn = null;
   ai.followBottom = true;
+  ai.useWritingStyle = false;
   ai.pins = new Set([...new Set(source ? [source.id, ...extraPinIds] : [])].filter(id => state.notes.has(id)).slice(0, 10));
   ai.requestKey = null;
   $('ai-chat-input').value = '';
@@ -3777,6 +4116,7 @@ async function sendAIChat(event) {
   const draft = input.value;
   const message = draft.trim();
   if (!state.loaded || !message || view.loadingSession) return;
+  if (view.useWritingStyle && relayMode()) { setError('ai-chat-error', styleRelayMessage); return; }
   const settings = providerSettings();
   if (settings.provider === 'openai' && !settings.apiKey) {
     setError('ai-chat-error', '请先在设置里填写 OpenAI API Key。');
@@ -3790,6 +4130,7 @@ async function sendAIChat(event) {
   const body = {
     ...settings, message: payloadMessage, referencedNoteIds: [...view.pins],
     useAllNotes: true,
+    ...(view.useWritingStyle ? { useWritingStyle: true } : {}),
     ...(gatewayMode() && activeModelMeta()?.efforts.includes(state.reasoningEffort)
       ? { reasoningEffort: state.reasoningEffort } : {}),
     ...(view.session ? { sessionId: view.session.id, expectedVersion: view.session.version } : {}),
@@ -3825,6 +4166,12 @@ async function sendAIChat(event) {
     if (!saved || failedProfileSave) {
       throw new Error('个人画像设置保存失败，已取消本次发送，请前往「个人画像」重试。');
     }
+    if (body.useWritingStyle) {
+      const styleSaved = pendingStyleSave ? await pendingStyleSave : true;
+      if (ai !== view) return;
+      signal.throwIfAborted();
+      if (!styleSaved || failedStyleSave) throw new Error('写作风格保存失败，已取消本次发送，请前往「写作风格」重试。');
+    }
     let streamError = null;
     await requestStream('/api/ai/chat', { ...body, stream: true, clientRequestId: view.requestKey.id }, {
       signal,
@@ -3850,6 +4197,7 @@ async function sendAIChat(event) {
           view.pendingTurn = null;
           storeAISession(view, view.session);
           view.requestKey = null;
+          view.useWritingStyle = false;
           syncAIComposerPlaceholder();
           if (keepReply) {
             pending.steps = new Map((finalTurn.steps ?? []).map(step => [step.id, step]));
@@ -3925,8 +4273,9 @@ async function lookupNoteAIEntry(note) {
   }
 }
 
-async function openNoteAIChat(note, starter = null, { extraPinIds = [], fromWalk = false } = {}) {
+async function openNoteAIChat(note, starter = null, { extraPinIds = [], fromWalk = false, useWritingStyle = false } = {}) {
   if (!note || ai.sending || state.detailWorking || !mayCloseNote()) return;
+  if (useWritingStyle && relayMode()) { setError('detail-error', styleRelayMessage); return; }
   if ($('note-dialog').open) closeNote(true);
   if (!openAIChat()) return;
   const view = ai;
@@ -3935,6 +4284,9 @@ async function openNoteAIChat(note, starter = null, { extraPinIds = [], fromWalk
   input.focus({ preventScroll: true });
   const selected = await selectAISession(aiSessionsForNote(note.id), note, { preserveDraft: true });
   if (selected && ai === view && starter && !input.value) {
+    view.useWritingStyle = useWritingStyle;
+    syncAIStyleToggle();
+    if (useWritingStyle && relayMode()) { setError('ai-chat-error', styleRelayMessage); return; }
     input.value = starter;
     sendAIChat();
   }
@@ -4157,6 +4509,7 @@ function openInsights(opener) {
 function closeInsights({ restore = true } = {}) {
   const view = ins;
   if (!view) return;
+  closeWritingStyle();
   ins = null;
   view.lifecycle.abort();
   closeProfile();
@@ -4456,6 +4809,10 @@ walkResize.observe($('rw-stage'));
 $('rw-related').addEventListener('scroll', drawWalkLinks, { passive: true });
 $('ai-chat-form').addEventListener('submit', sendAIChat);
 $('profile-enabled').addEventListener('change', () => saveProfile(true));
+$('style-range').addEventListener('change', renderWritingStyle);
+$('style-text').addEventListener('input', updateStyleCount);
+$('style-tags-search').addEventListener('input', renderStyleTags);
+$('style-anchor-search').addEventListener('input', renderStyleAnchorPicker);
 $('ai-chat-thread').addEventListener('scroll', () => {
   ai.followBottom = isAIThreadAtBottom();
   syncAIScrollButton();
@@ -4556,7 +4913,8 @@ const actions = {
   'ai-filter-origin': button => { ai.origin = button.dataset.origin; renderAISessions(); },
   'ai-load-more-sessions': () => loadAISessions(true),
   'open-note-ai-chat': () => openNoteAIChat(state.notes.get(state.noteID)),
-  'note-ai-starter': button => openNoteAIChat(state.notes.get(state.noteID), button.dataset.prompt),
+  'note-ai-starter': button => openNoteAIChat(state.notes.get(state.noteID), button.dataset.prompt, { useWritingStyle: button.dataset.useStyle === 'true' }),
+  'ai-style-toggle': toggleAIStyle,
   'ai-select-legacy-note': button => openNoteAIChat(state.notes.get(button.dataset.noteId)),
   'ai-new-session': () => { if (newAISession()) $('ai-chat-input').focus({ preventScroll: true }); },
   'ai-select-session': (button) => selectAISession('/api/ai/sessions/' + button.dataset.sessionId, null, { id: button.dataset.sessionId }),
@@ -4566,6 +4924,31 @@ const actions = {
   'profile-edit': () => setProfileEditing(true),
   'profile-cancel-edit': () => setProfileEditing(false),
   'profile-save': () => saveProfile(),
+  'profile-pane': button => setProfilePane(button.dataset.pane),
+  'style-reload': () => loadWritingStyle(writingStyleView),
+  'style-edit': () => editStyleRules(true),
+  'style-cancel-edit': () => editStyleRules(false),
+  'style-save': () => saveStyle({ rules: $('style-text').value }),
+  'style-generate': generateWritingStyle,
+  'style-tags': () => toggleStylePicker('tags', $('style-tags-picker').hidden),
+  'style-tag': button => {
+    const { tags } = writingStyleView;
+    if (!tags.delete(button.dataset.tag)) {
+      if (tags.size >= 20) { setError('style-error', '最多选择 20 个标签。'); return; }
+      tags.add(button.dataset.tag);
+    }
+    renderStyleTags();
+    [...$('style-tag-list').children].find(item => item.dataset.tag === button.dataset.tag)?.focus();
+  },
+  'style-anchor-picker': () => toggleStylePicker('anchor', $('style-anchor-picker').hidden),
+  'style-add-anchor': button => saveStyle({ anchorNoteIds: [...activeStyleAnchorIds(writingStyleView), button.dataset.id] }),
+  'style-remove-anchor': button => saveStyle({ anchorNoteIds: activeStyleAnchorIds(writingStyleView).filter(id => id !== button.dataset.id) }),
+  'style-adopt': () => {
+    const view = writingStyleView;
+    saveStyle({ anchorNoteIds: [...activeStyleAnchorIds(view), ...styleSuggestions(view).map(anchor => anchor.id)] });
+  },
+  'style-blind': startStyleBlindTest,
+  'style-vote': button => revealStyleVote(button.dataset.slot),
   'ai-pick-note': () => $('ai-note-picker').hidden ? openNotePicker() : closeNotePicker(true),
   'ai-scroll-bottom': () => scrollAIThreadToBottom(true),
   'ai-clear-insight-context': () => {

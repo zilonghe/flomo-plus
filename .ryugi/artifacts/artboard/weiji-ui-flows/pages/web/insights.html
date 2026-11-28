@@ -17,6 +17,7 @@
     }
     .ins-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; flex: 1; min-height: 0; }
     .lens-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
+    [hidden] { display:none !important; }
   </style>
 </head>
 <body>
@@ -35,14 +36,26 @@
       <header class="web-topbar">
         <div style="display:flex;align-items:center;gap:10px;">
           <strong style="font:600 16px/22px var(--font-display)">AI 洞察</strong>
-          <span class="web-btn soft" style="height:30px;">新洞察</span>
+          <button type="button" class="web-btn" id="new-tab" aria-pressed="false" style="height:30px;">新洞察</button>
           <span class="web-btn" style="height:30px;">历史</span>
-          <span class="web-btn" style="height:30px;">个人画像</span>
+          <button type="button" class="web-btn soft" id="profile-tab" aria-pressed="true" style="height:30px;">个人画像</button>
         </div>
-        <span class="web-btn"><ryugi-icon name="plus" size="14"></ryugi-icon>自定义视角</span>
+        <span class="web-btn" id="custom-lens" hidden><ryugi-icon name="plus" size="14"></ryugi-icon>自定义视角</span>
       </header>
 
-      <div class="web-content">
+      <div class="web-content" id="profile-panel">
+        <article class="web-card" style="display:grid;gap:14px;">
+          <div style="display:flex;gap:6px;" role="group" aria-label="画像工作区">
+            <button type="button" class="web-btn soft" aria-pressed="true">个人画像</button><button type="button" class="web-btn" aria-pressed="false">写作风格</button>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <span class="web-btn">默认模型 ▾</span><button type="button" class="web-btn primary">生成画像</button><button type="button" class="web-btn">编辑</button>
+          </div>
+          <label><input type="checkbox" checked /> 对话自动带入个人画像</label>
+          <p style="margin:0;font-size:14px;line-height:24px;">偏好先验证最小一步，用事实更新判断，再投入更多时间。</p>
+        </article>
+      </div>
+      <div class="web-content" id="new-panel" hidden>
         <div class="filter-bar" aria-label="40px 等高洞察筛选栏">
           <div class="f-ctrl"><span>视角：默认洞察</span><span class="faint">▾</span></div>
           <div class="f-ctrl"><span>范围：近 7 天</span><span class="faint">▾</span></div>
@@ -88,5 +101,16 @@
       </div>
     </main>
   </div>
+  <script>
+    document.querySelectorAll('#new-tab, #profile-tab').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('#new-tab, #profile-tab').forEach(tab => {
+        const active = button === tab;
+        tab.classList.toggle('soft', active);
+        tab.setAttribute('aria-pressed', String(active));
+        document.getElementById(tab.id.replace('-tab', '-panel')).hidden = !active;
+      });
+      document.getElementById('custom-lens').hidden = button.id !== 'new-tab';
+    }));
+  </script>
 </body>
 </html>

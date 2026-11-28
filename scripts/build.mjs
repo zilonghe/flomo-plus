@@ -34,6 +34,7 @@ return { WeReadError, listWeReadBooks, listWeReadNotes };
 })();`;
 const retrievalImport = /^import \{([^}]+)\} from "\.\/retrieval\.js";$/m;
 const insightImport = /^import \{([^}]+)\} from "\.\/insights\.js";$/m;
+const writingStyleImport = /^import \{([^}]+)\} from "\.\/writing-style\.js";$/m;
 const names = (source, marker) => {
   const imported = source.match(marker)?.[1];
   if (!imported) throw new Error("Worker import is missing: " + marker);
@@ -41,7 +42,8 @@ const names = (source, marker) => {
 };
 const insights = await readFile(new URL("src/insights.js", root), "utf8");
 const retrieval = await readFile(new URL("src/retrieval.js", root), "utf8");
-const retrievalNames = [...new Set([...names(server, retrievalImport), ...names(insights, retrievalImport)])];
+const writingStyle = await readFile(new URL("src/writing-style.js", root), "utf8");
+const retrievalNames = [...new Set([...names(server, retrievalImport), ...names(insights, retrievalImport), ...names(writingStyle, retrievalImport)])];
 const retrievalExports = new Set([...retrieval.matchAll(/^export function (\w+)/gm)].map(match => match[1]));
 for (const name of retrievalNames) {
   if (!retrievalExports.has(name)) throw new Error("Unbundled retrieval symbol: " + name);
@@ -50,16 +52,22 @@ const bundledRetrieval = `const {${retrievalNames}} = (() => {
 ${retrieval.replace(/^export (?=function )/gm, "")}
 return {${retrievalNames}};
 })();`;
-const insightNames = names(server, insightImport);
+const insightNames = [...new Set([...names(server, insightImport), ...names(writingStyle, insightImport)])];
 const bundledInsights = `const {${insightNames}} = (() => {
 ${insights.replace(retrievalImport, "").replace(/^export (?=(?:async function|function|const) )/gm, "")}
 return {${insightNames}};
+})();`;
+const writingStyleNames = names(server, writingStyleImport);
+const bundledWritingStyle = `const {${writingStyleNames}} = (() => {
+${writingStyle.replace(retrievalImport, "").replace(insightImport, "").replace(/^export (?=(?:function|const) )/gm, "")}
+return {${writingStyleNames}};
 })();`;
 const bundle = server
   .replace(marker, () => `const assets = ${JSON.stringify(assets)};`)
   .replace(weReadImport, () => bundledWeRead)
   .replace(retrievalImport, () => bundledRetrieval)
-  .replace(insightImport, () => bundledInsights);
+  .replace(insightImport, () => bundledInsights)
+  .replace(writingStyleImport, () => bundledWritingStyle);
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(new URL("server/", dist), { recursive: true });
