@@ -130,7 +130,7 @@ final class AIChatStore {
         draftContextKey = "new"
         let key = snapshot.activeContextKey
         let active = snapshot.activeDraft
-        let isSourceBoundContext = key.hasPrefix("pins:") || key.hasPrefix("insight:")
+        let isSourceBoundContext = key.hasPrefix("insight:") || (key.hasPrefix("walk:") && isValidNoteDraftContext(key))
         let isIndependentContext = key != "new" && key != Self.postDeleteDraftKey
             && !isDeletedNoteDraftContext(key)
         if Self.hasDraftText(active), isSourceBoundContext || (isIndependentContext && Self.hasDraftText(savedNew)) {
@@ -146,7 +146,8 @@ final class AIChatStore {
         let source = source.flatMap { $0.isEmpty ? nil : $0 }
         let nextKey = source.map { "note:\($0)" }
             ?? insight.map { "insight:\($0.id)" }
-            ?? (pins.isEmpty ? "new" : "pins:" + pins.joined(separator: ","))
+            ?? pins.first.map { "walk:\($0)" }
+            ?? "new"
         switchDraftContext(to: nextKey, resetNew: true)
         sourceNoteId = validSource(source)
         var seen = Set<String>()
@@ -245,16 +246,18 @@ final class AIChatStore {
     }
 
     private func restoreInterruptedDraft(_ unsent: String?) {
+        let unsentIsAuto = unsent.map(isOwnedInFlight) ?? false
+        if draftContextKey == "new", let rescued = draftsByKey.removeValue(forKey: "new") {
+            let keepUnsent = unsentIsAuto ? "" : (unsent ?? "")
+            draft = Self.appendDraft(Self.appendDraft(keepUnsent, draft), rescued)
+            if unsentIsAuto { rewriteIntent?.promptLocation = .none }
+            return
+        }
         if draft.isEmpty, let unsent {
             draft = unsent
-            if isOwnedInFlight(unsent) {
-                rewriteIntent?.promptLocation = .inDraft
-            }
+            if unsentIsAuto { rewriteIntent?.promptLocation = .inDraft }
         } else if rewriteIntent?.promptLocation == .inFlight {
             rewriteIntent?.promptLocation = .none
-        }
-        if draftContextKey == "new", let rescued = draftsByKey.removeValue(forKey: "new") {
-            draft = Self.appendDraft(draft, rescued)
         }
     }
 
@@ -299,8 +302,18 @@ final class AIChatStore {
 
     func canReference(_ id: String) -> Bool { isValidNote(id) }
 
+    private static func boundNoteId(forContextKey key: String) -> String? {
+        guard key.hasPrefix("note:") || key.hasPrefix("walk:") else { return nil }
+        return String(key.dropFirst(5))
+    }
+
+    private func isValidNoteDraftContext(_ key: String) -> Bool {
+        guard let id = Self.boundNoteId(forContextKey: key) else { return false }
+        return isValidNote(id)
+    }
+
     private func isDeletedNoteDraftContext(_ key: String) -> Bool {
-        key.hasPrefix("note:") && !canReference(String(key.dropFirst("note:".count)))
+        Self.boundNoteId(forContextKey: key).map { !isValidNote($0) } ?? false
     }
 
     private func isValidNote(_ id: String) -> Bool { validNoteIds?.contains(id) ?? true }
@@ -447,9 +460,10 @@ final class AIChatStore {
         if sending && sendingWithStyle {
             let unsent = inflightDraft
             let unsentIsAuto = unsent.map(isOwnedInFlight) ?? false
-            let hadFollowUp = !draft.isEmpty
+            // stop() already preserves the question when a deleted note draft was rescued.
+            let needsPrepend = !draft.isEmpty && (draftContextKey != "new" || draftsByKey["new"] == nil)
             stop()
-            if let unsent, hadFollowUp, !unsentIsAuto {
+            if let unsent, needsPrepend, !unsentIsAuto {
                 draft = unsent + "\n\n" + draft
             }
         }

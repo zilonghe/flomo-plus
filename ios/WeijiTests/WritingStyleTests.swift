@@ -714,6 +714,11 @@ final class WritingStyleTests: XCTestCase {
         try await syncDeleteRewriteSource(note, store: store, wire: wire)
         assertDeletedRewrite(chat, draft: preserved)
         try await assertDraftSurvivesHistoryRoundTrip(preserved, store: store, wire: wire)
+        await chat.select("history-a", api: api).value
+        XCTAssertEqual(chat.session?.id, "history-a")
+        XCTAssertEqual(chat.draft, "", "原历史会话不应保留迁出的草稿副本")
+        store.requestNewChat()
+        XCTAssertEqual(Array(chat.draft.utf8), Array(preserved.utf8))
         XCTAssertTrue(wire.requests(chatPath).isEmpty)
     }
 
@@ -934,15 +939,30 @@ final class WritingStyleTests: XCTestCase {
     }
 
     func testReauthRescuesDeletedNoteWithoutFillingAnInFlightNewChat() async throws {
-        enum Outcome: CaseIterable { case chatFailure, profileFailure, success, unauthorized, relay }
+        try await assertReauthRescuesDeletedNoteDuringSend(followUp: "")
+    }
+
+    func testReauthPreservesInFlightDraftAndFollowUpWhenRescuingDeletedNote() async throws {
+        let followUp = "新的追问保留空格与结束标点📝\t"
+        XCTAssertEqual(followUp.utf8.count, 44)
+        try await assertReauthRescuesDeletedNoteDuringSend(followUp: followUp)
+    }
+
+    private func assertReauthRescuesDeletedNoteDuringSend(followUp typedFollowUp: String) async throws {
+        enum Outcome { case chatFailure, chatConflict, profileFailure, stop, success, unauthorized, relay }
         let notesPath = "/api/notes"
         let profilePath = "/api/ai/profile"
         let noteDraft = Self.firstDraft + "\n\n" + Self.nextDraft
-        let merged = Self.newDraft + "\n\n" + noteDraft
-        XCTAssertEqual(merged.utf8.count, 105)
+        XCTAssertEqual(Self.newDraft.utf8.count, 23)
+        XCTAssertEqual(noteDraft.utf8.count, 80)
+        let outcomes: [Outcome] = [.chatFailure, .profileFailure, .success, .unauthorized]
+            + (typedFollowUp.isEmpty ? [.relay] : [.chatConflict, .stop])
 
-        for outcome in Outcome.allCases {
+        for outcome in outcomes {
             let scenario = "发送结果：\(outcome)"
+            let followUp = outcome == .relay ? Self.nextDraft : typedFollowUp
+            let merged = [Self.newDraft, followUp, noteDraft].filter { !$0.isEmpty }.joined(separator: "\n\n")
+            XCTAssertEqual(merged.utf8.count, followUp.isEmpty ? 105 : 151, scenario)
             let wire = try StyleHTTP()
             defer { wire.close() }
             let (store, _, note) = try await connected(wire, mode: outcome == .relay ? "relay" : "gateway")
@@ -953,7 +973,7 @@ final class WritingStyleTests: XCTestCase {
             XCTAssertEqual(Array(chat.draft.utf8), Array(Self.newDraft.utf8), scenario)
             XCTAssertTrue(chat.canReference(note.id), scenario)
 
-            let waitsForProfile = outcome == .profileFailure || outcome == .relay
+            let waitsForProfile = outcome == .profileFailure || outcome == .stop || outcome == .relay
             var profileSave: Task<Bool, Never>?
             if waitsForProfile {
                 wire.hold(profilePath, method: "POST")
@@ -975,19 +995,21 @@ final class WritingStyleTests: XCTestCase {
             if !waitsForProfile {
                 try await eventually("聊天 POST 尚未返回") { wire.waiting(self.chatPath) == 1 }
             }
-            if outcome == .relay { chat.updateDraftFromUser(Self.nextDraft) }
+            chat.updateDraftFromUser(followUp)
 
             notes.complete(body: Self.emptyNotes)
             try await eventually("笔记同步已确认 A 删除") { !store.syncing && !chat.canReference(note.id) }
             XCTAssertTrue(chat.sending, scenario)
-            XCTAssertEqual(chat.draft, outcome == .relay ? Self.nextDraft : "", scenario)
+            XCTAssertEqual(Array(chat.draft.utf8), Array(followUp.utf8), scenario)
+            XCTAssertEqual(Array(chat.recoverableDraftSnapshot.activeDraft.utf8), Array(merged.utf8), scenario)
 
-            var expected = merged
             switch outcome {
-            case .chatFailure:
-                try XCTUnwrap(wire.take(chatPath)).complete(status: 503, body: #"{"error":"聊天不可用"}"#)
+            case .chatFailure, .chatConflict:
+                let status = outcome == .chatConflict ? 409 : 503
+                let message = outcome == .chatConflict ? "对话已更新" : "聊天不可用"
+                try XCTUnwrap(wire.take(chatPath)).complete(status: status, body: #"{"error":"\#(message)"}"#)
                 await chat.waitForIdle()
-                XCTAssertEqual(chat.error, "聊天不可用")
+                XCTAssertEqual(chat.error, message, scenario)
             case .profileFailure:
                 try XCTUnwrap(wire.take(profilePath, method: "POST")).complete(status: 503, body: #"{"error":"画像不可用"}"#)
                 await chat.waitForIdle()
@@ -997,21 +1019,23 @@ final class WritingStyleTests: XCTestCase {
                 try XCTUnwrap(wire.take(chatPath)).complete(body: Self.sse("done", Self.history), stream: true)
                 await chat.waitForIdle()
                 XCTAssertEqual(chat.session?.id, "history")
-                XCTAssertEqual(chat.draft, "")
+                XCTAssertEqual(Array(chat.draft.utf8), Array(followUp.utf8), scenario)
                 store.requestNewChat()
-                expected = noteDraft
             case .unauthorized:
                 try XCTUnwrap(wire.take(chatPath)).complete(status: 401, body: Self.expired)
                 wire.reply(notesPath, body: Self.emptyNotes)
                 try await reauthenticate(store, wire: wire)
-            case .relay:
-                store.setProvider(.codex)
+            case .stop, .relay:
+                if outcome == .relay { store.setProvider(.codex) }
+                else { chat.stop() }
+                XCTAssertFalse(chat.sending, scenario)
                 try XCTUnwrap(wire.take(profilePath, method: "POST")).complete(body: #"{"profile":{"content":"画像","enabled":false,"noteCount":1}}"#)
-                _ = await profileSave?.value
+                let saved = await profileSave?.value
+                XCTAssertEqual(saved, true, scenario)
                 await chat.waitForIdle()
-                XCTAssertEqual(chat.error, InsightsStore.writingStyleRelayMessage)
-                expected = [Self.newDraft, Self.nextDraft, noteDraft].joined(separator: "\n\n")
+                if outcome == .relay { XCTAssertEqual(chat.error, InsightsStore.writingStyleRelayMessage) }
             }
+            let expected = outcome == .success ? noteDraft : merged
             XCTAssertEqual(Array(chat.draft.utf8), Array(expected.utf8), scenario)
             let posts = wire.requests(chatPath)
             XCTAssertEqual(posts.count, waitsForProfile ? 0 : 1, scenario)
@@ -1019,6 +1043,13 @@ final class WritingStyleTests: XCTestCase {
                 XCTAssertEqual(Array(sent.utf8), Array(Self.newDraft.utf8), scenario)
             }
             try await assertDraftSurvivesHistoryRoundTrip(expected, store: store, wire: wire)
+            if !typedFollowUp.isEmpty, outcome != .success, outcome != .unauthorized {
+                try await rejectNotesRefresh(store, wire: wire)
+                wire.reply(notesPath, body: Self.emptyNotes)
+                try await reauthenticate(store, wire: wire)
+                XCTAssertEqual(store.identity?.user.id, "account", scenario)
+                XCTAssertEqual(Array(chat.draft.utf8), Array(merged.utf8), scenario)
+            }
             XCTAssertEqual(wire.requests(chatPath).count, posts.count, scenario)
         }
     }
@@ -1183,6 +1214,79 @@ final class WritingStyleTests: XCTestCase {
 
     func testReauthKeepsWalkAndInsightDraftsSeparateWithAnEmptyNewChat() async throws {
         try await assertWalkAndInsightDraftsRestore(savedNew: "")
+    }
+
+    func testReauthRestoresWalkDraftByFocusWhenRelatedNotesChange() async throws {
+        let focus = "note"
+        let initialRelated = ["b", "c"]
+        let initialIds = [focus] + initialRelated
+        let typed = " AI草稿含换行\n🙂下一行"
+        XCTAssertEqual(typed.utf8.count, 32)
+        let scenarios: [(name: String, notes: [String], related: [String]?)] = [
+            ("关联不变", initialIds, initialRelated),
+            ("关联换序", initialIds, ["c", "b"]),
+            ("关联 B 删除", [focus, "c"], ["c"]),
+            ("焦点 A 删除", initialRelated, nil),
+        ]
+        let relatedPath = "/api/notes/\(focus)/related"
+
+        func noteJSON(_ id: String) -> String {
+            #"{"id":"\#(id)","body":"笔记原文","createdAt":"2026-11-28","turns":[],"revision":1}"#
+        }
+        func notesJSON(_ ids: [String]) -> String {
+            #"{"notes":[\#(ids.map(noteJSON).joined(separator: ","))],"deleted":[]}"#
+        }
+        func pivot(_ ids: [String], store: AppStore, wire: StyleHTTP) async throws -> RelatedNotes {
+            let related = ids.map { id in
+                #"{"id":"\#(id)","score":0.5,"relevancePercent":50,"sharedTags":[],"note":\#(noteJSON(id))}"#
+            }.joined(separator: ",")
+            wire.reply(relatedPath, body: #"{"focus":\#(noteJSON(focus)),"mode":"lexical","indexed":0,"total":3,"related":[\#(related)]}"#)
+            let api = try XCTUnwrap(store.api)
+            let task = try XCTUnwrap(store.walk.pivot(to: focus, api: api))
+            await task.value
+            let walk = try XCTUnwrap(store.walk.result)
+            XCTAssertEqual(walk.focus.id, focus)
+            XCTAssertEqual(walk.related.map(\.id), ids)
+            return walk
+        }
+
+        for scenario in scenarios {
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, _, _) = try await connected(wire, mode: "gateway", notes: notesJSON(initialIds))
+            let chat = store.chat
+            XCTAssertEqual(chat.draft.utf8.count, 0, scenario.name)
+            let initial = try await pivot(initialRelated, store: store, wire: wire)
+            store.askAbout(initial)
+            XCTAssertEqual(chat.pins, initialIds, scenario.name)
+            chat.updateDraftFromUser(typed)
+
+            try await rejectNotesRefresh(store, wire: wire)
+            wire.reply("/api/notes", body: notesJSON(scenario.notes))
+            try await reauthenticate(store, wire: wire)
+            XCTAssertEqual(store.identity?.user.id, "account", scenario.name)
+            XCTAssertEqual(Set(store.notesById.keys), Set(scenario.notes), scenario.name)
+            if let related = scenario.related {
+                XCTAssertEqual(chat.draft.utf8.count, 0, scenario.name)
+                wire.reply(chatPath, status: 503, body: #"{"error":"空输入不应发送"}"#)
+                chat.send(api: try XCTUnwrap(store.api), options: store.options, profile: store.insights)
+                await chat.waitForIdle()
+                XCTAssertTrue(wire.requests(chatPath).isEmpty, scenario.name)
+
+                let walk = try await pivot(related, store: store, wire: wire)
+                store.askAbout(walk)
+                XCTAssertEqual(chat.pins, [focus] + related, scenario.name)
+                XCTAssertEqual(Array(chat.draft.utf8), Array(typed.utf8), scenario.name)
+                store.requestNewChat()
+                XCTAssertEqual(chat.draft.utf8.count, 0, scenario.name)
+                XCTAssertEqual(wire.requests(relatedPath).count, 2, scenario.name)
+            } else {
+                XCTAssertFalse(chat.canReference(focus), scenario.name)
+                XCTAssertEqual(Array(chat.draft.utf8), Array(typed.utf8), scenario.name)
+                try await assertDraftSurvivesHistoryRoundTrip(typed, store: store, wire: wire)
+            }
+            XCTAssertTrue(wire.requests(chatPath).isEmpty, scenario.name)
+        }
     }
 
     private func assertWalkAndInsightDraftsRestore(savedNew: String) async throws {
@@ -1720,9 +1824,9 @@ final class WritingStyleTests: XCTestCase {
         XCTAssertEqual(chat.error, AIChatStore.deletedRewriteSourceMessage, file: file, line: line)
     }
 
-    private func connected(_ wire: StyleHTTP, mode: String) async throws -> (AppStore, WeijiAPIClient, Note) {
+    private func connected(_ wire: StyleHTTP, mode: String, notes: String? = nil) async throws -> (AppStore, WeijiAPIClient, Note) {
         wire.reply("/api/session", body: #"{"user":{"id":"account","name":"测试账户"},"codexAvailable":true,"codexMode":"\#(mode)"}"#)
-        wire.reply("/api/notes", body: Self.initialNotes)
+        wire.reply("/api/notes", body: notes ?? Self.initialNotes)
         wire.reply("/api/ai/models", body: #"{"models":[]}"#)
         let store = AppStore(initial: wire.config, temporary: true, reset: true, makeTransport: wire.transport)
         store.start()
