@@ -55,6 +55,12 @@ private final class SendDispatchGate: @unchecked Sendable {
         return true
     }
 
+    var isDispatched: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return state == .dispatched
+    }
+
     var wasDeferredForSave: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -220,6 +226,7 @@ final class AIChatStore {
             draft = Self.appendDraft(savedNew, active)
         }
         if snapshot.requiresDeletedInsightConfirmation && Self.hasDraftText(draft) {
+            draftContextKey = Self.postDeleteDraftKey
             requiresDeletedInsightConfirmation = true
             error = Self.deletedInsightReportMessage
         }
@@ -498,6 +505,8 @@ final class AIChatStore {
 
     func stop(preserveInFlightWithDraft: Bool = false) {
         _ = pendingDispatchGate?.cancelIfPending()
+        let wasDispatched = pendingDispatchGate?.isDispatched ?? false
+        let requiredInsightId = pendingRequiredInsightId
         pendingDispatchGate = nil
         let wasSending = sending
         let unsent = inflightDraft
@@ -513,7 +522,13 @@ final class AIChatStore {
         finishStreaming()
         streamedText = ""
         pendingQuestion = ""
-        if wasSending { restoreInterruptedDraft(unsent, preserveWithFollowUp: preserveInFlightWithDraft) }
+        if wasSending {
+            restoreInterruptedDraft(unsent, preserveWithFollowUp: preserveInFlightWithDraft)
+            if wasDispatched, let requiredInsightId, !canReferenceInsight(requiredInsightId), Self.hasDraftText(draft) {
+                requiresDeletedInsightConfirmation = true
+                error = Self.deletedInsightReportMessage
+            }
+        }
     }
 
     func restorePendingSessionDraftIfPresent() -> Bool {
@@ -751,6 +766,31 @@ final class AIChatStore {
                 }
                 guard stamp == generation, !Task.isCancelled else { return }
                 guard let latest = response.session else { throw WeijiAPIError.interrupted }
+                if deletedSessionIds.contains(latest.id) {
+                    if session?.id == latest.id { session = nil }
+                    sourceNoteId = nil
+                    pins = []
+                    pinsEditedDuringLoad = false
+                    rewriteIntent = nil
+                    if styled { useWritingStyle = false }
+                    insight = nil
+                    requestID.clear()
+                    inflightDraft = nil
+                    draftsByKey.removeValue(forKey: "session:\(latest.id)")
+                    if draftContextKey != "new" {
+                        draftsByKey.removeValue(forKey: draftContextKey)
+                        draftContextKey = "new"
+                        if holdingRescuedForPendingNewChat {
+                            heldNewChatOrder = .prependHeld
+                        } else {
+                            let savedNew = draftsByKey.removeValue(forKey: "new") ?? ""
+                            draft = Self.appendDraft(savedNew, draft)
+                        }
+                    } else if !holdingRescuedForPendingNewChat, let rescued = draftsByKey.removeValue(forKey: "new") {
+                        draft = Self.appendDraft(draft, rescued)
+                    }
+                    return
+                }
                 updateSession(latest)
                 rewriteIntent = nil
                 if styled { useWritingStyle = false }
@@ -771,11 +811,12 @@ final class AIChatStore {
                 if stamp == generation { restoreInterruptedDraft(inflightDraft) }
             } catch let failure as WeijiAPIError where failure.status == 409 {
                 guard stamp == generation else { return }
-                if let current = failure.current(ChatSession.self) { updateSession(current) }
-                else if let id = session?.id {
+                if let current = failure.current(ChatSession.self) {
+                    if !deletedSessionIds.contains(current.id) { updateSession(current) }
+                } else if let id = session?.id {
                     let latest: ChatResponse? = try? await api.get("/api/ai/sessions/\(id)")
                     guard stamp == generation else { return }
-                    if let updated = latest?.session { updateSession(updated) }
+                    if let updated = latest?.session, !deletedSessionIds.contains(updated.id) { updateSession(updated) }
                 }
                 restoreFailedSend(failure.message, requiredInsightId: requiredInsightId)
             } catch {
