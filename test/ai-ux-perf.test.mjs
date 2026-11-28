@@ -367,6 +367,13 @@ test('Web named imports exist and citation-only code renders clickable reference
   assert.deepEqual(stream.descendants().filter(node => node.tagName === 'code').map(node => node.textContent), ['const a = 1\n']);
 });
 
+test('Web minimal sources have no old navigation, decorative sparkle icon or gradients', async () => {
+  const read = file => readFile(new URL('../public/' + file, import.meta.url), 'utf8');
+  const [html, js, css] = await Promise.all(['index.html', 'app.js', 'styles.css'].map(read));
+  assert.doesNotMatch(html + js, /i-spark|sparkles|random-walk-overlay|ai-insights-view|rw-zoom/);
+  assert.doesNotMatch(css, /(?:linear|radial)-gradient|ai-vendor-/);
+});
+
 test('Connect signout is inert until bound, then broadcasts, deletes only current account cache and navigates', async t => {
   const { call } = await fixture(t);
   for (const mode of ['oauth', 'chatgpt']) {
@@ -636,6 +643,8 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
 
     await until(() => page.evaluate("document.getElementById('sync-state').dataset.status === 'ok'"), 'initial 304 applied');
     await page.evaluate(`
+      document.querySelector('.top-nav [data-action=open-settings]').click();
+      document.querySelector('[data-action=settings-pane][data-pane=data]').click();
       document.querySelector('[data-action=open-import-hub]').click();
       const source = document.querySelector('#import-hub-dialog [data-action=open-flomo-import]');
       if (!source.getClientRects().length) throw new Error('flomo source is not visible');
@@ -649,7 +658,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       document.getElementById('flomo-form').requestSubmit();
     `);
     await until(() => found(page, '已存在或此前删除 1 条'), '304 kept the tombstone for real import deduplication');
-    await page.evaluate("document.querySelector('[data-close=flomo-dialog]').click()");
+    await page.evaluate("document.querySelector('[data-close=flomo-dialog]').click(); document.querySelector('[data-close=settings-dialog]').click();");
     await page.evaluate("document.dispatchEvent(new Event('visibilitychange')); true");
     assert.equal(await found(page, bodyA), true);
     (await conditional()).writeHead(304, { ETag: cached.etag }).end();
@@ -706,19 +715,24 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
     await until(() => page.evaluate("document.querySelectorAll('[data-session-id]').length >= 4"), 'history list');
     const select = i => page.evaluate(`
+      document.querySelector('[data-action=ai-toggle-sessions]').click();
       document.querySelector('[data-action="ai-select-session"][data-session-id="${sessionEntries[i].id}"]').click();
       [document.querySelector('[data-action="ai-select-session"][aria-current="true"]').dataset.sessionId,
         !!document.querySelector('#ai-chat-thread .ai-session-skeleton'),
-        document.querySelector('#ai-chat-thread').textContent]`);
+        document.querySelector('#ai-turns .ai-reply-text')?.textContent ?? '']`);
     for (const i of [0, 1]) {
       const state = await select(i);
       assert.deepEqual(state, [sessionEntries[i].id, true, '']);
       (await receive(history, 'history request'))();
       await until(() => found(page, '测试答案 ' + i), 'loaded history');
+      assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '', 'draft does not cross sessions');
+      await page.evaluate(`document.getElementById('ai-chat-input').value = '会话草稿 ${i}'`);
     }
     assert.deepEqual(await select(0), [id, false, '测试答案 0']);
+    assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '会话草稿 0');
     (await receive(history, 'background history refresh'))();
 
+    await page.evaluate("document.querySelector('[data-action=ai-options]').click()");
     await until(() => found(page, 'Gemini 3 Flash'), 'model selector loaded');
     await page.evaluate(`
       document.getElementById('ai-model-toggle').click();
@@ -728,6 +742,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       document.getElementById('ai-effort-toggle').click();
       [...document.querySelectorAll('#ai-effort-popover button')].find(b => b.textContent === '极高').click();
+      document.querySelector('[data-action=ai-options]').click();
       document.getElementById('ai-chat-input').value = '引用一条笔记';
       document.getElementById('ai-chat-form').requestSubmit();
     `);
@@ -783,6 +798,8 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
         maxTitleLines: Math.max(...notes.map(n => n.titleLines)),
       };
     })()`;
+    assert.equal(await page.evaluate("document.querySelector('#ai-pending-reply .ai-steps-card').open"), false);
+    await page.evaluate("document.querySelector('#ai-pending-reply .ai-steps-card > summary').click()");
     const stepBounds = await page.evaluate(measureStepsCard("document.querySelector('#ai-pending-reply .ai-steps-card')"));
     assert.ok(stepBounds.scrollOverflow <= 1, 'steps card must not scroll horizontally: ' + JSON.stringify(stepBounds));
     assert.ok(stepBounds.listOverflow <= 1, 'step list must stay within card right edge: ' + JSON.stringify(stepBounds));
@@ -798,6 +815,9 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       return Boolean(el?.open && text.includes('第一段推理：第二段推理'));
     })()`), 'two live reasoning chunks concatenated and visible before first delta');
     assert.equal(await found(page, '原笔记'), false);
+    await page.evaluate(`window.confirm = () => false; document.querySelector('[data-action=open-notes]').click()`);
+    assert.ok(await page.evaluate("!document.getElementById('ai-chat-view').hidden && !!document.getElementById('ai-pending-reply')"),
+      'canceling a switch preserves the running stream');
     event('delta', { text: '原笔记 `[N1]`\n\n' });
     await until(() => page.evaluate("!!document.querySelector('#ai-pending-reply .citation-chip')"), 'early citation rendered');
     const detail = await page.evaluate(`
@@ -806,7 +826,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       [document.getElementById('note-dialog').open, document.getElementById('detail-body').textContent]
     `);
     assert.deepEqual(detail, [true, bodyA]);
-    await page.evaluate("document.querySelector('[data-close=note-dialog]').click()");
+    await page.evaluate("document.querySelector('[data-action=reader-back]').click()");
     event('delta', { text: '后续' });
     await until(() => found(page, '后续'), 'stream tail painted');
     assert.equal(await page.evaluate("window.frozenReply === document.querySelector('#ai-pending-reply p')"), true);
@@ -905,16 +925,23 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     }
   });
 
-test('Chromium verifies AI insights filter bar consistency and random walk previous-hop card',
+test('Chromium verifies the shared AI space and the reader stack, tombstones and undo',
   { timeout: 30_000 }, async t => {
     assert.ok(chrome, 'Chromium binary is required (set WEIJI_TEST_CHROME)');
     const tab = await headless(t);
     const thirdId = '33333333-3333-4333-8333-333333333333';
-    const noteA = { ...note('随机漫步起点笔记 A，用于验证上一步卡片展示和返回导航。', id), revision: 1 };
-    const noteB = { ...note('随机漫步中继笔记 B，用于验证聚焦切换和同步删除回退。', anotherId), revision: 1 };
-    const noteC = { ...note('随机漫步终点笔记 C，用于验证三跳历史清理。', thirdId), revision: 1 };
+    const noteA = { ...note('随机读起点 A，验证返回导航。', id), revision: 1,
+      reading: { bookTitle: '读书测试', chapter: '第一章' }, turns: [{ role: 'user', text: '问题' }, { role: 'assistant', text: '回答' }] };
+    const noteB = { ...note('随机读中继 B，验证同步删除回退。', anotherId), revision: 1 };
+    const noteC = { ...note('随机读终点 C，验证三跳历史清理。', thirdId), revision: 1 };
     const noteMap = new Map([[noteA.id, noteA], [noteB.id, noteB], [noteC.id, noteC]]);
-    let liveNotes = [noteA, noteB, noteC];
+    const extra = Array.from({ length: 24 }, (_, i) => ({
+      ...note('长笔记用于测试列表滚动恢复 #阅读\n'.repeat(8), '44444444-4444-4444-8444-' + String(i).padStart(12, '0')), revision: 1,
+    }));
+    let liveNotes = [noteA, noteB, noteC, ...extra];
+    let undoPayload;
+    let insightRun;
+    let undoChat;
     let deletedNotes = [];
     let getNotesCount = 0;
     let postDeleteCount = 0;
@@ -939,6 +966,10 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
           deletedNotes = [...deletedNotes.filter(d => d.id !== body.id), tombstone];
           return json(res, { deleted: tombstone });
         }
+        undoPayload = body;
+        const restored = { ...body.note, updatedAt: body.note.createdAt, revision: 1 };
+        liveNotes.push(restored);
+        return json(res, { note: restored });
       }
       if (pathname === '/api/notes') {
         getNotesCount++;
@@ -953,11 +984,26 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
           { id: 'gpt-6.2-sol', vendor: 'openai', label: 'GPT-6.2 Sol', thinking: true, efforts: ['low', 'medium', 'high', 'xhigh'] },
         ],
       });
-      if (pathname === '/api/insights/lenses') return json(res, { lenses: [], categories: [] });
-      if (pathname === '/api/insights/preview') return json(res, { noteCount: 2, tagCount: 0, dayCount: 1, willSample: false });
+      if (pathname === '/api/insights/lenses') return json(res, { lenses: [{ id: 'review', name: '本周回顾', suggestedRange: '7d', featured: true, builtin: true }] });
+      if (pathname === '/api/insights/reports') return json(res, { reports: [{ id: 'old-report', title: '旧报告', createdAt }] });
+      if (pathname === '/api/insights/run' || pathname === '/api/ai/chat') {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (pathname.endsWith('/run')) {
+          insightRun = body;
+          const report = { id: 'report', title: '本月报告', lensName: '本周回顾', scope: body.scope, content: '报告正文',
+            citations: [], model: body.model, noteCount: 3, analyzedCount: 3, createdAt };
+          return res.writeHead(200, { 'Content-Type': 'text/event-stream' }).end(
+            `event: delta\ndata: ${JSON.stringify({ text: '报告正文' })}\n\nevent: done\ndata: ${JSON.stringify({ report })}\n\n`);
+        }
+        undoChat = body;
+        return res.writeHead(200, { 'Content-Type': 'text/event-stream' }).end(
+          'event: error\ndata: {"error":"测试中断"}\n\n');
+      }
       if (pathname === '/api/ai/sessions') {
         const source = new URL(req.url, origin).searchParams.get('sourceNoteId');
-        if (!source) return json(res, { sessions: [] });
+        if (!source) return json(res, { sessions: [{ id: 'history-session', title: '已有会话', createdAt }] });
         return json(res, { session: source === anotherId ? {
           id: thirdId, sourceNoteId: anotherId, title: '已有笔记对话', version: 1, origin: 'note', updatedAt: createdAt,
           turns: [{ role: 'assistant', text: '历史回答' }],
@@ -970,6 +1016,7 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
       const relatedMatch = pathname.match(/^\/api\/notes\/([^/]+)\/related$/);
       if (relatedMatch) {
         relatedRequests++;
+        assert.equal(new URL(req.url, origin).searchParams.get('limit'), '3');
         const focus = noteMap.get(relatedMatch[1]) ?? noteA;
         const other = nextInCycle.get(focus.id) ?? noteB;
         if (holdNextRelated) {
@@ -995,310 +1042,172 @@ test('Chromium verifies AI insights filter bar consistency and random walk previ
     await page.navigate(local + '/');
     await until(() => page.evaluate("document.getElementById('sync-state')?.dataset.status === 'ok'"), 'notes loaded');
 
-    assert.equal(await page.evaluate(`document.querySelectorAll(
-      '[data-action=ins-close], [data-action=ai-close], [data-action=rw-close], [data-action=profile-close], #sidebar [data-action=open-ai-profile], #ai-profile-view'
-    ).length`), 0);
-    assert.deepEqual(await page.evaluate(`['notes-topbar', 'main', 'random-walk-overlay', 'ai-chat-view', 'ai-insights-view']
-      .map(id => document.getElementById(id).parentElement.classList.contains('workspace'))`), [true, true, true, true, true]);
-    const clickNav = selector => page.evaluate(`document.querySelector('#sidebar ' + ${JSON.stringify(selector)}).click()`);
-    const currentNav = () => page.evaluate(`[...document.querySelectorAll('#sidebar .nav-item.active, #sidebar [aria-current=page]')]
-      .map(button => [button.dataset.action ?? button.dataset.filter, button.classList.contains('active'), button.getAttribute('aria-current')])`);
-    const assertNav = async name => assert.deepEqual(await currentNav(), [[name, true, 'page']]);
-    await assertNav('all');
+    const click = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const action = name => '[data-action=' + name + ']';
+    const has = selector => page.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)})?.getClientRects().length)`);
+    const shown = selector => until(() => has(selector), 'visible ' + selector);
+    const focusId = () => page.evaluate("document.getElementById('detail-body').dataset.noteId");
+    const related = '#reader-related-list [data-open-note]';
+    const relatedId = () => page.evaluate(`document.querySelector('${related}')?.dataset.openNote`);
+    const open = noteId => click(`#feed [data-open-note="${noteId}"]`);
+    const back = () => click(action('reader-back'));
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.space-nav button')].map(button => button.textContent)`), ['笔记', 'AI']);
+    assert.equal(await page.evaluate("document.querySelectorAll('#random-walk-overlay, #ai-insights-view, #refresh-button, #i-spark, .ai-origin-filters, svg.rw-links').length"), 0);
 
-    // Open both new and existing note chats through the reader button.
-    const chatEntry = `document.querySelector('#note-dialog [data-action="open-note-ai-chat"]')`;
-    for (const [current, label] of [[noteA, '问 AI'], [noteB, '继续对话']]) {
-      await page.evaluate(`document.querySelector('[data-open-note="${current.id}"]').click()`);
-      await until(() => page.evaluate(`document.getElementById('note-dialog').open && ${chatEntry}.textContent.trim() === ${JSON.stringify(label)}`), label);
-      await page.evaluate(`${chatEntry}.click()`);
-      await until(() => page.evaluate(`!document.getElementById('note-dialog').open && !document.getElementById('ai-chat-send').disabled &&
-        !document.getElementById('ai-pinned-notes').closest('[hidden]') &&
-        document.querySelector('#ai-pinned-notes [data-remove-pin="${current.id}"] .ai-pin-label')?.textContent === ${JSON.stringify(current.body.slice(0, 24))}`),
-      'source note appears as an automatic reference after loading');
-      await assertNav('open-ai-chat');
-      await clickNav('[data-filter=all]');
-      await assertNav('all');
+    // Both new and existing note conversations still pin the source and load stored turns.
+    for (const current of [noteA, noteB]) {
+      await open(current.id);
+      await click(action('reader-options'));
+      await click(action('open-note-ai-chat'));
+      await shown(`#ai-pinned-notes [data-remove-pin="${current.id}"]`);
+      await until(() => page.evaluate("!document.getElementById('ai-chat-send').disabled"), 'source conversation loaded');
+      assert.ok((await page.evaluate("document.getElementById('ai-turns').textContent")).includes(current === noteA ? '回答' : '历史回答'));
+      await click(action('open-notes'));
     }
 
-    // 1. AI Insights filter bar uniform control height & searchable model picker
-    await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
-    await until(() => page.evaluate("!document.getElementById('ins-model-picker').hidden && document.getElementById('ins-model-toggle').textContent.includes('Gemini 4 Neon')"),
-      'insights model picker rendered');
-    const insState = await page.evaluate(`(() => {
-      const range = document.getElementById('ins-range-select');
-      const tag = document.getElementById('ins-tag-trigger');
-      const toggle = document.getElementById('ins-model-toggle');
-      const profile = document.querySelector('#ins-scope label:has(#ins-use-profile)');
-      const select = document.getElementById('ins-model-select');
-      return {
-        selectHidden: select.hidden,
-        selectValue: select.value,
-        toggleText: toggle.textContent.trim(),
-        hasVendorIcon: Boolean(toggle.querySelector('svg.ai-vendor-gemini')),
-        heights: {
-          range: range.getBoundingClientRect().height,
-          tag: tag.getBoundingClientRect().height,
-          toggle: toggle.getBoundingClientRect().height,
-          profile: profile.getBoundingClientRect().height,
-        },
-      };
-    })()`);
-    assert.equal(insState.selectHidden, true);
-    assert.equal(insState.selectValue, 'gemini-4-neon-xhigh');
-    assert.equal(insState.toggleText, 'Gemini 4 Neon');
-    assert.equal(insState.hasVendorIcon, true);
-    assert.ok(!insState.toggleText.includes('gemini-4-neon-xhigh'));
-    const heights = Object.values(insState.heights);
-    for (const h of heights) assert.ok(h > 0, 'control height must be positive: ' + JSON.stringify(insState.heights));
-    for (const h1 of heights) {
-      for (const h2 of heights) {
-        assert.ok(Math.abs(h1 - h2) <= 2, `insights controls height mismatch: ${JSON.stringify(insState.heights)}`);
-      }
+    await click(action('open-ai-chat'));
+    await click(action('ai-new-session'));
+    await shown(action('ins-run-lens'));
+    assert.equal(await has(action('ai-new-session')), false);
+    await click(action('ins-lens-range'));
+    const heights = await page.evaluate(`['#ins-range-select', '#ins-tag-trigger', '.ins-profile-toggle'].map(s => document.querySelector(s).getBoundingClientRect().height)`);
+    assert.ok(heights.every(height => height > 0 && Math.abs(height - heights[0]) <= 2), 'range control heights: ' + heights);
+    await page.evaluate(`const range = document.getElementById('ins-range-select'); range.value = 'month'; range.dispatchEvent(new Event('change'));`);
+    await click(action('ins-close-scope'));
+
+    await click(action('ai-options'));
+    assert.match(await page.evaluate("document.querySelector('#ai-model-toggle').textContent"), /^Gemini 4 Neon/);
+    await click('#ai-model-toggle');
+    await page.evaluate(`const search = document.getElementById('ai-model-search'); search.value = 'gpt'; search.dispatchEvent(new InputEvent('input', { bubbles: true }));`);
+    assert.ok(await has('#ai-model-popover'));
+    assert.match(await page.evaluate("document.getElementById('ai-model-options').textContent"), /GPT-6.2 Sol/);
+    await click('#ai-model-options button');
+    assert.equal(await has('#ai-model-popover'), false);
+    assert.match(await page.evaluate("document.querySelector('#ai-model-toggle').textContent"), /^GPT-6.2 Sol/);
+    assert.equal(await page.evaluate("document.querySelectorAll('[class*=ai-vendor-]').length"), 0);
+    await click('#ai-model-toggle');
+    assert.ok(await has('#ai-model-popover'));
+    await page.evaluate("document.getElementById('ai-model-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+    assert.equal(await has('#ai-model-popover'), false);
+
+    for (let i = 0; i < 2; i++) {
+      await click('.top-nav [data-ai-nav] ' + action('open-settings'));
+      await click('[data-action=settings-pane][data-pane=ai]');
+      await until(() => page.evaluate("document.querySelector('#profile-body').textContent.includes('画像测试正文')"), 'profile loaded from settings');
+      await click('[data-close=settings-dialog]');
+      await until(() => page.evaluate("document.querySelector('#profile-body').textContent === ''"), 'profile cleared on close');
     }
-
-    await page.evaluate(`(() => {
-      document.getElementById('ins-model-toggle').click();
-      const search = document.getElementById('ins-model-search');
-      search.value = 'gpt';
-      search.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    })()`);
-    const popoverState = await page.evaluate(`(() => {
-      const popover = document.getElementById('ins-model-popover');
-      const options = [...popover.querySelectorAll('#ins-model-options button')].map(b => b.textContent.trim());
-      return { open: !popover.hidden, options };
-    })()`);
-    assert.equal(popoverState.open, true);
-    assert.ok(popoverState.options.some(text => text.includes('GPT-6.2 Sol')), 'filtered option list: ' + JSON.stringify(popoverState.options));
-
-    await page.evaluate("document.querySelector('#ins-model-options button').click()");
-    const afterSelect = await page.evaluate(`({
-      popoverHidden: document.getElementById('ins-model-popover').hidden,
-      selectValue: document.getElementById('ins-model-select').value,
-      toggleText: document.getElementById('ins-model-toggle').textContent.trim(),
-      hasOpenAIIcon: Boolean(document.querySelector('#ins-model-toggle svg.ai-vendor-openai')),
-    })`);
-    assert.equal(afterSelect.popoverHidden, true);
-    assert.equal(afterSelect.selectValue, 'gpt-6.2-sol');
-    assert.equal(afterSelect.toggleText, 'GPT-6.2 Sol');
-    assert.equal(afterSelect.hasOpenAIIcon, true);
-
-    await page.evaluate("document.getElementById('ins-model-toggle').click()");
-    assert.equal(await page.evaluate("document.getElementById('ins-model-popover').hidden"), false);
-    await page.evaluate("document.getElementById('ins-model-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
-    assert.equal(await page.evaluate("document.getElementById('ins-model-popover').hidden"), true);
-    await assertNav('open-ai-insights');
-    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=profile]').click()");
-    await until(() => page.evaluate(`document.querySelector('#ai-insights-view .ins-content #ins-panel-profile')
-      .getClientRects().length && document.querySelector('#profile-body').textContent.includes('画像测试正文')`), 'profile loaded inside insights');
-    assert.deepEqual(await page.evaluate(`['ai-insights-view', 'ins-panel-profile', 'ins-scope', 'ins-panel-new', 'ins-panel-history', 'ins-report-view']
-      .map(id => document.getElementById(id).hidden)`), [false, false, true, true, true, true]);
-    await assertNav('open-ai-insights');
-    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=new]').click()");
-    assert.equal(await page.evaluate("document.querySelector('#ins-model-toggle').textContent"), 'GPT-6.2 Sol', 'profile tab preserves insights scope and model');
-    await clickNav('[data-filter=all]');
-    await assertNav('all');
-    await clickNav('[data-action=open-ai-insights]');
-    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=profile]').click()");
-    await until(() => page.evaluate("document.querySelector('#profile-body').textContent.includes('画像测试正文')"), 'profile reloaded on re-entry');
     assert.equal(profileLoads, 2);
-    await clickNav('[data-action=open-ai-chat]');
-    await assertNav('open-ai-chat');
-    assert.equal(await page.evaluate("document.activeElement.id"), 'ai-chat-title');
-    await clickNav('[data-filter=all]');
-    await assertNav('all');
+    await click(action('ai-options'));
+    assert.match(await page.evaluate("document.querySelector('#ai-model-toggle').textContent"), /^GPT-6.2 Sol/);
+    await click(action('ai-options'));
+    await click(action('ins-run-lens'));
+    await until(() => page.evaluate("document.getElementById('ins-report-body').textContent.includes('报告正文') && !document.getElementById('ins-report-actions').hidden"), 'streamed report complete');
+    assert.equal(insightRun.scope.range, 'month');
+    assert.equal(insightRun.model, 'gpt-6.2-sol');
+    assert.equal(await has(action('ai-new-session')), true);
+    await page.evaluate(`const box = document.getElementById('ai-chat-input'); box.value = '继续追问';
+      for (const extra of [{ isComposing: true }, { keyCode: 229 }]) {
+        box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, ...extra }));
+      }`);
+    assert.equal(undoChat, undefined, 'IME does not send a chat message');
+    assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '继续追问');
+    await page.evaluate("document.getElementById('ai-chat-form').requestSubmit()");
+    await until(() => page.evaluate("document.getElementById('ai-chat-error').textContent.includes('测试中断')"), 'follow-up sent directly from report');
+    assert.match(undoChat.message, /报告正文[\s\S]*继续追问/);
+    await click(action('ai-toggle-sessions'));
+    const history = await page.evaluate("document.getElementById('ai-session-list').textContent");
+    for (const entry of ['本月报告', '旧报告', '已有会话']) assert.ok(history.includes(entry), entry + ' appears in unified history');
+    await click(action('ai-close-history'));
+    await click(action('open-notes'));
 
-    // 2. Random Walk previous-hop card on left + curved link + back navigation
-    await page.evaluate("document.querySelector('[data-action=open-random-walk]').click()");
-    await until(() => page.evaluate("Boolean(document.querySelector('#rw-focus .rw-focus-card') && document.querySelector('#rw-related .rw-related-card'))"),
-      'random walk initial card and related list loaded');
-    await assertNav('open-random-walk');
-    assert.equal(await page.evaluate(`document.querySelector('[data-action="rw-shuffle"]').textContent.trim()`), '随机');
-    assert.equal(await page.evaluate(`document.getElementById('rw-prev-slot').getAttribute('aria-label')`), '上一步笔记');
-    assert.equal(await page.evaluate("document.activeElement.id"), 'rw-title');
-    assert.equal(await page.evaluate("document.getElementById('refresh-button').closest('header').id"), 'notes-topbar');
-    assert.equal(await page.evaluate("document.getElementById('notes-topbar').hidden"), true);
-    const initialWalk = await page.evaluate(`({
-      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
-      relatedId: document.querySelector('#rw-related .rw-related-card').dataset.noteId,
-      hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
-      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
-    })`);
-    assert.equal(initialWalk.hasPrevCard, false);
-    assert.equal(initialWalk.hasPrevLink, false);
-    assert.notEqual(initialWalk.focusId, initialWalk.relatedId);
+    await page.evaluate(`const input = document.getElementById('note-body'); input.value = '输入中的草稿';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      for (const extra of [{ isComposing: true }, { keyCode: 229 }]) {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, ...extra }));
+      }`);
+    assert.equal(undoPayload, undefined, 'IME does not save a note');
+    assert.equal(await page.evaluate("document.getElementById('note-body').value"), '输入中的草稿');
 
-    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.relatedId)} && Boolean(document.querySelector('#rw-prev-slot .rw-prev-card'))`),
-      'random walk pivoted and rendered previous-hop card');
-    const pivotedWalk = await page.evaluate(`(() => {
-      const prevCard = document.querySelector('#rw-prev-slot .rw-prev-card');
-      const focusCard = document.querySelector('#rw-focus .rw-focus-card');
-      const prevPath = document.querySelector('svg.rw-links path.rw-link-prev');
-      const prevRect = prevCard.getBoundingClientRect();
-      const focusRect = focusCard.getBoundingClientRect();
-      return {
-        prevText: prevCard.textContent,
-        prevRect: { left: prevRect.left, right: prevRect.right, width: prevRect.width, height: prevRect.height },
-        focusRect: { left: focusRect.left, right: focusRect.right },
-        prevPathD: prevPath?.getAttribute('d') ?? '',
-      };
-    })()`);
-    assert.ok(pivotedWalk.prevRect.width > 0 && pivotedWalk.prevRect.height > 0);
-    assert.ok(pivotedWalk.prevRect.right <= pivotedWalk.focusRect.left,
-      `previous-hop card must be strictly to the left of focus card: ${JSON.stringify(pivotedWalk)}`);
-    assert.match(pivotedWalk.prevPathD, /^M\s+-?\d+\s+-?\d+\s+C\s+/);
-    assert.ok(pivotedWalk.prevText.includes('← 上一步'));
+    // Fresh snapshot invalidates related results from the note-chat entries above.
+    const updated = extra.at(-1);
+    liveNotes = liveNotes.map(item => item.id === updated.id ? { ...item, body: '更新快照 ' + item.body, revision: 2 } : item);
+    await page.evaluate("window.dispatchEvent(new Event('focus'))");
+    await until(() => page.evaluate("document.getElementById('note-list').textContent.includes('更新快照')"), 'fresh notes snapshot');
+    // Use a deterministic shuffle so the test exercises the entire three-note cycle.
+    await page.evaluate(`Math.random = () => 0; window.scrollTo(0, 520);`);
+    const listScroll = await page.evaluate('window.scrollY');
+    assert.ok(listScroll > 0);
+    await click(action('open-random-walk'));
+    assert.equal(await focusId(), noteA.id);
+    assert.ok(await has(action('reader-shuffle')));
+    await shown(related);
+    assert.equal(await relatedId(), noteB.id);
+    await click('#detail-body');
+    assert.equal(await page.evaluate("document.getElementById('edit-form').hidden"), true, 'body never starts editing');
+    await click(action('edit-note'));
+    assert.equal(await has('#edit-body'), true);
+    assert.equal(await has('#reader-save'), true);
+    await back();
+    assert.equal(await has('#edit-body'), false);
 
-    await until(() => page.evaluate("!!document.querySelector('#rw-related .rw-related-card')"), 'walk related cards loaded after pivot');
-    const preservedWalk = () => page.evaluate(`({
-      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
-      prevCard: document.querySelector('#rw-prev-slot .rw-prev-card').outerHTML,
-      related: document.querySelector('#rw-related').innerHTML,
-    })`);
-    const beforeSwitch = await preservedWalk();
-    const requestsBeforeSwitch = relatedRequests;
-    await clickNav('[data-filter=all]');
-    await assertNav('all');
-    assert.deepEqual(await page.evaluate(`['random-walk-overlay', 'notes-topbar', 'main']
-      .map(id => document.getElementById(id).hidden)`), [true, false, false]);
-    await clickNav('[data-action=open-random-walk]');
-    await assertNav('open-random-walk');
-    await until(() => page.evaluate("!!document.querySelector('svg.rw-links path.rw-link-prev')"), 'walk redrew the previous hop after re-entry');
-    assert.deepEqual(await preservedWalk(), beforeSwitch);
-    assert.equal(relatedRequests, requestsBeforeSwitch, 'reopening walk does not fetch related notes again');
-
-    // Leaving Random Walk while related fetch is still in flight must resume fetching for the same focus without adding history.
+    // Returning to a completed hop reuses related notes; a held, abandoned hop is fetched once on re-entry.
     holdNextRelated = true;
     const heldStarted = new Promise(resolve => { heldRelatedStarted = resolve; });
-    const reqBeforeAbort = relatedRequests;
-    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
+    const beforeHeld = relatedRequests;
+    await click(related);
     await heldStarted;
-    const inFlightWalk = await page.evaluate(`({
-      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
-      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
-    })`);
-    await clickNav('[data-filter=all]');
-    await assertNav('all');
-    if (releaseHeldRelated) { releaseHeldRelated(); releaseHeldRelated = null; }
-    await clickNav('[data-action=open-random-walk]');
-    await assertNav('open-random-walk');
-    await until(() => page.evaluate("!!document.querySelector('#rw-related .rw-related-card')"),
-      'walk resumed aborted related fetch upon re-entry');
-    assert.equal(relatedRequests, reqBeforeAbort + 2, 'aborted in-flight related fetch reloads once on re-entry');
-    const afterResume = await page.evaluate(`({
-      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
-      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
-    })`);
-    assert.deepEqual(afterResume, inFlightWalk, 'resumed walk keeps exact focus and previous-hop history');
-    const reqAfterResume = relatedRequests;
-    await clickNav('[data-filter=all]');
-    await clickNav('[data-action=open-random-walk]');
-    assert.equal(relatedRequests, reqAfterResume, 'completed resumed walk does not refetch on subsequent re-entry');
-    // Return back one hop to restore expected state before testing prev-card click below.
-    await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(beforeSwitch.focusId)} && !!document.querySelector('#rw-related .rw-related-card')`),
-      'returned to pivoted note before previous-hop check');
+    assert.equal(await focusId(), noteB.id);
+    await back();
+    assert.equal(await focusId(), noteA.id);
+    releaseHeldRelated?.();
+    assert.equal(relatedRequests, beforeHeld + 1);
+    await click(related);
+    await shown(related);
+    assert.equal(await relatedId(), noteC.id);
+    assert.equal(relatedRequests, beforeHeld + 2);
+    await click(related);
+    await shown(related);
+    assert.equal(await relatedId(), noteA.id);
+    await click(related);
+    await shown(related);
+    assert.equal(await focusId(), noteA.id);
+    assert.equal(await relatedId(), noteB.id);
+    assert.equal(relatedRequests, beforeHeld + 3, 'completed earlier hops did not refetch');
 
-    await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.focusId)}`),
-      'clicking previous-hop card navigated back to initial note');
-    const afterBack = await page.evaluate(`({
-      focusId: document.querySelector('#rw-focus .rw-focus-card').dataset.noteId,
-      hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
-      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
-    })`);
-    assert.equal(afterBack.focusId, initialWalk.focusId);
-    assert.equal(afterBack.hasPrevCard, false);
-    assert.equal(afterBack.hasPrevLink, false);
-
-    // 3. Revisit cycle (hop1 -> hop2 -> hop3 -> hop1): sync deleting hop2 must prune right related card & keep earlier hop1 in history
-    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(initialWalk.relatedId)} && Boolean(document.querySelector('#rw-related .rw-related-card'))`),
-      'hopped to second note');
-    const hop1Id = initialWalk.focusId;
-    const hop2Id = initialWalk.relatedId;
-    const hop3Id = await page.evaluate("document.querySelector('#rw-related .rw-related-card').dataset.noteId");
-    assert.notEqual(hop3Id, hop1Id);
-    assert.notEqual(hop3Id, hop2Id);
-
-    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop3Id)} && Boolean(document.querySelector('#rw-related .rw-related-card'))`),
-      'hopped to third note');
-    await page.evaluate("document.querySelector('#rw-related .rw-related-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop1Id)} && Boolean(document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop2Id)} + '"]'))`),
-      'revisited hop1 with hop2 shown on right');
-
-    const hop1Body = noteMap.get(hop1Id).body.slice(0, 12);
-    const hop3Body = noteMap.get(hop3Id).body.slice(0, 12);
-
-    // Delete hop2 on server and sync -> right column must immediately remove hop2, left card keeps hop3
-    liveNotes = liveNotes.filter(n => n.id !== hop2Id);
-    deletedNotes = [{ id: hop2Id, revision: 2 }];
-    await clickNav('[data-filter=all]');
-    await page.evaluate(`(() => {
-      const refresh = document.getElementById('refresh-button');
-      if (!refresh.getClientRects().length) throw new Error('notes sync button is not visible');
-      refresh.click();
-    })()`);
-    await clickNav('[data-action=open-random-walk]');
-    await until(() => page.evaluate(`document.getElementById('sync-state')?.dataset.status === 'ok' && !document.getElementById('refresh-button').disabled && !document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop2Id)} + '"]')`),
-      'deleted hop2 pruned from right related column after sync');
-    const afterRevisitSync = await page.evaluate(`({
-      focusId: document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId,
-      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
-      relatedCount: document.querySelectorAll('#rw-related .rw-related-card').length,
-      backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
-    })`);
-    assert.equal(afterRevisitSync.focusId, hop1Id);
-    assert.ok(afterRevisitSync.prevText.includes(hop3Body));
-    assert.equal(afterRevisitSync.relatedCount, 0, 'deleted hop2 must be removed from right related column');
-    assert.equal(afterRevisitSync.backDisabled, false);
-
-    // Step back from revisited hop1 to hop3 -> surviving earlier hop1 MUST remain in history (not stripped by id !== rw.id)
-    await page.evaluate("document.querySelector('#rw-prev-slot .rw-prev-card').click()");
-    await until(() => page.evaluate(`document.querySelector('#rw-focus .rw-focus-card')?.dataset.noteId === ${JSON.stringify(hop3Id)} && Boolean(document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop1Id)} + '"]'))`),
-      'stepped back to hop3 with hop1 on both left prev card and right related card');
-    const atHop3 = await page.evaluate(`({
-      prevText: document.querySelector('#rw-prev-slot .rw-prev-card')?.textContent ?? '',
-      backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
-      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
-      hasRightHop1: Boolean(document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop1Id)} + '"]')),
-    })`);
-    assert.ok(atHop3.prevText.includes(hop1Body), `revisited hop1 must survive in history: ${JSON.stringify(atHop3)}`);
-    assert.equal(atHop3.backDisabled, false);
-    assert.equal(atHop3.hasPrevLink, true);
-    assert.equal(atHop3.hasRightHop1, true);
-
-    // 4. Local POST delete via mutate() (NO GET /api/notes sync!) -> immediately clears both left prev card and right related card
+    liveNotes = liveNotes.filter(n => n.id !== noteB.id);
+    deletedNotes = [{ id: noteB.id, revision: 2 }];
+    await page.evaluate("window.dispatchEvent(new Event('focus'))");
+    await until(async () => !await has(related), 'remote delete prunes related note while reader remains open');
+    assert.equal(await focusId(), noteA.id);
+    await back();
+    assert.equal(await focusId(), noteC.id);
+    await shown(related);
+    assert.equal(await relatedId(), noteA.id);
+    await back();
+    assert.equal(await focusId(), noteA.id, 'earlier duplicate hop survives pruning the middle hop');
+    await back();
+    assert.equal(await has('#note-dialog'), false);
+    assert.equal(await page.evaluate('window.scrollY'), listScroll, 'reader restores exact list position');
+    await open(noteA.id);
+    assert.equal(await has(action('reader-shuffle')), false, 'list and random read share the same modal');
+    await click(action('reader-options'));
+    await click(action('delete-note'));
+    await shown(action('confirm-delete'));
     const getsBeforeLocalDelete = getNotesCount;
-    await clickNav('[data-filter=all]');
-    await page.evaluate(`(() => {
-      const menuBtn = document.querySelector('[data-action="card-menu"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]');
-      if (!menuBtn) throw new Error('missing card menu button for hop1');
-      menuBtn.click();
-    })()`);
-    await until(() => page.evaluate(`Boolean(document.querySelector('[data-action="card-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]'))`),
-      'card menu inline delete item rendered');
-    await page.evaluate(`document.querySelector('[data-action="card-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]').click()`);
-    await until(() => page.evaluate(`Boolean(document.querySelector('[data-action="confirm-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]'))`),
-      'inline delete confirmation rendered');
-    await page.evaluate(`document.querySelector('[data-action="confirm-inline-delete"][data-note-id="' + ${JSON.stringify(hop1Id)} + '"]').click()`);
-    await until(() => page.evaluate(`!document.querySelector('#rw-prev-slot .rw-prev-card') && !document.querySelector('#rw-related .rw-related-card[data-note-id="' + ${JSON.stringify(hop1Id)} + '"]')`),
-      'local POST delete pruned both prev card and right related card without sync');
-    await clickNav('[data-action=open-random-walk]');
-    const afterLocalDelete = await page.evaluate(`({
-      hasPrevCard: Boolean(document.querySelector('#rw-prev-slot .rw-prev-card')),
-      hasPrevLink: Boolean(document.querySelector('svg.rw-links path.rw-link-prev')),
-      relatedCount: document.querySelectorAll('#rw-related .rw-related-card').length,
-      backDisabled: document.querySelector('#random-walk-overlay .rw-toolbar [data-action="rw-prev"]').disabled,
-    })`);
-    assert.equal(postDeleteCount, 1, 'expected local POST /api/notes delete');
-    assert.equal(getNotesCount, getsBeforeLocalDelete, 'local delete cleanup must not rely on a subsequent GET /api/notes sync');
-    assert.equal(afterLocalDelete.hasPrevCard, false);
-    assert.equal(afterLocalDelete.hasPrevLink, false);
-    assert.equal(afterLocalDelete.relatedCount, 0);
-    assert.equal(afterLocalDelete.backDisabled, true);
+    await click(action('confirm-delete'));
+    await shown(action('undo-delete'));
+    assert.equal(postDeleteCount, 1);
+    assert.equal(getNotesCount, getsBeforeLocalDelete, 'local delete does not wait for GET /api/notes');
+    assert.equal(await has(`#feed [data-note-id="${noteA.id}"]`), false);
+    await click(action('undo-delete'));
+    await until(() => page.evaluate("document.getElementById('delete-undo').hidden"), 'restored note saved');
+    assert.equal(undoPayload.expectedRevision, 0);
+    assert.notEqual(undoPayload.id, noteA.id);
+    assert.deepEqual(undoPayload.note, { id: undoPayload.id, body: noteA.body, createdAt: noteA.createdAt, reading: noteA.reading, turns: noteA.turns });
+    assert.ok(deletedNotes.some(item => item.id === noteA.id), 'original tombstone stays');
+    assert.equal(await page.evaluate(`document.querySelector('#feed [data-note-id="${undoPayload.id}"]').closest('.day-group').dataset.day`),
+      await page.evaluate(`document.querySelector('#feed [data-note-id="${noteC.id}"]').closest('.day-group').dataset.day`));
   });
 
 test('Chat SSE flushes : connected immediately before upstream replies', async t => {
@@ -1368,7 +1277,7 @@ test('Chat SSE flushes : connected immediately before upstream replies', async t
   assert.ok(rest.includes('event: done'), 'expected terminal done frame');
 });
 
-async function materialFixture(t) {
+async function paperFixture(t) {
   assert.ok(chrome, 'Chromium binary is required (set WEIJI_TEST_CHROME)');
   const newPage = await headless(t);
   const { db, call, put } = await fixture(t);
@@ -1391,8 +1300,9 @@ async function materialFixture(t) {
       modelMeta: [{ id: 'gemini-3-flash', vendor: 'gemini', label: 'Gemini 3 Flash', efforts: [] }] }],
     ['/api/ai/sessions', { sessions: [summary] }],
     ['/api/ai/sessions/' + id, { session }],
-    ['/api/insights/lenses', { lenses: [], categories: [] }],
-    ['/api/insights/preview', { noteCount: 2, tagCount: 2, dayCount: 2 }],
+    ['/api/insights/lenses', { lenses: [{ id: 'review', name: '本周回顾', suggestedRange: '7d', featured: true, builtin: true }] }],
+    ['/api/insights/reports', { reports: [] }],
+    ['/api/ai/profile', { profile: null }],
   ]);
   const web = createServer(async (req, res) => {
     const url = new URL(req.url, origin);
@@ -1420,7 +1330,7 @@ async function materialFixture(t) {
   };
 }
 
-async function measureMaterial(page, targets) {
+async function measurePaper(page, targets) {
   return page.evaluate(`(() => {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = 1;
@@ -1455,52 +1365,66 @@ async function measureMaterial(page, targets) {
   })()`);
 }
 
-test('Material Design 3 light and dark theme maintains unified surfaces and readable contrast',
+test('Paper and ink light/dark themes maintain opaque surfaces, AA roles and AAA emphasis',
   { timeout: 30_000 }, async t => {
-    const open = await materialFixture(t);
+    const open = await paperFixture(t);
     for (const scheme of ['light', 'dark']) {
       const page = await open({ scheme });
-      const notes = await measureMaterial(page, [
-        ['body'], ['.topbar h1'], ['.nav-item.active'], ['.activity-numbers span'],
-        ['.card-body'], ['.card-time'], ['.inline-tag'], ['#note-body', '::placeholder'],
-        ['nav[aria-label=主视图] .nav-label'], ['#note-filters-title'],
+      const click = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+      const notes = await measurePaper(page, [
+        ['body'], ['.space-nav [aria-current]'], ['.top-nav [data-action=open-sidebar]'],
+        ['.card-body'], ['.day-head'], ['.inline-tag'], ['#note-body', '::placeholder'],
       ]);
-      assert.equal(await page.evaluate("document.querySelector('.topbar').getBoundingClientRect().height"), 64);
-      const primary = await page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-primary').trim()");
-      assert.equal(primary, scheme === 'light' ? '#2d6a4f' : '#7ad4aa');
-      assert.deepEqual(notes.body.bg, scheme === 'light' ? [246, 245, 240, 255] : [23, 22, 20, 255]);
-
-      await page.evaluate("document.querySelector('[data-action=open-import-hub]').click()");
-      const imports = await measureMaterial(page, [['#import-hub-title'], ...['open-flomo-import', 'open-joplin-import', 'open-import']
+      assert.equal(await page.evaluate("document.querySelector('.top-nav').getBoundingClientRect().height"), 60);
+      const accent = await page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()");
+      assert.equal(accent, scheme === 'light' ? '#1D4D3A' : '#9AC4AE');
+      assert.deepEqual(notes.body.bg, scheme === 'light' ? [250, 248, 244, 255] : [21, 21, 20, 255]);
+      assert.ok(await page.evaluate(`[...document.querySelectorAll('#feed .note-card, .day-group')].every(node => {
+        const s = getComputedStyle(node);
+        return s.backgroundColor === 'rgba(0, 0, 0, 0)' && s.boxShadow === 'none' &&
+          ['Top','Right','Bottom','Left'].every(side => s['border' + side + 'Width'] === '0px');
+      })`), 'feed notes and days are frameless');
+      assert.equal(await page.evaluate("document.getElementById('sync-state').getBoundingClientRect().height"), 0);
+      await click('.top-nav [data-action=open-sidebar]:not(.mobile-only)');
+      const drawer = await measurePaper(page, [['.nav-item.active'], ['.stats-toggle'], ['.nav-label-row'], ['.date-filter label']]);
+      await click('[data-action=close-sidebar]');
+      await click('.top-nav #note-nav-actions [data-action=open-settings]');
+      await click('[data-action=settings-pane][data-pane=data]');
+      await click('[data-action=open-import-hub]');
+      const imports = await measurePaper(page, [['#import-hub-title'], ...['open-flomo-import', 'open-joplin-import', 'open-import']
         .map(action => ['#import-hub-dialog [data-action=' + action + ']'])]);
-      await page.evaluate("document.querySelector('[data-close=import-hub-dialog]').click()");
-      await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
-      await until(() => page.evaluate("!!document.querySelector('[data-action=ai-select-session]')"), 'AI session listed');
-      await page.evaluate("document.querySelector('[data-action=ai-select-session]').click()");
+      await click('[data-close=import-hub-dialog]');
+      await click('[data-close=settings-dialog]');
+      await click('[data-action=open-ai-chat]');
+      await until(() => page.evaluate("!!document.querySelector('[data-action=ai-select-session]') && !!document.querySelector('[data-action=ins-lens-range]')"), 'AI history and lenses loaded');
+      await click('[data-action=ai-toggle-sessions]');
+      const history = await measurePaper(page, [['.ai-session-title'], ['.history-group']]);
+      await click('[data-action=ai-select-session]');
       await until(() => page.evaluate("!!document.querySelector('.ai-steps-card') && document.querySelector('#ai-model-toggle').textContent.includes('Gemini')"), 'AI transcript and model loaded');
-      await page.evaluate("document.querySelector('.ai-steps-card summary').click(); document.querySelector('#ai-model-toggle').click()");
-      const chat = await measureMaterial(page, [
-        ['#ai-chat-view'], ['.ai-session-title'], ['.ai-msg-user'], ['.ai-msg-assistant p'], ['.citation-chip'],
+      await click('.ai-steps-card summary');
+      await click('[data-action=ai-options]');
+      await click('#ai-model-toggle');
+      const chat = await measurePaper(page, [
+        ['#ai-chat-view'], ['.ai-msg-user'], ['.ai-msg-assistant p'], ['.citation-chip'],
         ['.ai-steps-card summary'], ['.ai-step-heading strong'], ['#ai-chat-input', '::placeholder'],
-        ['#ai-model-options [aria-pressed=true] .ai-picker-label'],
+        ['#ai-model-options [aria-pressed=true] .ai-picker-label'], ['#ai-model-search', '::placeholder'],
       ]);
       assert.deepEqual(chat['#ai-chat-view'].bg, notes.body.bg);
-
-      await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
-      await until(() => page.evaluate("document.querySelector('#ins-model-toggle').textContent.includes('Gemini')"), 'insights filters loaded');
-      const insights = await measureMaterial(page, [
-        ['#ai-insights-view'], ['#ins-scope'], ['#ins-range-select'], ['#ins-tag-trigger'], ['#ins-model-toggle'], ['.ins-profile-toggle'],
+      await click('[data-action=ai-options]');
+      await click('[data-action=ai-new-session]');
+      await click('[data-action=ins-lens-range]');
+      const insights = await measurePaper(page, [
+        ['#ai-empty'], ['#ins-scope'], ['#ins-range-select'], ['#ins-tag-trigger'], ['.ins-profile-toggle'],
       ]);
-      assert.deepEqual(await page.evaluate(`['#ins-range-select', '#ins-tag-trigger', '#ins-model-toggle', '.ins-profile-toggle']
-        .map(selector => document.querySelector(selector).getBoundingClientRect().height)`), [40, 40, 40, 40]);
       await page.login();
       await until(() => page.evaluate("location.pathname === '/login' && document.readyState === 'complete' && !!document.querySelector('.auth-shell')"), 'real login page loaded');
-      const login = await measureMaterial(page, [['.auth-shell'], ['.auth-page h1'], ['.auth-providers a'], ['.auth-footer a']]);
+      const login = await measurePaper(page, [['.auth-shell'], ['.auth-page h1'], ['.auth-providers a'], ['.auth-footer a']]);
       assert.deepEqual(login['.auth-shell'].bg, notes.body.bg);
 
-      for (const [selector, sample] of Object.entries({ ...notes, ...imports, ...chat, ...insights, ...login })) {
+      for (const [selector, sample] of Object.entries({ ...notes, ...drawer, ...imports, ...history, ...chat, ...insights, ...login })) {
         assert.equal(sample.bg[3], 255, `${scheme} ${selector} should resolve to an opaque surface`);
-        assert.ok(sample.ratio >= 4.5, `${scheme} ${selector} contrast ${sample.ratio.toFixed(3)}:1`);
+        const minimum = ['body', '.card-body', '.inline-tag', '.citation-chip', '.ai-msg-assistant p'].includes(selector) ? 7 : 4.5;
+        assert.ok(sample.ratio >= minimum, `${scheme} ${selector} contrast ${sample.ratio.toFixed(3)}:1`);
         if (scheme === 'dark') {
           assert.ok(sample.bright < 0.12, `dark ${selector} background luminance ${sample.bright}`);
           assert.ok(sample.bg[0] >= sample.bg[2] || ['.inline-tag', '.citation-chip', '#ai-model-options [aria-pressed=true] .ai-picker-label', '.nav-item.active', '.ai-msg-user'].includes(selector),
@@ -1510,9 +1434,9 @@ test('Material Design 3 light and dark theme maintains unified surfaces and read
     }
   });
 
-test('Material Design 3 mobile 375px layout enforces 48px touch targets without overflow',
+test('Paper and ink mobile 375px enforces real 48px hit targets without overflow',
   { timeout: 30_000 }, async t => {
-    const open = await materialFixture(t);
+    const open = await paperFixture(t);
     const page = await open({ width: 375, height: 812, mobile: true });
     const layout = selectors => page.evaluate(`(() => {
       const targets = ${JSON.stringify(selectors)}.flatMap(([selector, square]) => {
@@ -1531,26 +1455,26 @@ test('Material Design 3 mobile 375px layout enforces 48px touch targets without 
         assert.ok(height >= 48 && (!square || width >= 48), `${selector} has a ${width}×${height}px hit box`);
       }
     };
+    const click = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
     check(await layout([
-      ['#mobile-toggle', true], ['#sort-button', true], ['#refresh-button', true],
-      ['.topbar .icon-button', true], ['#search'], ['#save-note', true], ['.composer-footer button'],
+      ['#mobile-toggle', true], ['.space-nav button', true], ['#note-nav-actions [data-action=open-random-walk]', true],
+      ['.compose-fab', true], ['#save-note', true], ['.inline-tag', true],
     ]));
-    const bar = await page.evaluate(`(() => {
-      const first = document.querySelector('.topbar-left').getBoundingClientRect();
-      const search = document.querySelector('.search-field').getBoundingClientRect();
-      return { right: Math.max(...[...document.querySelectorAll('.topbar > *, .topbar-left > *')].map(el => el.getBoundingClientRect().right)),
-        firstBottom: first.bottom, searchTop: search.top, searchWidth: search.width };
-    })()`);
-    assert.ok(bar.right <= 375, 'top bar overflows: ' + bar.right);
-    assert.ok(bar.searchTop >= bar.firstBottom && bar.searchWidth >= 350, 'search needs its own full-width row');
-
-    await page.evaluate("document.querySelector('#mobile-toggle').click()");
-    check(await layout([['.nav-item'], ['.tag-toggle', true], ['button.heatmap-square', true]]));
+    await click('#mobile-toggle');
+    assert.equal(await page.evaluate("document.querySelector('[data-action=toggle-stats]').getAttribute('aria-expanded')"), 'false');
+    assert.equal(await page.evaluate("document.getElementById('heatmap').getBoundingClientRect().height"), 0);
+    assert.equal(await page.evaluate("document.getElementById('mini-pulse').childElementCount"), 7);
+    check(await layout([['.nav-item', true], ['.tag-toggle', true], ['#sort-button', true], ['#date-filter', true], ['[data-action=toggle-stats]', true]]));
+    await click('[data-action=toggle-stats]');
+    check(await layout([['button.heatmap-square', true]]));
     const cells = await page.evaluate(`(() => {
       const heatmap = document.querySelector('.heatmap');
-      const buttons = [...heatmap.querySelectorAll('button.heatmap-square')];
+      const buttons = [...heatmap.querySelectorAll('button[data-level="1"]')];
       buttons[0].scrollIntoView({ block: 'center', inline: 'center' });
-      return { gridWidth: heatmap.clientWidth, scrollWidth: heatmap.scrollWidth,
+      const style = getComputedStyle(heatmap);
+      return { gridWidth: heatmap.clientWidth, scrollWidth: heatmap.scrollWidth, count: heatmap.childElementCount,
+        border: style.borderWidth, shadow: style.boxShadow, background: style.backgroundColor,
+        expanded: document.querySelector('[data-action=toggle-stats]').getAttribute('aria-expanded'),
         drawerTop: document.querySelector('.sidebar').getBoundingClientRect().top,
         drawerHeight: document.querySelector('.sidebar').getBoundingClientRect().height,
         cells: buttons.map(button => {
@@ -1562,27 +1486,60 @@ test('Material Design 3 mobile 375px layout enforces 48px touch targets without 
     })()`);
     assert.equal(cells.drawerTop, 0);
     assert.equal(cells.drawerHeight, 812);
-    assert.ok(cells.scrollWidth > cells.gridWidth, 'heatmap must scroll within the drawer');
+    assert.equal(cells.expanded, 'true');
+    assert.equal(cells.count, 84);
+    assert.equal(cells.border, '0px');
+    assert.equal(cells.shadow, 'none');
+    assert.equal(cells.background, 'rgba(0, 0, 0, 0)');
+    assert.ok(cells.scrollWidth <= cells.gridWidth, 'heatmap must not overflow horizontally');
     assert.equal(cells.cells.length, 2, 'two adjacent dates have matching notes');
     const [a, b] = cells.cells;
-    assert.equal(b.top - a.bottom, 4, 'adjacent date cells must have a 4px gap');
+    assert.ok(b.left >= a.right - 1 || b.top >= a.bottom - 1, 'adjacent date hit boxes must not overlap');
     assert.ok(a.hit && b.hit, 'all four corners inset by 2px must hit their own date button');
     assert.ok(a.centerHit && b.centerHit, 'both date button centers must hit their own date button');
+    await click('button.heatmap-square[data-level="1"]');
+    assert.equal(await page.evaluate("document.querySelectorAll('#feed .note-card').length"), 1);
+    await click('#mobile-toggle');
+    await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => page.evaluate("!document.getElementById('sidebar').open && document.activeElement.id === 'mobile-toggle'"), 'Escape restores drawer trigger focus');
+    await click('#mobile-toggle');
+    await click('#sidebar [data-action=toggle-search]');
+    check(await layout([['#search', true]]));
+    const bar = await page.evaluate(`(() => {
+      const nav = document.querySelector('#notes-topbar').getBoundingClientRect();
+      const search = document.querySelector('.search-field').getBoundingClientRect();
+      return { right: nav.right, firstBottom: nav.bottom, searchTop: search.top, searchWidth: search.width };
+    })()`);
+    assert.ok(bar.right <= 375, 'top bar overflows: ' + bar.right);
+    assert.ok(bar.searchTop >= bar.firstBottom && bar.searchWidth >= 335, 'search needs its own full-width row');
 
-    await page.evaluate("document.querySelector('[data-action=open-ai-insights]').click()");
-    await until(() => page.evaluate("document.querySelector('#ins-model-toggle').textContent.includes('Gemini')"), 'mobile insights filters loaded');
-    check(await layout([['#ins-range-select'], ['#ins-tag-trigger'], ['#ins-model-toggle'], ['.ins-profile-toggle']]));
-    check(await layout([['[data-action=ins-mobile-menu]', true], ['.ins-tabs button', true], ['[data-action=ins-new-lens]', true]]));
-    await page.evaluate("document.querySelector('[data-action=ins-tab][data-tab=profile]').click()");
-    check(await layout([['#ins-panel-profile .profile-actions button', true], ['.profile-toggle', true]]));
-    await page.evaluate("document.querySelector('[data-action=ins-mobile-menu]').click(); document.querySelector('[data-action=open-random-walk]').click()");
-    check(await layout([['.rw-toolbar button', true], ['.rw-card-actions button', true]]));
-    await page.evaluate("document.querySelector('[data-action=rw-mobile-menu]').click()");
-    assert.equal(await page.evaluate("document.querySelector('[data-action=rw-mobile-menu]').getAttribute('aria-expanded')"), 'true');
-    await page.evaluate("document.querySelector('[data-action=open-import-hub]').click()");
+    await click('[data-action=open-ai-chat]');
+    await until(() => page.evaluate("!!document.querySelector('[data-action=ins-lens-range]')"), 'mobile lenses loaded');
+    await click('[data-action=ins-lens-range]');
+    check(await layout([['#ins-range-select', true], ['#ins-tag-trigger', true], ['.ins-profile-toggle', true]]));
+    await click('[data-action=ins-close-scope]');
+    await click('[data-action=ai-options]');
+    check(await layout([['[data-action=ai-toggle-sessions]', true], ['[data-action=ai-options]', true], ['[data-action=ins-new-lens]', true], ['#ai-model-toggle', true], ['#ai-style-toggle', true], ['#ai-chat-send', true]]));
+    await click('#ai-model-toggle');
+    check(await layout([['#ai-model-search', true], ['.ai-picker-row', true]]));
+    await click('#ai-options [data-action=open-settings]');
+    await click('[data-action=settings-pane][data-pane=ai]');
+    check(await layout([['#ins-panel-profile .profile-actions button', true], ['.profile-toggle', true], ['.profile-subtabs button', true]]));
+    await click('[data-close=settings-dialog]');
+    await click('[data-action=open-notes]');
+    await click('[data-action=open-random-walk]');
+    check(await layout([['.reader-nav button', true]]));
+    await click('[data-action=reader-options]');
+    check(await layout([['#reader-options button', true]]));
+    await click('[data-action=reader-back]');
+    await click('#mobile-toggle');
+    await click('#sidebar [data-action=open-settings]');
+    await click('[data-action=settings-pane][data-pane=data]');
+    await click('[data-action=open-import-hub]');
     const sources = await layout([['#import-hub-dialog .import-sources button', true]]);
     assert.equal(sources.targets.length, 3);
     check(sources);
-    await page.evaluate("document.querySelector('#import-hub-dialog [data-action=open-import]').click()");
+    await click('#import-hub-dialog [data-action=open-import]');
     assert.equal(await page.evaluate("document.querySelector('#import-dialog').open && !document.querySelector('#import-hub-dialog').open"), true);
   });

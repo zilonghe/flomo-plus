@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f5f0">
-  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#171614">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FAF8F4">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151514">
   <meta name="description" content="微记，记录随记和读书笔记，与 AI 继续思考。">
   <title>微记 · 我的笔记</title>
   <link rel="stylesheet" href="/styles.css">
@@ -28,7 +28,6 @@
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11.2a7.6 7.6 0 0 1-7.9 7.4H4.6l1.3-3.4a7 7 0 0 1-1.7-4c0-4.1 3.5-7.4 7.9-7.4S20 7.1 20 11.2Z"/><path d="M8.3 11h.1m3.6 0h.1m3.6 0h.1"/></symbol>
     <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1"/></symbol>
-    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M10 3.8 11.8 9l5.2 1.8-5.2 1.8L10 18l-1.8-5.4L3 10.8 8.2 9 10 3.8Zm8.4 10.4.8 2.5 2.6.8-2.6.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8.8-2.5Z"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol>
     <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="15" rx="2"/><path d="M8 4v4m8-4v4M4 11h16m-12 4h1m3 0h1m3 0h1"/></symbol>
     <symbol id="i-edit" viewBox="0 0 24 24"><path d="m7 17 1-4 8.2-8.2 3 3L11 16l-4 1Zm7.6-10.6 3 3M5 20h14"/></symbol>
@@ -40,60 +39,74 @@
   </svg>
 
   <div class="shell">
-    <aside class="sidebar" id="sidebar" aria-label="笔记导航">
-      <div class="profile">
-        <span class="avatar" id="avatar" aria-hidden="true">微</span>
-        <div class="profile-text"><strong id="profile-name">微记</strong><span id="profile-caption">正在验证登录</span></div>
-        <button class="icon-button profile-settings" type="button" data-action="open-settings" aria-label="设置" title="设置"><svg><use href="#i-settings"></use></svg></button>
-        <a class="icon-button" id="sign-out" href="/signout-with-chatgpt?return_to=/" target="_top" aria-label="退出登录" title="退出登录" hidden><svg><use href="#i-logout"></use></svg></a>
-      </div>
-      <nav class="side-section" aria-label="主视图">
-        <span class="nav-label">工作区</span>
-        <button class="nav-item active" type="button" data-filter="all" aria-current="page"><svg><use href="#i-grid"></use></svg><span>全部笔记</span><span class="nav-count" id="count-all"></span></button>
-        <button class="nav-item" type="button" data-action="open-random-walk"><svg><use href="#i-shuffle"></use></svg><span>随机漫步</span></button>
-        <button class="nav-item" type="button" data-action="open-ai-chat"><svg><use href="#i-chat"></use></svg><span>AI 对话</span></button>
-        <button class="nav-item" type="button" data-action="open-ai-insights"><svg><use href="#i-spark"></use></svg><span>AI 洞察</span></button>
+    <dialog class="sidebar drawer" id="sidebar" aria-label="笔记筛选">
+      <button class="icon-button drawer-close" type="button" data-action="close-sidebar" aria-label="关闭筛选">✕</button>
+      <button class="stats-toggle" type="button" data-action="toggle-stats" aria-expanded="false" aria-controls="heatmap">
+        <span><span id="activity-memos">0</span> 笔记 · <span id="activity-reading">0</span> 读书 · <span id="activity-days">0</span> 天</span>
+        <span class="stats-right" aria-hidden="true"><span id="mini-pulse"></span><span id="stats-chevron">▾</span></span>
+      </button>
+      <div class="heatmap" id="heatmap" aria-label="最近十二周的记录" hidden></div>
+      <nav class="filter-tabs" aria-label="笔记类型">
+        <button class="nav-item" type="button" data-filter="all">全部</button>
+        <button class="nav-item" type="button" data-filter="journal">随记</button>
+        <button class="nav-item" type="button" data-filter="reading">读书</button>
       </nav>
-      <section class="side-section" aria-labelledby="note-filters-title">
-        <span class="nav-label" id="note-filters-title">笔记筛选</span>
-        <button class="nav-item" type="button" data-filter="journal"><svg><use href="#i-note"></use></svg><span>随记</span><span class="nav-count" id="count-journal"></span></button>
-        <button class="nav-item" type="button" data-filter="reading"><svg><use href="#i-book"></use></svg><span>读书</span><span class="nav-count" id="count-reading"></span></button>
-        <section class="activity" aria-label="记录统计">
-          <div class="activity-numbers" id="activity-numbers">
-            <div><strong id="activity-memos">0</strong><span>笔记</span></div>
-            <div><strong id="activity-tags">0</strong><span>标签</span></div>
-            <div><strong id="activity-days">0</strong><span>记录天数</span></div>
-          </div>
-          <div class="heatmap" id="heatmap" aria-label="最近十五周的记录"></div>
-          <div class="heatmap-months" id="heatmap-months" aria-hidden="true"></div>
-        </section>
-        <div class="side-section tag-section" id="tag-section" hidden>
-          <div class="nav-label-row">
-            <span class="nav-label">标签</span>
-            <button type="button" class="tag-sort-btn" id="tag-sort-btn" data-action="toggle-tag-sort" title="切换标签排序">按数量</button>
-          </div>
-          <div id="tag-list"></div>
-        </div>
+      <div class="date-filter"><label for="date-filter">按日期</label><input class="field" id="date-filter" type="date"><button type="button" data-action="clear-day" hidden>清除</button></div>
+      <button class="mobile-only" type="button" data-action="toggle-search">搜索</button>
+      <button type="button" id="sort-button" data-action="toggle-sort">最新优先</button>
+      <section id="tag-section" hidden>
+        <div class="nav-label-row"><span>标签</span><button type="button" id="tag-sort-btn" data-action="toggle-tag-sort">按数量</button></div>
+        <div id="tag-list"></div>
       </section>
-      <div class="side-footer">
-        <div class="side-section side-tools">
-          <button class="nav-item" type="button" data-action="open-import-hub"><svg><use href="#i-import"></use></svg><span>导入笔记</span></button>
-        </div>
-      </div>
-    </aside>
-
+      <div class="side-footer"><button type="button" data-action="open-settings">设置</button></div>
+    </dialog>
     <div class="workspace">
-      <header class="topbar" id="notes-topbar">
-        <div class="topbar-left">
-          <button class="icon-button mobile-toggle" id="mobile-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
-          <h1 id="page-title">全部笔记</h1>
-          <button class="icon-button sort-button" id="sort-button" type="button" data-action="toggle-sort" aria-label="切换排序" title="最新优先"><svg><use href="#i-sort"></use></svg></button>
-          <button class="icon-button" type="button" data-action="focus-compose" aria-label="写笔记" title="写笔记"><svg><use href="#i-edit"></use></svg></button>
-          <button class="icon-button refresh-button" id="refresh-button" type="button" aria-label="立即同步" title="立即同步"><svg><use href="#i-retry"></use></svg></button>
+      <header class="top-nav" id="notes-topbar">
+        <button class="icon-button mobile-only" id="mobile-toggle" type="button" data-action="open-sidebar" aria-label="打开筛选" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
+        <button type="button" data-action="ai-toggle-sessions" aria-controls="ai-session-rail" aria-expanded="false" data-ai-nav hidden>历史</button>
+        <nav class="space-nav" aria-label="主空间">
+          <button type="button" data-action="open-notes" aria-current="page">笔记</button>
+          <button type="button" data-action="open-ai-chat">AI</button>
+        </nav>
+        <div class="top-actions" id="note-nav-actions">
+          <button type="button" data-action="open-random-walk" aria-label="随机读"><span class="desktop-only">随机读</span><svg class="mobile-only"><use href="#i-shuffle"></use></svg></button>
+          <button class="desktop-only" type="button" data-action="open-sidebar" aria-controls="sidebar" aria-expanded="false">筛选</button>
+          <button class="desktop-only" type="button" data-action="toggle-search" aria-controls="search-field" aria-expanded="false">搜索</button>
+          <button class="desktop-only" type="button" data-action="open-settings">设置</button>
         </div>
-        <div class="search-field"><svg aria-hidden="true"><use href="#i-search"></use></svg><input id="search" type="search" placeholder="搜索笔记" aria-label="搜索笔记"><kbd id="search-shortcut">Ctrl K</kbd></div>
+        <div class="top-actions" data-ai-nav hidden>
+          <button type="button" data-action="ai-new-session" hidden>新对话</button>
+          <button type="button" data-action="ai-options" aria-label="会话选项" aria-controls="ai-options" aria-expanded="false">···</button>
+          <button class="desktop-only" type="button" data-action="open-settings">设置</button>
+        </div>
+        <div id="ai-options" class="utility-menu" hidden>
+                <div id="ai-model-picker" class="ai-model-picker" hidden>
+                  <button id="ai-model-toggle" class="ai-picker-pill" type="button" aria-label="选择对话模型" aria-expanded="false" aria-controls="ai-model-popover"></button>
+                  <div id="ai-model-popover" class="ai-picker-popover" hidden>
+                    <input class="field" id="ai-model-search" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off">
+                    <div id="ai-model-options"></div>
+                  </div>
+                </div>
+                <div id="ai-effort-picker" class="ai-effort-picker" hidden>
+                  <span id="ai-effort-fixed" class="ai-picker-pill" hidden></span>
+                  <button id="ai-effort-toggle" class="ai-picker-pill" type="button" aria-label="思考档位" aria-expanded="false" aria-controls="ai-effort-popover"></button>
+                  <div id="ai-effort-popover" class="ai-picker-popover" role="group" aria-label="思考档位" hidden></div>
+                </div>
+                <button class="ai-picker-pill" id="ai-style-toggle" type="button" data-action="ai-style-toggle" aria-pressed="false" title="仅本轮使用写作风格">写作风格</button>
+          <button type="button" data-action="ins-new-lens">新建自定义视角</button>
+          <button type="button" data-action="ins-custom-lenses" aria-expanded="false" aria-controls="ins-custom-list">管理自定义视角</button>
+          <div id="ins-custom-list" hidden></div>
+          <button class="mobile-only" type="button" data-action="open-settings">设置</button>
+              <div class="ins-report-actions" id="ins-report-actions" hidden>
+                <div class="ins-rerun" id="ins-rerun-controls" hidden>
+                  <select id="ins-rerun-model" class="field ins-model" aria-label="重跑模型"></select>
+                  <button class="button button-secondary" type="button" data-action="ins-rerun">换模型重跑</button>
+                </div>
+                <button class="button button-secondary" type="button" data-action="ins-copy-report">复制 Markdown</button>
+                <button class="button button-danger" type="button" data-action="ins-delete-report">删除</button>
+              </div>
+        </div>
       </header>
-
       <main class="main-content" id="main">
         <div class="loading-skeleton" id="sync-skeleton" role="status" aria-label="正在验证登录"><i></i><i></i><i></i></div>
         <div id="connection-error" class="notice" hidden>
@@ -101,52 +114,46 @@
           <a class="button button-secondary" id="sign-in" href="/signin-with-chatgpt?return_to=/" target="_top" hidden>使用 ChatGPT 登录</a>
         </div>
 
+        <div class="search-field" id="search-field" hidden><input id="search" type="search" placeholder="搜索笔记" aria-label="搜索笔记"></div>
         <form id="composer" class="composer" aria-label="写笔记">
           <label class="sr-only" for="note-body">随手记</label>
           <div class="composer-input-wrap">
-            <textarea id="note-body" rows="3" maxlength="40000" placeholder="现在的想法是…" disabled></textarea>
+            <textarea id="note-body" rows="1" maxlength="40000" placeholder="此刻在想…" disabled></textarea>
             <div id="tag-suggest" class="tag-suggest" role="listbox" aria-label="标签补全" hidden></div>
           </div>
           <p class="inline-error" id="compose-error" role="alert" hidden></p>
           <div class="composer-footer">
-            <button class="icon-button tag-insert" type="button" data-action="insert-tag" title="插入标签" aria-label="插入标签"><svg><use href="#i-hash"></use></svg></button>
-            <button class="icon-button format-btn" type="button" data-action="format-bullet" title="无序列表" aria-label="无序列表">•</button>
-            <button class="icon-button format-btn" type="button" data-action="format-ordered" title="有序列表" aria-label="有序列表">1.</button>
-            <button class="icon-button format-btn" type="button" data-action="format-bold" title="加粗" aria-label="加粗"><strong>B</strong></button>
-            <kbd class="compose-shortcut" id="save-shortcut">Ctrl ↵</kbd>
-            <button class="button button-primary save-note" id="save-note" type="submit" aria-label="保存笔记" title="保存笔记" disabled><svg><use href="#i-arrow"></use></svg></button>
+            <button class="button button-primary save-note" id="save-note" type="submit" aria-label="保存笔记" disabled><svg><use href="#i-send"></use></svg></button>
           </div>
         </form>
 
+        <button class="mobile-only button button-primary compose-fab" type="button" data-action="focus-compose" aria-label="写笔记">+</button>
         <section id="feed" class="feed" aria-label="笔记时间线">
-          <div id="inline-orphan-draft" class="orphan-draft-list" hidden></div>
-          <div id="inline-draft-banner" class="orphan-draft notice" hidden></div>
           <div class="feed-header">
-            <p class="feed-count" id="feed-count" hidden></p>
             <div class="active-filters" id="active-filters" hidden></div>
-            <div class="sync-state" id="sync-state" role="status"><span></span>正在连接</div>
+            <div class="sync-state" id="sync-state" role="status" hidden></div>
           </div>
           <div id="note-list" class="note-list" aria-live="polite"></div>
         </section>
       </main>
 
-      <section id="ai-insights-view" aria-labelledby="ins-title" hidden>
-        <header class="ins-toolbar">
-          <div class="ins-toolbar-inner">
-            <button class="icon-button mobile-toggle" type="button" data-action="ins-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
-            <h2 id="ins-title" tabindex="-1">AI 洞察</h2>
-            <nav class="ins-tabs" aria-label="洞察视图">
-              <button type="button" data-action="ins-tab" data-tab="new">新洞察</button>
-              <button type="button" data-action="ins-tab" data-tab="history">历史</button>
-              <button type="button" data-action="ins-tab" data-tab="profile">个人画像</button>
-            </nav>
-            <button class="button button-secondary" type="button" data-action="ins-new-lens"><svg><use href="#i-plus"></use></svg>自定义视角</button>
+      <section id="ai-chat-view" aria-labelledby="ai-chat-title" hidden>
+        <dialog class="drawer" id="ai-session-rail" aria-labelledby="ai-history-title">
+          <div class="dialog-header"><h2 id="ai-history-title">历史</h2><button class="icon-button" type="button" data-action="ai-close-history" aria-label="关闭历史">✕</button></div>
+          <div class="ai-session-scroll">
+            <div id="ai-session-list"></div>
+            <button class="button button-secondary" type="button" data-action="ai-load-more-sessions" hidden>加载更多</button>
           </div>
-        </header>
-        <div id="ins-scroll" class="ins-scroll">
-          <div class="ins-content">
-            <p id="ins-view-error" class="inline-error" role="alert" hidden></p>
-            <section id="ins-scope" class="ins-surface" aria-label="笔记范围">
+        </dialog>
+        <div class="ai-chat-main">
+          <h2 class="sr-only" id="ai-chat-title" tabindex="-1">AI</h2>
+          <div id="ai-chat-thread" role="log" aria-live="polite">
+            <section id="ai-empty" hidden>
+              <h2>问问你的笔记</h2>
+              <p id="ins-view-error" class="inline-error" role="alert" hidden></p>
+              <div id="ins-lens-grid"></div>
+            </section>
+            <section id="ins-scope" aria-label="笔记范围" hidden>
               <div class="ins-scope-controls">
                 <select id="ins-range-select" class="field" aria-label="日期范围">
                   <option value="7d">最近 7 天</option>
@@ -165,186 +172,24 @@
                     <div class="ins-pills" id="ins-tag-list"></div>
                   </div>
                 </div>
-                <select id="ins-model-select" class="sr-only" aria-label="洞察模型" tabindex="-1" aria-hidden="true" hidden></select>
-                <div id="ins-model-picker" class="ai-model-picker ins-model-picker" hidden>
-                  <button id="ins-model-toggle" class="ins-model-toggle" type="button" aria-label="选择洞察模型" aria-expanded="false" aria-controls="ins-model-popover"></button>
-                  <div id="ins-model-popover" class="ai-picker-popover ins-model-popover" hidden>
-                    <input class="field" id="ins-model-search" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off">
-                    <div id="ins-model-options"></div>
-                  </div>
-                </div>
                 <label class="ins-profile-toggle"><input id="ins-use-profile" type="checkbox"> 附带个人画像</label>
               </div>
               <div id="ins-custom-dates" class="ins-pills" hidden>
                 <label>起始 <input id="ins-start-date" class="field" type="date"></label>
                 <label>结束 <input id="ins-end-date" class="field" type="date"></label>
               </div>
-              <div class="ins-stats" aria-live="polite">
-                <span><strong id="ins-stat-notes">—</strong> 条笔记</span>
-                <span><strong id="ins-stat-tags">—</strong> 个标签</span>
-                <span><strong id="ins-stat-days">—</strong> 天</span>
-                <span id="ins-sampling" hidden>将精选最多 80 条分析</span>
-              </div>
               <p id="ins-scope-error" class="inline-error" role="alert" hidden></p>
+              <button class="button" type="button" data-action="ins-close-scope">完成</button>
             </section>
-            <section id="ins-panel-new" aria-label="新洞察">
-              <div id="ins-category-list" class="ins-pills" role="group" aria-label="视角分类"></div>
-              <div id="ins-lens-grid" class="ins-grid"></div>
-              <section id="ins-selected-panel" class="ins-surface" aria-labelledby="ins-selected-lens" hidden>
-                <h3 id="ins-selected-lens"></h3>
-                <p id="ins-preview-prompt"></p>
-                <p id="ins-error" class="inline-error" role="alert" hidden></p>
-                <div class="ins-confirm">
-                  <button class="button button-secondary" id="ins-apply-suggested" type="button" data-action="ins-apply-suggested" hidden></button>
-                  <button class="button button-primary" type="button" data-action="ins-run" disabled><svg><use href="#i-spark"></use></svg>生成洞察</button>
-                </div>
-              </section>
-            </section>
-            <section id="ins-panel-history" aria-label="历史报告" hidden>
-              <div id="ins-history-list"></div>
-            </section>
-            <article id="ins-report-view" class="ins-surface" aria-label="报告详情" tabindex="-1" hidden>
-              <div class="ins-report-toolbar">
-                <button class="button button-secondary" type="button" data-action="ins-back">← 返回</button>
-                <span id="ins-stream-status" role="status"></span>
-                <button class="button button-secondary" type="button" data-action="ins-cancel" hidden>停止</button>
-              </div>
+            <article id="ins-report-view" class="ai-msg ai-msg-assistant" aria-label="报告详情" tabindex="-1" hidden>
+              <div id="ins-stream-status" role="status"></div>
               <div id="ins-report-meta"></div>
               <div id="ins-report-body"></div>
               <p id="ins-report-error" class="inline-error" role="alert" hidden></p>
               <button class="button button-secondary" type="button" data-action="ins-retry" hidden>重试</button>
-              <div class="ins-report-actions" id="ins-report-actions" hidden>
-                <button class="button button-primary" type="button" data-action="ins-continue-chat">和 AI 继续聊</button>
-                <div class="ins-rerun" id="ins-rerun-controls" hidden>
-                  <select id="ins-rerun-model" class="field ins-model" aria-label="重跑模型"></select>
-                  <button class="button button-secondary" type="button" data-action="ins-rerun">换模型重跑</button>
-                </div>
-                <button class="button button-secondary" type="button" data-action="ins-copy-report">复制 Markdown</button>
-                <button class="button button-danger" type="button" data-action="ins-delete-report">删除</button>
-              </div>
             </article>
-            <section id="ins-panel-profile" class="ins-surface" aria-label="个人画像" hidden>
-              <div class="profile-subtabs ins-tabs" role="group" aria-label="画像工作区">
-                <button type="button" data-action="profile-pane" data-pane="bio" aria-controls="profile-pane-bio" aria-pressed="true">个人画像</button>
-                <button type="button" data-action="profile-pane" data-pane="style" aria-controls="profile-pane-style" aria-pressed="false">写作风格</button>
-              </div>
-              <div id="profile-pane-bio">
-              <div class="profile-actions">
-                <select id="profile-model-select" class="field ins-model" aria-label="生成模型" hidden></select>
-                <button class="button button-primary" type="button" data-action="profile-generate">生成画像</button>
-                <button class="button button-secondary" type="button" data-action="profile-edit">编辑</button>
-              </div>
-              <div class="profile-meta-bar">
-                <label class="profile-toggle"><input type="checkbox" id="profile-enabled" checked>对话自动带入个人画像</label>
-                <span id="profile-meta" class="ai-profile-meta"></span>
-                <span id="profile-status" class="ai-profile-status" role="status"></span>
-              </div>
-              <p id="profile-error" class="inline-error" role="alert" hidden></p>
-              <button class="button button-secondary" type="button" data-action="profile-reload" hidden>重试</button>
-              <div id="profile-reader">
-                <div id="profile-empty" hidden>
-                  <p>尚未生成个人画像</p>
-                  <button class="button button-secondary" type="button" data-action="profile-edit">手动编写</button>
-                </div>
-                <div id="profile-body" class="ai-msg ai-msg-assistant"></div>
-              </div>
-              <div id="profile-editor" hidden>
-                <textarea class="field profile-textarea" id="profile-text" aria-label="个人画像" rows="16" maxlength="6000" placeholder="记录你的长期关注、思维习惯和偏好，支持 Markdown 格式。"></textarea>
-                <div class="profile-editor-actions">
-                  <button class="button button-secondary" type="button" data-action="profile-cancel-edit">取消</button>
-                  <button class="button button-primary" type="button" data-action="profile-save">保存</button>
-                </div>
-              </div>
-              </div>
-              <div id="profile-pane-style" hidden>
-                <p id="style-relay" class="inline-error" hidden></p>
-                <div class="style-row">
-                  <select id="style-model-select" class="field ins-model" aria-label="提炼与盲测模型" hidden></select>
-                  <select id="style-range" class="field ins-model" aria-label="提炼范围">
-                    <option value="all">不限日期</option><option value="7d">最近 7 天</option><option value="week">本周</option>
-                    <option value="month">本月</option><option value="custom">自定义日期</option>
-                  </select>
-                  <button type="button" class="button button-secondary" id="style-tags-toggle" data-action="style-tags" aria-expanded="false" aria-controls="style-tags-picker">全部标签</button>
-                  <button type="button" class="button button-primary" data-action="style-generate">提炼风格</button>
-                  <button type="button" class="button button-secondary" data-action="style-edit">编辑</button>
-                </div>
-                <div class="style-row" id="style-custom-dates" hidden>
-                  <input type="date" class="field" id="style-start" aria-label="起始日期"><input type="date" class="field" id="style-end" aria-label="结束日期">
-                </div>
-                <div id="style-tags-picker" hidden>
-                  <input type="search" id="style-tags-search" class="field" aria-label="搜索提炼标签" placeholder="搜索标签">
-                  <div class="style-row ins-pills style-picker-results" id="style-tag-list"></div>
-                </div>
-                <p id="style-status" role="status"></p>
-                <p id="style-error" class="inline-error" role="alert" hidden></p>
-                <button type="button" class="button button-secondary" data-action="style-reload" hidden>重试</button>
-                <section class="style-section" aria-labelledby="style-rules-title">
-                  <h3 id="style-rules-title">风格规则</h3>
-                  <div id="style-rules" class="ai-msg ai-msg-assistant"></div>
-                  <div id="style-editor" hidden>
-                    <textarea class="field profile-textarea" id="style-text" aria-label="风格规则" rows="8" maxlength="1500"></textarea>
-                    <div class="style-row style-editor-actions">
-                      <output id="style-count" for="style-text">0 / 1500</output>
-                      <button type="button" class="button button-secondary" data-action="style-cancel-edit">取消</button>
-                      <button type="button" class="button button-primary" data-action="style-save">保存</button>
-                    </div>
-                  </div>
-                </section>
-                <section class="style-section" aria-labelledby="style-anchors-title">
-                  <div class="style-row">
-                    <h3 id="style-anchors-title">原句锚点 <span id="style-anchor-count">0 / 5</span></h3>
-                    <button type="button" class="button button-secondary" id="style-anchor-toggle" data-action="style-anchor-picker" aria-controls="style-anchor-picker" aria-expanded="false">添加笔记</button>
-                    <button type="button" class="button button-secondary" data-action="style-adopt" hidden>采纳推荐锚点</button>
-                  </div>
-                  <div id="style-anchor-picker" hidden>
-                    <input type="search" class="field" id="style-anchor-search" aria-label="搜索原创笔记" placeholder="搜索原创笔记">
-                    <div class="style-picker-results" id="style-anchor-options"></div>
-                  </div>
-                  <ul id="style-anchors"></ul>
-                </section>
-                <section class="style-section" aria-labelledby="style-blind-title">
-                  <h3 id="style-blind-title">盲测对比</h3>
-                  <div class="style-row">
-                    <input type="text" id="style-blind-prompt" class="field" aria-label="自定义主题" placeholder="留空自动选一条笔记" maxlength="500">
-                    <button type="button" class="button button-primary" data-action="style-blind">开始盲测</button>
-                  </div>
-                  <div id="style-candidates"></div>
-                  <div id="style-votes" class="style-row" role="group" aria-label="盲测投票" hidden>
-                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="A">选 A</button>
-                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="B">选 B</button>
-                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="tie">差不多</button>
-                  </div>
-                  <p id="style-reveal" role="status" hidden></p>
-                </section>
-              </div>
-            </section>
+            <div id="ai-turns"></div>
           </div>
-        </div>
-      </section>
-      <section id="ai-chat-view" aria-labelledby="ai-chat-title" hidden>
-        <aside id="ai-session-rail" aria-label="会话历史">
-          <div class="ai-rail-header">
-            <h2>全部会话</h2>
-            <button class="button button-secondary" type="button" data-action="ai-new-session"><svg><use href="#i-plus"></use></svg>新建</button>
-          </div>
-          <div class="ai-origin-filters" role="group" aria-label="筛选会话来源">
-            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="all" aria-pressed="true">全部</button>
-            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="insight" aria-pressed="false">洞察</button>
-            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="note" aria-pressed="false">笔记</button>
-            <button class="button button-secondary" type="button" data-action="ai-filter-origin" data-origin="global" aria-pressed="false">通用</button>
-          </div>
-          <div class="ai-session-scroll">
-            <div id="ai-session-list"></div>
-            <button class="button button-secondary" type="button" data-action="ai-load-more-sessions" hidden>加载更多</button>
-          </div>
-        </aside>
-        <div class="ai-chat-main">
-          <header class="ai-chat-toolbar">
-            <button class="icon-button" type="button" data-action="ai-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
-            <button class="button button-secondary" type="button" data-action="ai-toggle-sessions" aria-controls="ai-session-rail" aria-expanded="false">历史</button>
-            <h2 id="ai-chat-title" tabindex="-1">AI 对话</h2>
-          </header>
-          <div id="ai-chat-thread" role="log" aria-live="polite"></div>
           <form id="ai-chat-form">
             <button class="button button-secondary ai-scroll-bottom" id="ai-scroll-bottom" type="button" data-action="ai-scroll-bottom" aria-label="回到底部" title="回到底部" hidden>↓ 回到底部</button>
             <div id="ai-note-picker" hidden>
@@ -352,54 +197,19 @@
               <div id="ai-note-picker-results"></div>
             </div>
             <p id="ai-chat-error" class="inline-error ai-chat-error" role="alert" hidden></p>
+            <p class="meta" id="ai-overrides" hidden></p>
             <div class="ai-composer-card">
               <div id="ai-pinned-notes" aria-label="已引用的笔记"></div>
               <textarea class="ai-chat-textarea" id="ai-chat-input" rows="2" maxlength="8000" aria-label="问题" placeholder="问问你的笔记…"></textarea>
               <div class="ai-composer-actions">
                 <button class="icon-button ai-pick-btn" type="button" data-action="ai-pick-note" aria-label="引用笔记" title="引用笔记">@</button>
-                <div id="ai-model-picker" class="ai-model-picker" hidden>
-                  <button id="ai-model-toggle" class="ai-picker-pill" type="button" aria-label="选择对话模型" aria-expanded="false" aria-controls="ai-model-popover"></button>
-                  <div id="ai-model-popover" class="ai-picker-popover" hidden>
-                    <input class="field" id="ai-model-search" type="search" placeholder="搜索模型" aria-label="搜索模型" autocomplete="off">
-                    <div id="ai-model-options"></div>
-                  </div>
-                </div>
-                <div id="ai-effort-picker" class="ai-effort-picker" hidden>
-                  <span id="ai-effort-fixed" class="ai-picker-pill" hidden></span>
-                  <button id="ai-effort-toggle" class="ai-picker-pill" type="button" aria-label="思考档位" aria-expanded="false" aria-controls="ai-effort-popover"></button>
-                  <div id="ai-effort-popover" class="ai-picker-popover" role="group" aria-label="思考档位" hidden></div>
-                </div>
-                <button class="ai-picker-pill" id="ai-style-toggle" type="button" data-action="ai-style-toggle" aria-pressed="false" title="仅本轮使用写作风格">写作风格</button>
-                <button class="button button-primary ai-send-btn" id="ai-chat-send" type="submit"><svg><use href="#i-send"></use></svg><span>发送</span></button>
+                <button class="button button-primary ai-send-btn" id="ai-chat-send" type="submit"><svg><use href="#i-send"></use></svg><span class="sr-only">发送</span></button>
               </div>
             </div>
           </form>
         </div>
       </section>
 
-      <section id="random-walk-overlay" aria-labelledby="rw-title" hidden>
-        <header class="rw-toolbar">
-          <button class="icon-button mobile-toggle" type="button" data-action="rw-mobile-menu" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar"><svg><use href="#i-menu"></use></svg></button>
-          <h2 id="rw-title" tabindex="-1">随机漫步</h2>
-          <div class="rw-controls">
-            <button class="icon-button" type="button" data-action="rw-prev" aria-label="上一步" title="上一步">←</button>
-            <button class="button button-secondary" type="button" data-action="rw-shuffle"><svg><use href="#i-shuffle"></use></svg>随机</button>
-            <button class="icon-button" type="button" data-action="rw-zoom-out" aria-label="缩小">−</button>
-            <span id="rw-zoom-label">100%</span>
-            <button class="icon-button" type="button" data-action="rw-zoom-in" aria-label="放大">+</button>
-            <button class="button button-secondary" type="button" data-action="rw-center">居中</button>
-          </div>
-        </header>
-        <div class="rw-viewport">
-          <div id="rw-stage">
-            <svg class="rw-links" aria-hidden="true"></svg>
-            <div id="rw-prev-slot" class="rw-prev-slot" aria-label="上一步笔记"></div>
-            <div id="rw-focus"></div>
-            <div class="rw-related-list" id="rw-related" aria-label="相关笔记"></div>
-          </div>
-          <p id="rw-status" role="status" hidden></p>
-        </div>
-      </section>
     </div>
   </div>
 
@@ -432,36 +242,45 @@
 
   <div id="toast" class="toast" role="status" hidden></div>
 
+  <div id="delete-undo" class="toast undo-toast" hidden><span role="status">已删除一条笔记 ·</span><button type="button" data-action="undo-delete">撤销</button></div>
   <dialog id="note-dialog" class="dialog note-dialog" aria-labelledby="dialog-note-title">
-    <div class="dialog-header">
-      <div><div class="date-line" id="detail-meta"></div><h2 id="dialog-note-title">笔记</h2></div>
-      <button class="icon-button" type="button" data-close="note-dialog" aria-label="关闭笔记"><svg><use href="#i-close"></use></svg></button>
-    </div>
-    <div class="dialog-scroll">
-      <div id="detail-body" class="detail-body"></div>
+    <header class="top-nav reader-nav">
+      <h2 id="dialog-note-title" class="sr-only">笔记</h2>
+      <button type="button" data-action="reader-back" aria-label="返回">← 返回</button>
+      <div class="top-actions" id="detail-actions">
+        <button type="button" data-action="reader-shuffle" hidden>换一条</button>
+        <button type="button" data-action="edit-note">编辑</button>
+        <button type="button" data-action="reader-options" aria-label="笔记选项" aria-controls="reader-options" aria-expanded="false">···</button>
+      </div>
+      <button class="button button-primary" id="reader-save" type="submit" form="edit-form" hidden>保存</button>
+      <div id="reader-options" class="utility-menu" hidden>
+        <button type="button" data-action="open-note-ai-chat">问 AI</button>
+        <button type="button" data-action="note-ai-starter" data-use-style="true" data-prompt="按我的写作风格改写这条笔记，保留原意和事实，只输出改写正文。">按我的风格改写</button>
+        <button type="button" data-action="copy-note">复制</button>
+        <button class="button-danger" type="button" data-action="delete-note">删除</button>
+      </div>
+    </header>
+    <div class="dialog-scroll reader-scroll">
+      <div class="date-line" id="detail-meta"></div>
+      <p class="meta" id="reader-copy-status" role="status" hidden></p>
+      <div id="reader-content">
+        <div id="detail-body" class="detail-body"></div>
+        <p id="detail-source" class="meta"></p>
+        <section id="reader-related" aria-label="相关笔记" hidden>
+          <h3 class="meta">相关笔记</h3>
+          <div id="reader-related-list"></div>
+        </section>
+      </div>
       <form id="edit-form" hidden>
-        <label for="edit-body" class="field-label">笔记内容</label>
-        <textarea id="edit-body" class="field" rows="7" maxlength="40000"></textarea>
-        <div class="dialog-actions"><button class="button button-secondary" type="button" data-action="cancel-edit">取消</button><button class="button button-primary" type="submit">保存修改</button></div>
+        <label for="edit-body" class="sr-only">笔记内容</label>
+        <textarea id="edit-body" class="field" rows="10" maxlength="40000"></textarea>
+        <div id="edit-conflict" hidden><p class="meta">另一端的版本</p><p id="edit-remote"></p><button class="button button-secondary" type="button" data-action="merge-edit">合并到草稿</button></div>
       </form>
       <p class="inline-error" id="detail-error" role="alert" hidden></p>
-      <div class="detail-actions" id="detail-actions">
-        <button class="button button-secondary" type="button" data-action="edit-note"><svg><use href="#i-edit"></use></svg>编辑</button>
-        <button class="button button-danger" type="button" data-action="delete-note">删除</button>
-      </div>
       <div id="delete-confirm" class="notice" hidden>
         <span>删除这条笔记？</span>
         <div class="dialog-actions"><button class="button button-secondary" type="button" data-action="cancel-delete">保留笔记</button><button class="button button-danger" type="button" data-action="confirm-delete">确认删除</button></div>
       </div>
-      <section class="note-ai-entry" aria-label="AI 对话">
-        <button class="button button-primary" type="button" data-action="open-note-ai-chat">问 AI</button>
-        <div class="starter-row">
-          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="帮我梳理这条笔记，尽量保留我的原意。">梳理成要点</button>
-          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="结合这条笔记，问我一个能让我想得更深的问题。">追问一个问题</button>
-          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-prompt="结合这条笔记，我接下来可以尝试哪件具体的小事？">想下一步</button>
-          <button class="button button-secondary" type="button" data-action="note-ai-starter" data-use-style="true" data-prompt="按我的写作风格改写这条笔记，保留原意和事实，只输出改写正文。">按我的风格改写</button>
-        </div>
-      </section>
     </div>
   </dialog>
 
@@ -604,11 +423,14 @@
   </dialog>
 
   <dialog id="settings-dialog" class="dialog" aria-labelledby="settings-title">
-    <div class="dialog-header"><div><div class="date-line"><svg><use href="#i-settings"></use></svg>我的空间</div><h2 id="settings-title">设置</h2></div><button class="icon-button" type="button" data-close="settings-dialog" aria-label="关闭设置"><svg><use href="#i-close"></use></svg></button></div>
-    <form id="settings-form" class="dialog-scroll">
-      <h3>账号与同步</h3>
+    <div class="dialog-header"><button type="button" data-action="settings-pane" data-pane="root" hidden>← 返回</button><h2 id="settings-title">设置</h2><button class="icon-button" type="button" data-close="settings-dialog" aria-label="关闭设置">✕</button></div>
+    <div id="settings-root" class="dialog-scroll settings-rows">
+      <button type="button" data-action="settings-pane" data-pane="account">账号</button>
+      <button type="button" data-action="settings-pane" data-pane="ai">AI</button>
+      <button type="button" data-action="settings-pane" data-pane="data">数据</button>
+    </div>
+    <div class="dialog-scroll" id="settings-account-pane" hidden>
       <p class="help-text" id="settings-account"></p>
-      <p class="help-text" id="settings-sync-help">在 iOS 微记里使用同一 ChatGPT 账号登录，即可同步笔记及对话。</p>
       <section class="auth-section" id="auth-sessions-section" hidden>
         <h3>登录设备</h3>
         <ul id="auth-sessions-list" class="auth-list"></ul>
@@ -619,14 +441,11 @@
         <p id="admin-invite-created" aria-live="polite" hidden></p>
         <ul id="admin-invites-list" class="auth-list"></ul>
       </section>
-      <section class="auth-section" id="admin-obsidian-section" hidden>
-        <button id="admin-obsidian-sync" class="button button-secondary" type="button">立即同步 Obsidian</button>
-        <p class="help-text" id="admin-obsidian-status" role="status"></p>
-      </section>
+      <a class="button button-secondary" id="sign-out" href="/signout-with-chatgpt?return_to=/" target="_top" hidden>退出登录</a>
       <p id="auth-settings-error" class="inline-error" role="alert" hidden></p>
-      <hr>
-      <h3>AI 服务</h3>
-      <p class="help-text">AI 对话会从全库检索相关笔记并发送给所选 AI 服务。启用个人画像后，对话也会发送画像；生成画像时会发送代表性笔记的摘录。</p>
+    </div>
+    <div id="settings-ai-pane" class="dialog-scroll" hidden>
+      <form id="settings-form">
       <label class="field-label" for="chat-provider">对话服务</label>
       <select class="field" id="chat-provider">
         <option value="openai">OpenAI API Key</option>
@@ -640,9 +459,119 @@
         <label class="field-label" for="openai-model">模型</label>
         <input class="field" id="openai-model" type="text" maxlength="100" autocomplete="off" spellcheck="false" value="gpt-4.1-mini">
       </div>
+      <div id="default-gateway-controls" hidden><label for="settings-default-model">默认模型</label><select class="field" id="settings-default-model"></select><label for="settings-default-effort">思考深度</label><select class="field" id="settings-default-effort"></select></div>
       <p id="settings-error" class="inline-error" role="alert" hidden></p>
       <div class="dialog-actions"><button class="button button-primary" type="submit">保存设置</button></div>
-    </form>
+      </form>
+            <section id="ins-panel-profile"  aria-label="个人画像" hidden>
+              <div class="profile-subtabs ins-tabs" role="group" aria-label="画像工作区">
+                <button type="button" data-action="profile-pane" data-pane="bio" aria-controls="profile-pane-bio" aria-pressed="true">个人画像</button>
+                <button type="button" data-action="profile-pane" data-pane="style" aria-controls="profile-pane-style" aria-pressed="false">写作风格</button>
+              </div>
+              <div id="profile-pane-bio">
+              <div class="profile-actions">
+                <select id="profile-model-select" class="field ins-model" aria-label="生成模型" hidden></select>
+                <button class="button button-primary" type="button" data-action="profile-generate">生成画像</button>
+                <button class="button button-secondary" type="button" data-action="profile-edit">编辑</button>
+                <button class="button button-danger" type="button" data-action="profile-clear">清空</button>
+              </div>
+              <div class="profile-meta-bar">
+                <label class="profile-toggle"><input type="checkbox" id="profile-enabled" checked>对话自动带入个人画像</label>
+                <span id="profile-meta" class="ai-profile-meta"></span>
+                <span id="profile-status" class="ai-profile-status" role="status"></span>
+              </div>
+              <p id="profile-error" class="inline-error" role="alert" hidden></p>
+              <button class="button button-secondary" type="button" data-action="profile-reload" hidden>重试</button>
+              <div id="profile-reader">
+                <div id="profile-empty" hidden>
+                  <p>尚未生成个人画像</p>
+                  <button class="button button-secondary" type="button" data-action="profile-edit">手动编写</button>
+                </div>
+                <div id="profile-body" class="ai-msg ai-msg-assistant"></div>
+              </div>
+              <div id="profile-editor" hidden>
+                <textarea class="field profile-textarea" id="profile-text" aria-label="个人画像" rows="16" maxlength="6000" placeholder="记录你的长期关注、思维习惯和偏好，支持 Markdown 格式。"></textarea>
+                <div class="profile-editor-actions">
+                  <button class="button button-secondary" type="button" data-action="profile-cancel-edit">取消</button>
+                  <button class="button button-primary" type="button" data-action="profile-save">保存</button>
+                </div>
+              </div>
+              </div>
+              <div id="profile-pane-style" hidden>
+                <p id="style-relay" class="inline-error" hidden></p>
+                <div class="style-row">
+                  <select id="style-model-select" class="field ins-model" aria-label="提炼与盲测模型" hidden></select>
+                  <select id="style-range" class="field ins-model" aria-label="提炼范围">
+                    <option value="all">不限日期</option><option value="7d">最近 7 天</option><option value="week">本周</option>
+                    <option value="month">本月</option><option value="custom">自定义日期</option>
+                  </select>
+                  <button type="button" class="button button-secondary" id="style-tags-toggle" data-action="style-tags" aria-expanded="false" aria-controls="style-tags-picker">全部标签</button>
+                  <button type="button" class="button button-primary" data-action="style-generate">提炼风格</button>
+                  <button type="button" class="button button-secondary" data-action="style-edit">编辑</button>
+                </div>
+                <div class="style-row" id="style-custom-dates" hidden>
+                  <input type="date" class="field" id="style-start" aria-label="起始日期"><input type="date" class="field" id="style-end" aria-label="结束日期">
+                </div>
+                <div id="style-tags-picker" hidden>
+                  <input type="search" id="style-tags-search" class="field" aria-label="搜索提炼标签" placeholder="搜索标签">
+                  <div class="style-row ins-pills style-picker-results" id="style-tag-list"></div>
+                </div>
+                <p id="style-status" role="status"></p>
+                <p id="style-error" class="inline-error" role="alert" hidden></p>
+                <button type="button" class="button button-secondary" data-action="style-reload" hidden>重试</button>
+                <section class="style-section" aria-labelledby="style-rules-title">
+                  <h3 id="style-rules-title">风格规则</h3>
+                  <div id="style-rules" class="ai-msg ai-msg-assistant"></div>
+                  <div id="style-editor" hidden>
+                    <textarea class="field profile-textarea" id="style-text" aria-label="风格规则" rows="8" maxlength="1500"></textarea>
+                    <div class="style-row style-editor-actions">
+                      <output id="style-count" for="style-text">0 / 1500</output>
+                      <button type="button" class="button button-secondary" data-action="style-cancel-edit">取消</button>
+                      <button type="button" class="button button-primary" data-action="style-save">保存</button>
+                    </div>
+                  </div>
+                </section>
+                <section class="style-section" aria-labelledby="style-anchors-title">
+                  <div class="style-row">
+                    <h3 id="style-anchors-title">原句锚点 <span id="style-anchor-count">0 / 5</span></h3>
+                    <button type="button" class="button button-secondary" id="style-anchor-toggle" data-action="style-anchor-picker" aria-controls="style-anchor-picker" aria-expanded="false">添加笔记</button>
+                    <button type="button" class="button button-secondary" data-action="style-adopt" hidden>采纳推荐锚点</button>
+                  </div>
+                  <div id="style-anchor-picker" hidden>
+                    <input type="search" class="field" id="style-anchor-search" aria-label="搜索原创笔记" placeholder="搜索原创笔记">
+                    <div class="style-picker-results" id="style-anchor-options"></div>
+                  </div>
+                  <ul id="style-anchors"></ul>
+                </section>
+                <section class="style-section" aria-labelledby="style-blind-title">
+                  <h3 id="style-blind-title">盲测对比</h3>
+                  <div class="style-row">
+                    <input type="text" id="style-blind-prompt" class="field" aria-label="自定义主题" placeholder="留空自动选一条笔记" maxlength="500">
+                    <button type="button" class="button button-primary" data-action="style-blind">开始盲测</button>
+                  </div>
+                  <div id="style-candidates"></div>
+                  <div id="style-votes" class="style-row" role="group" aria-label="盲测投票" hidden>
+                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="A">选 A</button>
+                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="B">选 B</button>
+                    <button type="button" class="button button-secondary" data-action="style-vote" data-slot="tie">差不多</button>
+                  </div>
+                  <p id="style-reveal" role="status" hidden></p>
+                </section>
+              </div>
+            </section>
+    </div>
+    <div class="dialog-scroll" id="settings-data-pane" hidden>
+      <button class="button button-secondary" type="button" data-action="open-import-hub">导入笔记</button>
+      <section class="auth-section" id="admin-obsidian-section" hidden>
+        <button id="admin-obsidian-sync" class="button button-secondary" type="button">立即同步 Obsidian</button>
+        <p class="help-text" id="admin-obsidian-status" role="status"></p>
+      </section>
+      <section class="auth-section">
+        <button class="button button-secondary" type="button" data-action="semantic-status">语义索引</button>
+        <p class="help-text" id="semantic-status" role="status" hidden></p>
+        <button class="button button-secondary" type="button" data-action="semantic-reindex" hidden>重建索引</button>
+      </section>
+    </div>
   </dialog>
 </body>
 </html>
