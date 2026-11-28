@@ -55,14 +55,19 @@ final class AIChatStore {
 
     var draft = ""
     var recoverableDraftSnapshot: RecoverableDraftSnapshot {
+        var activeDraft = activeUserText()
+        if draftContextKey == "new", sending, let rescued = draftsByKey["new"] {
+            activeDraft = Self.appendDraft(activeDraft, rescued)
+        }
         let suppressed = (!draft.isEmpty && isOwnedInDraft(draft))
             || (draft.isEmpty && inflightDraft.map(isOwnedInFlight) == true)
-        let activeDraft = suppressed ? "" : (draft.isEmpty ? inflightDraft ?? "" : draft)
+            || (draftContextKey == Self.postDeleteDraftKey && activeDraft.isEmpty)
         let savedDrafts = draftsByKey.filter { key, text in
             key != draftContextKey && key != Self.postDeleteDraftKey && !text.isEmpty
-                && (!key.hasPrefix("note:") || isValidNoteDraftContext(key))
+                && !isDeletedNoteDraftContext(key)
         }
-        return RecoverableDraftSnapshot(activeContextKey: draftContextKey, activeDraft: activeDraft,
+        let activeKey = isDeletedNoteDraftContext(draftContextKey) ? Self.postDeleteDraftKey : draftContextKey
+        return RecoverableDraftSnapshot(activeContextKey: activeKey, activeDraft: activeDraft,
                                         savedDrafts: savedDrafts, suppressedAutomaticPrompt: suppressed)
     }
     var recoverableDraft: String {
@@ -95,7 +100,7 @@ final class AIChatStore {
     @ObservationIgnored private var validNoteIds: Set<String>?
     @ObservationIgnored private var pinsEditedDuringLoad = false
     @ObservationIgnored private var draftContextKey = "new"
-    // Only inactive contexts own an entry here; the input owns the active draft.
+    // Inactive drafts and orphaned note drafts rescued while New Chat is sending.
     @ObservationIgnored private var draftsByKey: [String: String] = [:]
     @ObservationIgnored private var requestID = ChatRequestID()
     @ObservationIgnored private var inflightDraft: String?
@@ -125,9 +130,10 @@ final class AIChatStore {
         draftContextKey = "new"
         let key = snapshot.activeContextKey
         let active = snapshot.activeDraft
+        let isSourceBoundContext = key.hasPrefix("pins:") || key.hasPrefix("insight:")
         let isIndependentContext = key != "new" && key != Self.postDeleteDraftKey
-            && (!key.hasPrefix("note:") || isValidNoteDraftContext(key))
-        if Self.hasDraftText(savedNew), Self.hasDraftText(active), isIndependentContext {
+            && !isDeletedNoteDraftContext(key)
+        if Self.hasDraftText(active), isSourceBoundContext || (isIndependentContext && Self.hasDraftText(savedNew)) {
             draftsByKey[key] = active
             draft = savedNew
         } else {
@@ -160,7 +166,8 @@ final class AIChatStore {
         rewriteIntent = nil
         if nextKey != draftContextKey {
             // Stop can restore the interrupted question before the old context is saved.
-            if draftContextKey == Self.postDeleteDraftKey {
+            if draftContextKey == Self.postDeleteDraftKey || isDeletedNoteDraftContext(draftContextKey) {
+                draftsByKey.removeValue(forKey: draftContextKey)
                 if Self.hasDraftText(draft) {
                     draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", draft)
                 }
@@ -211,10 +218,10 @@ final class AIChatStore {
             _ = validateRequiredSource(pendingRequiredSourceNoteId)
         }
 
-        let orphanedKeys = draftsByKey.keys.filter { $0.hasPrefix("note:") && !isValidNoteDraftContext($0) }
+        let orphanedKeys = draftsByKey.keys.filter { isDeletedNoteDraftContext($0) }
         for key in orphanedKeys.sorted() {
             guard let rescued = draftsByKey.removeValue(forKey: key), !rescued.isEmpty else { continue }
-            if draftContextKey == "new" {
+            if draftContextKey == "new" && !sending {
                 draft = Self.appendDraft(draft, rescued)
             } else {
                 draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", rescued)
@@ -230,6 +237,13 @@ final class AIChatStore {
         rewriteIntent?.promptLocation == .inFlight && text == Self.rewriteNotePrompt
     }
 
+    private func activeUserText() -> String {
+        let unsent = sending ? inflightDraft : nil
+        let keepUnsent = unsent.flatMap { isOwnedInFlight($0) ? nil : $0 } ?? ""
+        let keepDraft = isOwnedInDraft(draft) ? "" : draft
+        return Self.appendDraft(keepUnsent, keepDraft)
+    }
+
     private func restoreInterruptedDraft(_ unsent: String?) {
         if draft.isEmpty, let unsent {
             draft = unsent
@@ -239,13 +253,13 @@ final class AIChatStore {
         } else if rewriteIntent?.promptLocation == .inFlight {
             rewriteIntent?.promptLocation = .none
         }
+        if draftContextKey == "new", let rescued = draftsByKey.removeValue(forKey: "new") {
+            draft = Self.appendDraft(draft, rescued)
+        }
     }
 
     private func cancelDeletedRewrite(_ intent: RewriteIntent) {
-        let unsent = sending ? inflightDraft : nil
-        let keepUnsent = unsent.map(isOwnedInFlight) == true ? "" : (unsent ?? "")
-        let keepNext = isOwnedInDraft(draft) ? "" : draft
-        let preserved = Self.appendDraft(keepUnsent, keepNext)
+        let preserved = activeUserText()
         stop()
         draftsByKey.removeValue(forKey: "note:\(intent.sourceNoteId)")
         rewriteIntent = nil
@@ -285,8 +299,8 @@ final class AIChatStore {
 
     func canReference(_ id: String) -> Bool { isValidNote(id) }
 
-    private func isValidNoteDraftContext(_ key: String) -> Bool {
-        key.hasPrefix("note:") && canReference(String(key.dropFirst("note:".count)))
+    private func isDeletedNoteDraftContext(_ key: String) -> Bool {
+        key.hasPrefix("note:") && !canReference(String(key.dropFirst("note:".count)))
     }
 
     private func isValidNote(_ id: String) -> Bool { validNoteIds?.contains(id) ?? true }
@@ -433,10 +447,10 @@ final class AIChatStore {
         if sending && sendingWithStyle {
             let unsent = inflightDraft
             let unsentIsAuto = unsent.map(isOwnedInFlight) ?? false
-            let next = draft
+            let hadFollowUp = !draft.isEmpty
             stop()
-            if let unsent, !next.isEmpty, !unsentIsAuto {
-                draft = unsent + "\n\n" + next
+            if let unsent, hadFollowUp, !unsentIsAuto {
+                draft = unsent + "\n\n" + draft
             }
         }
         useWritingStyle = true
@@ -523,9 +537,12 @@ final class AIChatStore {
                 updateSession(latest)
                 rewriteIntent = nil
                 if styled { useWritingStyle = false }
+                let previousKey = draftContextKey
                 let nextKey = "session:\(latest.id)"
-                // Sending from a note/walk/insight entry can converge into an existing session that already holds an unsent draft.
-                if nextKey != draftContextKey {
+                if nextKey != previousKey {
+                    // Note drafts rescued during this send still belong to New Chat.
+                    if previousKey != "new" { draftsByKey.removeValue(forKey: previousKey) }
+                    // The destination session can already have its own unsent draft.
                     let saved = draftsByKey.removeValue(forKey: nextKey) ?? ""
                     draftContextKey = nextKey
                     draft = Self.appendDraft(saved, draft)
