@@ -107,6 +107,7 @@ final class AppStore {
     @ObservationIgnored private var dataGeneration = 0
     @ObservationIgnored private var rewriteGeneration = 0
     @ObservationIgnored private var rewriteTask: Task<Void, Never>?
+    @ObservationIgnored var onBeforeRewriteDecision: (@MainActor (String) async -> Void)?
     @ObservationIgnored private var notesETag: String?
     @ObservationIgnored private var workingNotes: [String: Note] = [:]
     @ObservationIgnored private var started = false
@@ -576,6 +577,7 @@ final class AppStore {
 
     func askAbout(_ note: Note) { requestChatSwitch(.note(note)) }
     func rewriteWithStyle(_ note: Note) { requestChatSwitch(.rewriteNote(note)) }
+    var currentRewriteTask: Task<Void, Never>? { rewriteTask }
     func awaitPendingRewrite() async {
         if let rewriteTask { await rewriteTask.value }
     }
@@ -616,22 +618,31 @@ final class AppStore {
             guard chat.canReference(note.id), workingNotes[note.id] != nil, let api else { return }
             guard !isRelayMode else { error = InsightsStore.writingStyleRelayMessage; return }
             detail = nil
-            chat.start(source: note.id, useWritingStyle: true)
+            chat.start(source: note.id, useWritingStyle: true, rewriteSourceNoteId: note.id)
             tab = .ai
             let rewriteStamp = rewriteGeneration
             let hadNoteDraft = !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let loadTask = chat.loadSource(note.id, api: api)
-            guard !hadNoteDraft else { return }
+            if hadNoteDraft {
+                chat.clearRewriteIntent()
+                return
+            }
             rewriteTask = Task { [weak self] in
                 let loaded = await loadTask.value
+                if let hook = self?.onBeforeRewriteDecision { await hook(note.id) }
                 guard let self, loaded, !Task.isCancelled, rewriteStamp == rewriteGeneration,
-                      chat.sourceNoteId == note.id, workingNotes[note.id] != nil, !chat.sending, chat.useWritingStyle,
-                      chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                if chat.restorePendingSessionDraftIfPresent() { return }
+                      chat.sourceNoteId == note.id, workingNotes[note.id] != nil, !chat.sending, chat.useWritingStyle else { return }
+                if !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    chat.clearRewriteIntent()
+                    return
+                }
+                if chat.restorePendingSessionDraftIfPresent() {
+                    chat.clearRewriteIntent()
+                    return
+                }
                 guard !isRelayMode else { return }
-                chat.draft = AIChatStore.rewriteNotePrompt
-                chat.send(api: api, options: options, profile: insights, requiredSourceNoteId: note.id,
-                          isRelayMode: { [weak self] in self?.isRelayMode ?? false })
+                chat.beginAutomaticRewriteSend(sourceNoteId: note.id, api: api, options: options, profile: insights,
+                                               isRelayMode: { [weak self] in self?.isRelayMode ?? false })
             }
         case .walk(let walk):
             chat.start(pins: [walk.focus.id] + walk.related.map(\.id))

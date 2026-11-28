@@ -32,7 +32,13 @@ struct ChatRequestID {
 @Observable @MainActor
 final class AIChatStore {
     static let rewriteNotePrompt = "请基于这条笔记的真实内容，按我的写作风格改写成一段自然流畅的文字，保留原意和事实，不要编造经历。"
-    private static let rewriteSourceDeletedMessage = "原笔记已删除，已取消按风格改写。"
+    static let deletedRewriteSourceMessage = "原笔记已删除，已取消按风格改写。"
+
+    private struct RewriteIntent {
+        let sourceNoteId: String
+        var introducedByRewrite: Bool
+        var ownsAutomaticPrompt: Bool
+    }
 
     var draft = ""
     var recoverableDraft: String { draft.isEmpty ? (inflightDraft ?? "") : draft }
@@ -41,6 +47,7 @@ final class AIChatStore {
     var useWritingStyle = false
     @ObservationIgnored private var sendingWithStyle = false
     @ObservationIgnored private var pendingRequiredSourceNoteId: String?
+    @ObservationIgnored private var rewriteIntent: RewriteIntent?
     private(set) var pins: [String] = []
     private(set) var session: ChatSession?
     private(set) var insight: InsightReport?
@@ -73,7 +80,8 @@ final class AIChatStore {
     @ObservationIgnored private var sessionTask: Task<Bool, Never>?
     @ObservationIgnored private var listTask: Task<Void, Never>?
 
-    func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil, useWritingStyle: Bool = false) {
+    func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil,
+               useWritingStyle: Bool = false, rewriteSourceNoteId: String? = nil) {
         let source = source.flatMap { $0.isEmpty ? nil : $0 }
         let nextKey = source.map { "note:\($0)" }
             ?? insight.map { "insight:\($0.id)" }
@@ -85,10 +93,16 @@ final class AIChatStore {
         self.pins = Array(candidates.filter { isValidNote($0) && seen.insert($0).inserted }.prefix(10))
         self.insight = insight
         self.useWritingStyle = useWritingStyle
+        if let id = rewriteSourceNoteId, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            rewriteIntent = RewriteIntent(sourceNoteId: id, introducedByRewrite: true, ownsAutomaticPrompt: false)
+        }
     }
 
     private func switchDraftContext(to nextKey: String, resetNew: Bool = false) {
         stop()
+        // An abandoned automatic prompt must not come back as an ordinary saved draft.
+        if isOwnedRewritePrompt(draft) { draft = "" }
+        clearRewriteIntent()
         // Stop can restore the interrupted question; save it under the context it came from.
         if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draftsByKey.removeValue(forKey: draftContextKey)
@@ -132,11 +146,35 @@ final class AIChatStore {
         validNoteIds = ids
         pins.removeAll { !ids.contains($0) }
         sourceNoteId = validSource(sourceNoteId)
-        if sending, let required = pendingRequiredSourceNoteId, !ids.contains(required) {
-            stop()
-            if draft == Self.rewriteNotePrompt { draft = "" }
-            error = Self.rewriteSourceDeletedMessage
+        if let intent = rewriteIntent, !ids.contains(intent.sourceNoteId) {
+            cancelDeletedRewrite(intent)
+        } else {
+            _ = validateRequiredSource(pendingRequiredSourceNoteId)
         }
+    }
+
+    func clearRewriteIntent() { rewriteIntent = nil }
+
+    private func isOwnedRewritePrompt(_ text: String) -> Bool {
+        rewriteIntent?.ownsAutomaticPrompt == true && text == Self.rewriteNotePrompt
+    }
+
+    private func cancelDeletedRewrite(_ intent: RewriteIntent) {
+        stop()
+        if intent.ownsAutomaticPrompt, draft == Self.rewriteNotePrompt { draft = "" }
+        clearRewriteIntent()
+        if intent.introducedByRewrite {
+            session = nil
+            sourceNoteId = nil
+            useWritingStyle = false
+        }
+        error = Self.deletedRewriteSourceMessage
+    }
+
+    private func validateRequiredSource(_ required: String?) -> Bool {
+        guard let required, sourceNoteId != required || !canReference(required) else { return true }
+        cancelDeletedRewrite(rewriteIntent ?? RewriteIntent(sourceNoteId: required, introducedByRewrite: false, ownsAutomaticPrompt: true))
+        return false
     }
 
     func canReference(_ id: String) -> Bool { isValidNote(id) }
@@ -286,21 +324,30 @@ final class AIChatStore {
             let unsent = inflightDraft
             let next = draft
             stop()
-            if let unsent, !next.isEmpty { draft = unsent + "\n\n" + next }
+            if let unsent, !next.isEmpty, !isOwnedRewritePrompt(unsent) {
+                draft = unsent + "\n\n" + next
+            }
         }
         useWritingStyle = true
         error = InsightsStore.writingStyleRelayMessage
     }
 
+    func beginAutomaticRewriteSend(sourceNoteId: String, api: WeijiAPIClient, options: AIOptions, profile: InsightsStore,
+                                   isRelayMode: @escaping @MainActor () -> Bool = { false }) {
+        guard !isRelayMode(), self.sourceNoteId == sourceNoteId, canReference(sourceNoteId),
+              draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        rewriteIntent = RewriteIntent(sourceNoteId: sourceNoteId, introducedByRewrite: true, ownsAutomaticPrompt: true)
+        draft = Self.rewriteNotePrompt
+        send(api: api, options: options, profile: profile, requiredSourceNoteId: sourceNoteId, isRelayMode: isRelayMode)
+    }
+
     func send(api: WeijiAPIClient, options: AIOptions, profile: InsightsStore,
               requiredSourceNoteId: String? = nil,
               isRelayMode: @escaping @MainActor () -> Bool = { false }) {
+        let effectiveRequiredSource = requiredSourceNoteId ?? (isOwnedRewritePrompt(draft) ? rewriteIntent?.sourceNoteId : nil)
+        guard validateRequiredSource(effectiveRequiredSource) else { return }
         let styled = useWritingStyle
         guard !(styled && isRelayMode()) else { error = InsightsStore.writingStyleRelayMessage; return }
-        if let required = requiredSourceNoteId, sourceNoteId != required || !canReference(required) {
-            error = Self.rewriteSourceDeletedMessage
-            return
-        }
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let typed = draft
         draft = ""
@@ -311,7 +358,7 @@ final class AIChatStore {
         let stamp = generation
         sending = true
         sendingWithStyle = styled
-        pendingRequiredSourceNoteId = requiredSourceNoteId
+        pendingRequiredSourceNoteId = effectiveRequiredSource
         error = nil
         task = Task {
             defer {
@@ -330,11 +377,7 @@ final class AIChatStore {
                 if styled { try await profile.awaitWritingStyleSave() }
                 try Task.checkCancellation()
                 guard stamp == generation else { return }
-                if let required = requiredSourceNoteId, sourceNoteId != required || !canReference(required) {
-                    inflightDraft = nil
-                    error = Self.rewriteSourceDeletedMessage
-                    return
-                }
+                guard validateRequiredSource(effectiveRequiredSource) else { return }
                 if styled && isRelayMode() {
                     reconcileRelayMode(true)
                     return
@@ -360,6 +403,7 @@ final class AIChatStore {
                 guard stamp == generation, !Task.isCancelled else { return }
                 guard let latest = response.session else { throw WeijiAPIError.interrupted }
                 updateSession(latest)
+                clearRewriteIntent()
                 if styled { useWritingStyle = false }
                 let previousKey = draftContextKey
                 let nextKey = "session:\(latest.id)"

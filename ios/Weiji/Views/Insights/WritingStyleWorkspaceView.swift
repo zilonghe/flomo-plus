@@ -26,7 +26,7 @@ struct WritingStyleWorkspaceView: View {
             VStack(alignment: .leading, spacing: 14) {
                 controls.noteCard()
                 InlineError(message: insights.writingStyleError ?? (store.isRelayMode ? InsightsStore.writingStyleRelayMessage : nil))
-                if !insights.writingStyleLoaded && !insights.loadingWritingStyle && insights.writingStyleError != nil {
+                if !insights.writingStyleLoaded && !busy {
                     Button("重新加载") {
                         Task { if let api = store.api { await insights.loadWritingStyle(api: api) } }
                     }

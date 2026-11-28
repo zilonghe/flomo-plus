@@ -294,7 +294,26 @@ struct WritingStyle: Codable, Sendable {
     let ready: Bool
 }
 
-struct WritingStyleResponse: Codable, Sendable { let style: WritingStyle? }
+struct WritingStyleResponse: Codable, Sendable {
+    let style: WritingStyle?
+
+    private enum CodingKeys: String, CodingKey { case style }
+
+    init(style: WritingStyle?) { self.style = style }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.contains(.style) else {
+            throw DecodingError.keyNotFound(CodingKeys.style, .init(codingPath: container.codingPath, debugDescription: "Missing writing style response key."))
+        }
+        style = try container.decodeIfPresent(WritingStyle.self, forKey: .style)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(style, forKey: .style)
+    }
+}
 struct WritingStyleGenerateResponse: Codable, Sendable {
     let style: WritingStyle
     let suggestedAnchors: [WritingStyleAnchor]

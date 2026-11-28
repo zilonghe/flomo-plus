@@ -59,6 +59,7 @@ final class InsightsStore {
     private(set) var blindTest: BlindTestResponse?
     private(set) var blindTestVote: String?
     private(set) var blindTestError: String?
+    @ObservationIgnored private var styleLoadTask: Task<Void, Never>?
     @ObservationIgnored private var styleSaveTask: Task<Bool, Never>?
     @ObservationIgnored private var styleSaveError: Error?
     @ObservationIgnored private var styleTask: Task<Void, Never>?
@@ -123,6 +124,8 @@ final class InsightsStore {
         styleSaveTask?.cancel()
         styleSaveTask = nil
         styleSaveError = nil
+        styleLoadTask?.cancel()
+        styleLoadTask = nil
         loadingWritingStyle = false
         savingWritingStyle = false
         applyWritingStyle(nil)
@@ -400,23 +403,37 @@ final class InsightsStore {
         let contextStamp = contextGeneration
         if let task = styleSaveTask { _ = await task.value }
         guard contextStamp == contextGeneration, !Task.isCancelled, !generatingWritingStyle,
-              !savingWritingStyle, styleSaveError == nil, !loadingWritingStyle else { return }
+              !savingWritingStyle, styleSaveError == nil else { return }
+        if let active = styleLoadTask {
+            await active.value
+            return
+        }
         let (genStamp, saveStamp) = (styleGeneration, styleSaveGeneration)
         loadingWritingStyle = true
-        func isCurrent() -> Bool {
-            contextStamp == contextGeneration && genStamp == styleGeneration && saveStamp == styleSaveGeneration
+        // The account's read must survive cancellation of a view's task.
+        let task = Task {
+            @MainActor func isCurrent() -> Bool {
+                contextStamp == contextGeneration && genStamp == styleGeneration && saveStamp == styleSaveGeneration
+            }
+            defer {
+                if isCurrent() {
+                    loadingWritingStyle = false
+                    styleLoadTask = nil
+                }
+            }
+            do {
+                let response: WritingStyleResponse = try await api.get("/api/ai/writing-style")
+                guard isCurrent(), styleSaveError == nil, !Task.isCancelled else { return }
+                applyWritingStyle(response.style)
+                writingStyleLoaded = true
+                writingStyleError = nil
+            } catch is CancellationError {
+            } catch {
+                if isCurrent(), styleSaveError == nil, !Task.isCancelled { writingStyleError = error.localizedDescription }
+            }
         }
-        defer { if isCurrent() { loadingWritingStyle = false } }
-        do {
-            let response: WritingStyleResponse = try await api.get("/api/ai/writing-style")
-            guard isCurrent(), styleSaveError == nil, !Task.isCancelled else { return }
-            applyWritingStyle(response.style)
-            writingStyleLoaded = true
-            writingStyleError = nil
-        } catch is CancellationError {
-        } catch {
-            if isCurrent(), styleSaveError == nil, !Task.isCancelled { writingStyleError = error.localizedDescription }
-        }
+        styleLoadTask = task
+        await task.value
     }
 
     private func applyWritingStyle(_ style: WritingStyle?) {
@@ -435,6 +452,7 @@ final class InsightsStore {
         styleSaveGeneration += 1
         styleGeneration += 1
         let stamp = styleSaveGeneration
+        styleLoadTask = nil
         loadingWritingStyle = false
         savingWritingStyle = true
         writingStyleError = nil
@@ -495,6 +513,7 @@ final class InsightsStore {
         guard !generatingWritingStyle, !savingWritingStyle else { return }
         styleGeneration += 1
         let stamp = styleGeneration
+        styleLoadTask = nil
         loadingWritingStyle = false
         generatingWritingStyle = true
         writingStyleError = nil

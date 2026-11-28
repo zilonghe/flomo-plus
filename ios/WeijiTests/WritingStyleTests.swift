@@ -10,6 +10,7 @@ final class WritingStyleTests: XCTestCase {
     private static let blind = #"{"source":{"kind":"topic","text":"散步"},"candidates":[{"slot":"A","variant":"styled","text":"甲"},{"slot":"B","variant":"baseline","text":"乙"}]}"#
     private static let session = #"{"id":"history","title":"对话","sourceNoteId":"note","version":1,"updatedAt":"2026-11-28","origin":"note","turns":[]}"#
     private static let history = #"{"session":\#(session)}"#
+    private static let rewriteHistoryA = #"{"session":{"id":"history-a","title":"笔记 A 的历史","sourceNoteId":"note","version":1,"updatedAt":"2026-11-28","origin":"note","turns":[{"role":"user","text":"之前的问题"}]}}"#
     private static let initialNotes = #"{"notes":[{"id":"note","body":"原创","createdAt":"2026-11-28","turns":[],"revision":1}],"deleted":[]}"#
     private let stylePath = "/api/ai/writing-style"
     private let generatePath = "/api/ai/writing-style/generate"
@@ -21,6 +22,11 @@ final class WritingStyleTests: XCTestCase {
     func testWritingStyleModelsAndOriginalFilter() throws {
         let decoder = JSONDecoder()
         XCTAssertNil(try decoder.decode(WritingStyleResponse.self, from: Data(#"{"style":null}"#.utf8)).style)
+        XCTAssertTrue(try object(WritingStyleResponse(style: nil))["style"] is NSNull)
+        XCTAssertThrowsError(try decoder.decode(WritingStyleResponse.self, from: Data("{}".utf8))) { error in
+            guard case DecodingError.keyNotFound(let key, _) = error else { return XCTFail("应报告缺少 style 键：\(error)") }
+            XCTAssertEqual(key.stringValue, "style")
+        }
         let style = try XCTUnwrap(decoder.decode(WritingStyleResponse.self, from: Data(Self.styleEnvelope.utf8)).style)
         XCTAssertEqual(style.rules, "先说结论")
         XCTAssertEqual(style.anchors.first?.excerpt, "原创")
@@ -209,6 +215,14 @@ final class WritingStyleTests: XCTestCase {
         XCTAssertNil(insights.saveWritingStyle(.init(rules: "不能覆盖"), api: api))
         XCTAssertTrue(wire.requests(stylePath, method: "POST").isEmpty)
 
+        wire.reply(stylePath, body: "{}")
+        await insights.loadWritingStyle(api: api)
+        XCTAssertFalse(insights.writingStyleLoaded)
+        XCTAssertNotNil(insights.writingStyleError)
+        XCTAssertNil(insights.addWritingStyleAnchor("c", api: api))
+        XCTAssertNil(insights.saveWritingStyle(.init(rules: "不能覆盖"), api: api))
+        XCTAssertTrue(wire.requests(stylePath, method: "POST").isEmpty)
+
         let ab = #"{"style":{"rules":"先说结论","anchorNoteIds":["a","b"],"anchors":[{"id":"a","createdAt":"2026-11-28","excerpt":"甲"},{"id":"b","createdAt":"2026-11-28","excerpt":"乙"}],"missingAnchorCount":0,"scope":{"range":"all","tzOffsetMinutes":0,"tags":[],"tagMode":"any"},"noteCount":12,"updatedAt":"2026-11-28","ready":true}}"#
         let abc = ab.replacingOccurrences(of: #""a","b"]"#, with: #""a","b","c"]"#)
             .replacingOccurrences(of: #""excerpt":"乙"}]"#, with: #""excerpt":"乙"},{"id":"c","createdAt":"2026-11-28","excerpt":"丙"}]"#)
@@ -235,6 +249,37 @@ final class WritingStyleTests: XCTestCase {
         let firstAnchorSaved = await firstAnchor.value
         XCTAssertTrue(firstAnchorSaved)
         XCTAssertEqual(wire.requests(stylePath, method: "POST").last?["anchorNoteIds"] as? [String], ["note"])
+    }
+
+    func testWritingStyleLoadSurvivesViewCancellationAndIsSharedOnReentry() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let api = wire.api()
+        let insights = InsightsStore()
+        wire.hold(stylePath)
+        let view1 = Task { await insights.loadWritingStyle(api: api) }
+        try await eventually("第一次进入已请求写作风格") { wire.waiting(self.stylePath) == 1 }
+        let request = try XCTUnwrap(wire.take(stylePath))
+        wire.reply(stylePath, body: Self.styleEnvelope)
+
+        view1.cancel()
+        var reentered = false
+        var reentryFinished = false
+        let view2 = Task {
+            reentered = true
+            await insights.loadWritingStyle(api: api)
+            reentryFinished = true
+        }
+        try await eventually("第二次进入开始读取") { reentered }
+        XCTAssertTrue(insights.loadingWritingStyle)
+        XCTAssertFalse(reentryFinished)
+        request.complete(body: Self.styleEnvelope)
+        await view2.value
+        XCTAssertTrue(insights.writingStyleLoaded)
+        XCTAssertFalse(insights.loadingWritingStyle)
+        XCTAssertEqual(insights.writingStyleRulesText, "先说结论")
+        await view1.value
+        XCTAssertEqual(wire.requests(stylePath, method: "GET").count, 1)
     }
 
     func testWritingStyleRelayZeroSilentDowngradeOnProviderSwitchAndPendingSave() async throws {
@@ -475,37 +520,126 @@ final class WritingStyleTests: XCTestCase {
         chat.stop()
     }
 
+    func testRewriteWithStyleCancelsLateHistoryWhenSourceIsDeletedDuringLoad() async throws {
+        for draft in ["", "我自己写的草稿"] {
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, _, note) = try await connected(wire, mode: "gateway")
+            wire.hold(sourcePath)
+            wire.reply(chatPath, body: Self.sse("done", Self.rewriteHistoryA), stream: true)
+            store.rewriteWithStyle(note)
+            let rewrite = try XCTUnwrap(store.currentRewriteTask)
+            try await eventually("源会话读取已挂起") { wire.waiting(self.sourcePath) == 1 }
+            let response = try XCTUnwrap(wire.take(sourcePath))
+            store.chat.draft = draft
+
+            await store.replace(with: [], persist: false)
+            response.complete(body: Self.rewriteHistoryA)
+            await rewrite.value
+            await store.chat.waitForIdle()
+            assertDeletedRewrite(store.chat, draft: draft)
+            XCTAssertTrue(wire.requests(chatPath).isEmpty)
+        }
+    }
+
     func testRewriteWithStyleCancelsWhenSourceIsDeletedWhileWaitingForSave() async throws {
+        let profilePath = "/api/ai/profile"
+        for path in [stylePath, profilePath] {
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, api, note) = try await connected(wire, mode: "gateway")
+            wire.hold(path, method: "POST")
+            let pendingSave: Task<Bool, Never>
+            let savedBody: String
+            if path == stylePath {
+                wire.reply(stylePath, body: Self.styleEnvelope)
+                await store.insights.loadWritingStyle(api: api)
+                pendingSave = try XCTUnwrap(store.insights.saveWritingStyle(.init(rules: "正在保存"), api: api))
+                savedBody = Self.styleEnvelope
+            } else {
+                pendingSave = try XCTUnwrap(store.insights.saveProfile(.init(content: "正在保存", enabled: true), api: api))
+                savedBody = #"{"profile":{"content":"正在保存","enabled":true,"noteCount":1}}"#
+            }
+            try await eventually("保存已挂起：\(path)") { wire.waiting(path, method: "POST") == 1 }
+            let response = try XCTUnwrap(wire.take(path, method: "POST"))
+            wire.reply(sourcePath, body: Self.rewriteHistoryA)
+            wire.reply(chatPath, body: Self.sse("done", Self.rewriteHistoryA), stream: true)
+            store.rewriteWithStyle(note)
+            await store.awaitPendingRewrite()
+            XCTAssertTrue(store.chat.sending)
+            XCTAssertEqual(store.chat.session?.id, "history-a")
+            XCTAssertEqual(store.chat.sourceNoteId, note.id)
+            XCTAssertEqual(store.chat.recoverableDraft, AIChatStore.rewriteNotePrompt)
+            XCTAssertTrue(wire.requests(chatPath).isEmpty)
+
+            await store.replace(with: [], persist: false)
+            assertDeletedRewrite(store.chat)
+            response.complete(body: savedBody)
+            let saved = await pendingSave.value
+            XCTAssertTrue(saved)
+            await store.chat.waitForIdle()
+            assertDeletedRewrite(store.chat)
+            XCTAssertTrue(wire.requests(chatPath).isEmpty)
+        }
+    }
+
+    func testRewriteRestoredByRelayCannotSendWithoutItsDeletedSource() async throws {
         let wire = try StyleHTTP()
         defer { wire.close() }
-        let (store, api, note) = try await connected(wire, mode: "gateway")
+        let (store, api, note) = try await connected(wire, mode: "relay")
+        store.setProvider(.openai)
         wire.reply(stylePath, body: Self.styleEnvelope)
         await store.insights.loadWritingStyle(api: api)
         wire.hold(stylePath, method: "POST")
         let save = try XCTUnwrap(store.insights.saveWritingStyle(.init(rules: "正在保存"), api: api))
         try await eventually("风格保存已挂起") { wire.waiting(self.stylePath, method: "POST") == 1 }
         let response = try XCTUnwrap(wire.take(stylePath, method: "POST"))
-        wire.reply(sourcePath, body: #"{"session":null}"#)
-        wire.reply(chatPath, body: Self.sse("done", Self.history), stream: true)
+        wire.reply(sourcePath, body: Self.rewriteHistoryA)
+        wire.reply(chatPath, body: Self.sse("done", Self.rewriteHistoryA), stream: true)
         store.rewriteWithStyle(note)
         await store.awaitPendingRewrite()
         XCTAssertTrue(store.chat.sending)
-        XCTAssertEqual(store.chat.sourceNoteId, note.id)
-        XCTAssertEqual(store.chat.recoverableDraft, AIChatStore.rewriteNotePrompt)
+        XCTAssertEqual(store.chat.session?.id, "history-a")
+
+        store.setProvider(.codex)
+        XCTAssertTrue(store.isRelayMode)
+        XCTAssertFalse(store.chat.sending)
+        XCTAssertEqual(store.chat.draft, AIChatStore.rewriteNotePrompt)
         XCTAssertTrue(wire.requests(chatPath).isEmpty)
 
-        await store.replace(with: [], etag: nil, persist: false)
-        XCTAssertFalse(store.chat.sending)
-        XCTAssertNil(store.chat.sourceNoteId)
-        XCTAssertEqual(store.chat.error, "原笔记已删除，已取消按风格改写。")
-        XCTAssertTrue(store.chat.recoverableDraft.isEmpty)
+        await store.replace(with: [], persist: false)
+        assertDeletedRewrite(store.chat)
+        // Exit relay through the provider switch so the current chat is not reset.
+        store.setProvider(.openai)
+        XCTAssertFalse(store.isRelayMode)
+        store.chat.send(api: api, options: store.options, profile: store.insights, isRelayMode: { store.isRelayMode })
         response.complete(body: Self.styleEnvelope)
         let saved = await save.value
         XCTAssertTrue(saved)
+        await store.chat.waitForIdle()
+        assertDeletedRewrite(store.chat)
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+    }
+
+    func testRewriteRetryStillRequiresItsSourceAfterAConflict() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let (store, api, note) = try await connected(wire, mode: "gateway")
+        let current = Self.session.replacingOccurrences(of: #""sourceNoteId":"note""#, with: #""sourceNoteId":null"#)
+        wire.reply(sourcePath, body: Self.rewriteHistoryA)
+        wire.reply(chatPath, status: 409, body: #"{"error":"版本冲突","current":\#(current)}"#)
+        store.rewriteWithStyle(note)
         await store.awaitPendingRewrite()
         await store.chat.waitForIdle()
-        XCTAssertTrue(wire.requests(chatPath).isEmpty)
-        XCTAssertNil(store.chat.session)
+        XCTAssertEqual(wire.requests(chatPath).count, 1)
+        XCTAssertEqual(wire.requests(chatPath).first?["sourceNoteId"] as? String, note.id)
+        XCTAssertNil(store.chat.sourceNoteId)
+        XCTAssertEqual(store.chat.draft, AIChatStore.rewriteNotePrompt)
+
+        store.chat.send(api: api, options: store.options, profile: store.insights)
+        await store.chat.waitForIdle()
+        assertDeletedRewrite(store.chat)
+        XCTAssertEqual(wire.requests(chatPath).count, 1)
     }
 
     func testRewriteWithStyleSendsOnlyLatestNoteWhenSourceLoadsFinishOutOfOrder() async throws {
@@ -519,9 +653,11 @@ final class WritingStyleTests: XCTestCase {
         wire.reply(chatPath, body: Self.sse("done", historyB), stream: true)
 
         store.rewriteWithStyle(noteA)
+        let taskA = try XCTUnwrap(store.currentRewriteTask)
         try await eventually("第一条笔记的会话读取已挂起") { wire.waiting(self.sourcePath) == 1 }
         let loadA = try XCTUnwrap(wire.take(sourcePath))
         store.rewriteWithStyle(noteB)
+        let taskB = try XCTUnwrap(store.currentRewriteTask)
         try await eventually("第二条笔记的会话读取已挂起") { wire.waiting(self.sourcePath) == 1 }
         let loadB = try XCTUnwrap(wire.take(sourcePath))
         for (load, note) in [(loadA, noteA), (loadB, noteB)] {
@@ -529,17 +665,70 @@ final class WritingStyleTests: XCTestCase {
             XCTAssertEqual(query.first(where: { $0.name == "sourceNoteId" })?.value, note.id)
         }
         loadB.complete(body: #"{"session":null}"#)
-        await store.awaitPendingRewrite()
+        await taskB.value
         await store.chat.waitForIdle()
         loadA.complete(body: Self.history)
         try await eventually("旧读取已取消") { loadA.isStopped }
-        await store.awaitPendingRewrite()
+        await taskA.value
         await store.chat.waitForIdle()
         let posts = wire.requests(chatPath)
         XCTAssertEqual(posts.count, 1)
         XCTAssertEqual(posts.first?["sourceNoteId"] as? String, noteB.id)
         XCTAssertEqual(posts.first?["useWritingStyle"] as? Bool, true)
         XCTAssertEqual(store.chat.sourceNoteId, noteB.id)
+    }
+
+    func testRewriteIgnoresAnOlderDecisionAfterItsSourceLoadSucceeded() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let (store, _, noteA) = try await connected(wire, mode: "gateway")
+        let noteB = Note(id: "note-b", body: "另一条笔记", createdAt: "2026-11-28", revision: 1)
+        await store.replace(with: [noteA, noteB], persist: false)
+        wire.reply(sourcePath, body: Self.rewriteHistoryA)
+        let historyB = Self.history.replacingOccurrences(of: #""sourceNoteId":"note""#, with: #""sourceNoteId":"note-b""#)
+        wire.reply(chatPath, body: Self.sse("done", historyB), stream: true)
+        var decisionA: CheckedContinuation<Void, Never>?
+        store.onBeforeRewriteDecision = { id in
+            guard id == noteA.id else { return }
+            XCTAssertEqual(store.chat.session?.id, "history-a")
+            XCTAssertFalse(store.chat.loadingSession)
+            await withCheckedContinuation { decisionA = $0 }
+        }
+        defer {
+            store.onBeforeRewriteDecision = nil
+            decisionA?.resume()
+        }
+
+        store.rewriteWithStyle(noteA)
+        let taskA = try XCTUnwrap(store.currentRewriteTask)
+        try await eventually("A 成功读完历史，等待改写决策") { decisionA != nil }
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+
+        wire.reply(sourcePath, body: #"{"session":null}"#)
+        store.rewriteWithStyle(noteB)
+        let taskB = try XCTUnwrap(store.currentRewriteTask)
+        await taskB.value
+        await store.chat.waitForIdle()
+        XCTAssertEqual(wire.requests(chatPath).count, 1)
+        XCTAssertEqual(wire.requests(chatPath).first?["sourceNoteId"] as? String, noteB.id)
+
+        decisionA?.resume()
+        decisionA = nil
+        await taskA.value
+        await store.chat.waitForIdle()
+        XCTAssertEqual(wire.requests(chatPath).count, 1)
+        XCTAssertEqual(wire.requests(chatPath).first?["sourceNoteId"] as? String, noteB.id)
+        XCTAssertEqual(store.chat.sourceNoteId, noteB.id)
+    }
+
+    private func assertDeletedRewrite(_ chat: AIChatStore, draft: String = "", file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(chat.loadingSession || chat.sending, file: file, line: line)
+        XCTAssertNil(chat.session, file: file, line: line)
+        XCTAssertNil(chat.sourceNoteId, file: file, line: line)
+        XCTAssertFalse(chat.useWritingStyle, file: file, line: line)
+        XCTAssertEqual(chat.draft, draft, file: file, line: line)
+        XCTAssertEqual(chat.recoverableDraft, draft, file: file, line: line)
+        XCTAssertEqual(chat.error, AIChatStore.deletedRewriteSourceMessage, file: file, line: line)
     }
 
     private func connected(_ wire: StyleHTTP, mode: String) async throws -> (AppStore, WeijiAPIClient, Note) {

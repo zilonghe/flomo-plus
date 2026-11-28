@@ -20,6 +20,9 @@
     .style-row { display: flex; align-items: center; gap: 8px; }
     .style-row > * { flex: 1; }
     .style-row button { min-width: 44px; min-height: 44px; border: 0; }
+    .style-retry { align-self: flex-start; border: 0; }
+    [data-requires-style]:disabled { opacity: .5; }
+    .style-retry[hidden], .anchor-row[hidden] { display: none; }
     .anchor-row { display: flex; align-items: center; gap: 8px; }
     .anchor-row p { flex: 1; }
     .anchor-row button {
@@ -47,16 +50,17 @@
       <div class="ios-scroll" style="padding-top:8px;">
         <div class="style-card style-row">
           <button class="btn-primary">提炼风格</button>
-          <button class="btn-secondary">编辑规则</button>
-          <button class="btn-secondary">添加原句</button>
+          <button class="btn-secondary" data-requires-style>编辑规则</button>
+          <button class="btn-secondary" data-requires-style>添加原句</button>
         </div>
+        <button class="btn-secondary style-retry" hidden>重新加载</button>
         <div class="style-card">
           <h2>写作规则</h2>
-          <p>先说结论，再给一句短例。</p>
+          <p id="style-rules">先说结论，再给一句短例。</p>
           <div style="margin-top:8px;"><span class="chip"><ryugi-icon symbol="calendar" name="calendar" size="14"></ryugi-icon>全部笔记</span></div>
         </div>
         <div class="style-card">
-          <h2>原句锚点 · 1/5</h2>
+          <h2 id="style-anchor-count">原句锚点 · 1/5</h2>
           <div class="anchor-row">
             <p>先把最小的一步走通，再验证下一层假设。</p>
             <button type="button" aria-label="移除原句"><ryugi-icon symbol="minus.circle" name="circle-minus" size="17"></ryugi-icon></button>
@@ -65,7 +69,7 @@
         <div class="style-card">
           <h2>盲测</h2>
           <input aria-label="自定义主题" placeholder="自定义主题（可留空）" />
-          <div class="style-row" style="margin-top:8px;"><button class="btn-primary">开始盲测</button></div>
+          <div class="style-row" style="margin-top:8px;"><button class="btn-primary" data-requires-style>开始盲测</button></div>
         </div>
       </div>
       <nav class="ios-tabbar" aria-label="主导航">
@@ -76,5 +80,14 @@
       </nav>
     </div>
   </ryugi-ios-shell>
+  <script>
+    if (window.ryugiProps?.loaded === false) {
+      document.querySelector(".style-retry").hidden = false;
+      document.querySelectorAll("[data-requires-style]").forEach(button => button.disabled = true);
+      document.querySelector("#style-rules").textContent = "暂无写作规则";
+      document.querySelector("#style-anchor-count").textContent = "原句锚点 · 0/5";
+      document.querySelector(".anchor-row").hidden = true;
+    }
+  </script>
 </body>
 </html>

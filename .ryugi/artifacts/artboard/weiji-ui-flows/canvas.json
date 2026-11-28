@@ -410,6 +410,18 @@
       "h": 874,
       "title": "09 写作风格 · 规则、原句与盲测"
     },
+    "ins-writing-style-retry": {
+      "file": "pages/ios/insights-writing-style.html",
+      "page": "ios-insights",
+      "x": 1764,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "10 写作风格 · 重新加载",
+      "props": {
+        "loaded": false
+      }
+    },
     "ins-to-ai": {
       "file": "pages/ios/ai-chat.html",
       "page": "ios-insights",
