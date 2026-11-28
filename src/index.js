@@ -1054,7 +1054,11 @@ async function chatSession(env, account, input, requestSignal) {
       const redactAnchor = entry => {
         const note = entry.note ?? entry;
         if (!anchorIds.has(note.id)) return entry;
-        const sanitized = { ...note, body: sanitizeAnchorForPrompt(note.body) };
+        const sanitized = {
+          ...note,
+          body: sanitizeAnchorForPrompt(note.body),
+          ...(note.reading?.bookTitle ? { reading: { ...note.reading, bookTitle: sanitizeAnchorForPrompt(note.reading.bookTitle) } } : {}),
+        };
         return entry.note ? { ...entry, note: sanitized } : sanitized;
       };
       pinnedNotes = pinnedNotes.map(redactAnchor);
