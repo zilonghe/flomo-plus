@@ -43,11 +43,11 @@
 
   /* Typography — 4 steps only */
   --font-body: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
-  --font-serif: "New York", "Songti SC", "STSong", Georgia, serif;
+  --font-serif: "Newsreader", "New York", "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", Georgia, serif;
 
   --type-reader-ios: 400 20px/34px var(--font-serif);
-  --type-reader-web: 400 20px/35px var(--font-body);
-  --type-body: 400 17px/29px var(--font-body);
+  --type-reader-web: 400 20px/35px var(--font-serif);
+  --type-body: 400 17px/29px var(--font-serif);
   --type-body-ios: 400 16px/26px var(--font-body);
   --type-ui: 400 14px/20px var(--font-body);
   --type-meta: 400 13px/18px var(--font-body);

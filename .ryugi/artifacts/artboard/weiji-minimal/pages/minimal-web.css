@@ -147,7 +147,7 @@ html, body {
   padding: 0 2px;
 }
 
-/* Web Reader (20px sans, 1.75 line height, 640px measure) */
+/* Web Reader (20px editorial serif, 1.75 line height, 640px measure) */
 .web-reader-prose {
   font: var(--type-reader-web);
   color: var(--color-text);
@@ -172,7 +172,7 @@ html, body {
   gap: 24px;
 }
 .related-snippet {
-  font: 400 14px/22px var(--font-body);
+  font: 400 14px/22px var(--font-serif);
   color: var(--color-text);
   margin-bottom: 6px;
 }
