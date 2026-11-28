@@ -20,7 +20,7 @@ export function substantiveWritingLength(text) {
 }
 
 function writingExcerpt({ id, createdAt }, text) {
-  return { id, createdAt, excerpt: Array.from(text).slice(0, WRITING_STYLE_ANCHOR_EXCERPT_CHARS).join("") };
+  return { id, createdAt, excerpt: Array.from(sanitizeAnchorForPrompt(text)).slice(0, WRITING_STYLE_ANCHOR_EXCERPT_CHARS).join("") };
 }
 
 export function sampleWritingStyleNotes(notes, scope, { maxNotes = 40, excludeIds = [], now = new Date() } = {}) {
@@ -56,13 +56,13 @@ export function sampleWritingStyleNotes(notes, scope, { maxNotes = 40, excludeId
   return { sampled, suggestedAnchors: sampled.slice(0, WRITING_STYLE_MAX_ANCHORS).map(note => writingExcerpt(note, note.text)) };
 }
 
-export function resolveStyleAnchors(anchorNoteIds, activeNotesById, { forPrompt = false } = {}) {
+export function resolveStyleAnchors(anchorNoteIds, activeNotesById) {
   const ids = [...new Set(anchorNoteIds)].slice(0, WRITING_STYLE_MAX_ANCHORS);
   const anchors = [];
   for (const id of ids) {
     const note = activeNotesById.get(id);
     const text = extractOriginalWriting(note);
-    if (text) anchors.push(writingExcerpt(note, forPrompt ? sanitizeAnchorForPrompt(text) : text));
+    if (text) anchors.push(writingExcerpt(note, text));
   }
   return { anchors, missingAnchorCount: ids.length - anchors.length };
 }

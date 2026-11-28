@@ -2,7 +2,7 @@ import { assets } from "./assets.generated.js";
 import { WeReadError, listWeReadBooks, listWeReadNotes } from "./weread.js";
 import { escapeContextTags, extractCitedRefs, extractNoteTags, lexicalFallbackRelated, lexicalFallbackSearch, packNoteContext } from "./retrieval.js";
 import { BUILTIN_LENSES, INSIGHT_CATEGORIES, normalizeInsightScope, filterNotesByScope, computeScopeStats, insightNotesBudget, selectNotesForInsight, packInsightContext, buildInsightTaskPrompt, isChatModelId } from "./insights.js";
-import { WRITING_STYLE_MAX_RULES_CHARS, WRITING_STYLE_MAX_ANCHORS, WRITING_STYLE_RELAY_UNSUPPORTED, WRITING_STYLE_SYSTEM_INSTRUCTION, extractOriginalWriting, sampleWritingStyleNotes, resolveStyleAnchors, buildWritingStyleContextBlock, buildStyleExtractionPrompt, pickBlindTestHoldout, buildBlindTestRequest } from "./writing-style.js";
+import { WRITING_STYLE_MAX_RULES_CHARS, WRITING_STYLE_MAX_ANCHORS, WRITING_STYLE_RELAY_UNSUPPORTED, WRITING_STYLE_SYSTEM_INSTRUCTION, extractOriginalWriting, sampleWritingStyleNotes, resolveStyleAnchors, sanitizeAnchorForPrompt, buildWritingStyleContextBlock, buildStyleExtractionPrompt, pickBlindTestHoldout, buildBlindTestRequest } from "./writing-style.js";
 
 const apiHeaders = {
   "Cache-Control": "private, no-store",
@@ -778,20 +778,20 @@ function writingStyleScope(input = { range: "all" }) {
   catch (error) { throw new ApiError(400, error.message); }
 }
 
-async function writingStyleResult(db, account, row, forPrompt = false) {
+async function writingStyleResult(db, account, row) {
   if (!row) return null;
   const anchorNoteIds = [...new Set(JSON.parse(row.anchor_note_ids_json))].slice(0, WRITING_STYLE_MAX_ANCHORS);
   const notes = new Map(await Promise.all(anchorNoteIds.map(async id => [id, await activeNote(db, account, id)])));
-  const { anchors, missingAnchorCount } = resolveStyleAnchors(anchorNoteIds, notes, { forPrompt });
+  const { anchors, missingAnchorCount } = resolveStyleAnchors(anchorNoteIds, notes);
   return {
     rules: row.rules, anchorNoteIds, anchors, missingAnchorCount, scope: JSON.parse(row.scope_json),
     noteCount: row.note_count, updatedAt: row.updated_at, ready: Boolean(row.rules.trim() || anchors.length),
   };
 }
 
-async function readWritingStyle(db, account, forPrompt = false) {
+async function readWritingStyle(db, account) {
   const row = await db.prepare("SELECT * FROM ai_writing_style WHERE account = ?").bind(account).first();
-  return writingStyleResult(db, account, row, forPrompt);
+  return writingStyleResult(db, account, row);
 }
 
 function upsertWritingStyle(db, account, changes) {
@@ -829,9 +829,9 @@ function checkWritingStyleTarget(target) {
 
 async function requireWritingStyle(db, account, target) {
   checkWritingStyleTarget(target);
-  const style = await readWritingStyle(db, account, true);
+  const style = await readWritingStyle(db, account);
   if (!style?.ready) throw new ApiError(400, noWritingStyle);
-  return buildWritingStyleContextBlock(style);
+  return { writingStyleBlock: buildWritingStyleContextBlock(style), anchorIds: new Set(style.anchorNoteIds) };
 }
 
 async function generateWritingStyle(env, account, input, requestSignal) {
@@ -862,7 +862,7 @@ async function generateWritingStyle(env, account, input, requestSignal) {
 async function blindTestWritingStyle(env, account, input, signal) {
   const target = modelTarget(input, env);
   checkWritingStyleTarget(target);
-  const style = await readWritingStyle(env.DB, account, true);
+  const style = await readWritingStyle(env.DB, account);
   if (!style?.ready) throw new ApiError(400, noWritingStyle);
   const { prompt = "", noteId } = input;
   if (typeof prompt !== "string" || prompt.length > 500 || (prompt.trim() && noteId !== undefined)) {
@@ -875,6 +875,7 @@ async function blindTestWritingStyle(env, account, input, signal) {
     const notes = id ? [await activeNote(env.DB, account, id)].filter(Boolean) : await activeNotes(env.DB, account);
     try { source = pickBlindTestHoldout(notes, { noteId: id, anchorIds: style.anchorNoteIds }); }
     catch (error) { throw new ApiError(400, error.message); }
+    if (id && style.anchorNoteIds.includes(id)) source.text = sanitizeAnchorForPrompt(source.text);
   }
   const chat = { ...input, global: true, ...buildBlindTestRequest(source) };
   const writingStyleBlock = buildWritingStyleContextBlock(style);
@@ -1021,7 +1022,8 @@ async function chatSession(env, account, input, requestSignal) {
     const created = await createdSession(db, account, requestId);
     if (created) return respond(async () => sessionPayload(created, requestId, true));
   }
-  const writingStyleBlock = useWritingStyle ? await requireWritingStyle(db, account, target) : "";
+  const writingStyle = useWritingStyle ? await requireWritingStyle(db, account, target) : null;
+  const { writingStyleBlock = "", anchorIds } = writingStyle ?? {};
 
   return respond(async (signal, send) => {
     const checkCancelled = () => { if (signal.aborted) throw new ApiError(499, "已停止回复。"); };
@@ -1042,12 +1044,22 @@ async function chatSession(env, account, input, requestSignal) {
       !existing && sourceId ? activeNote(db, account, sourceId) : null,
       useProfile ? profileRow(db, account) : null,
     ]);
-    const pinnedNotes = pins.filter(Boolean);
+    let pinnedNotes = pins.filter(Boolean);
     const opts = { limit: 20 - pinnedNotes.length, excludeIds: pinnedNotes.map(note => note.id), readOnly: true };
-    const retrievedNotes = !useAllNotes ? [] : semantic
+    let retrievedNotes = !useAllNotes ? [] : semantic
       ? (await semantic.searchNotes(account, message, opts)).items
       : lexicalFallbackSearch(message, await activeNotes(db, account), opts);
     checkCancelled();
+    if (anchorIds?.size) {
+      const redactAnchor = entry => {
+        const note = entry.note ?? entry;
+        if (!anchorIds.has(note.id)) return entry;
+        const sanitized = { ...note, body: sanitizeAnchorForPrompt(note.body) };
+        return entry.note ? { ...entry, note: sanitized } : sanitized;
+      };
+      pinnedNotes = pinnedNotes.map(redactAnchor);
+      retrievedNotes = retrievedNotes.map(redactAnchor);
+    }
     const context = packNoteContext({ pinnedNotes, retrievedNotes, profileText: profile?.enabled ? profile.content : "" });
     const retrieveMs = Math.round(performance.now() - retrieveStarted);
     step("retrieve", "done", retrieveLabel, {

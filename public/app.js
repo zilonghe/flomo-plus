@@ -3247,7 +3247,6 @@ function setProfilePane(pane) {
 function closeWritingStyle() {
   writingStyleView?.controller.abort();
   writingStyleView = null;
-  pendingStyleSave = failedStyleSave = null;
   setProfilePane('bio');
   for (const id of ['style-status', 'style-rules', 'style-tag-list', 'style-anchors', 'style-anchor-options', 'style-candidates', 'style-reveal']) {
     $(id).replaceChildren();
@@ -3265,8 +3264,11 @@ async function loadWritingStyle(view) {
   $('style-status').textContent = '正在读取写作风格…';
   renderWritingStyle();
   try {
+    if (pendingStyleSave) await pendingStyleSave;
+    if (writingStyleView !== view) return;
     const { style } = await request(stylePath, undefined, view.controller.signal);
     if (writingStyleView !== view) return;
+    failedStyleSave = null;
     view.style = style;
     view.loaded = true;
     const scope = style?.scope;
@@ -3398,25 +3400,28 @@ function updateStyleCount() {
 function saveStyle(changes) {
   const view = writingStyleView;
   if (!view?.loaded || view.saving || view.generating || view.blinding) return;
-  const { signal } = view.controller;
+  const signal = accountLifecycle.signal;
   view.saving = true;
   setError('style-error', '');
   $('style-status').textContent = '正在保存…';
   const save = pendingStyleSave = request(stylePath, changes, signal).then(({ style }) => {
-    if (writingStyleView !== view || signal.aborted) return false;
+    if (signal.aborted) return false;
     failedStyleSave = null;
-    view.style = style;
-    if (changes.rules !== undefined) {
-      view.editing = false;
-      $('style-text').value = '';
+    if (writingStyleView === view) {
+      view.style = style;
+      if (changes.rules !== undefined) {
+        view.editing = false;
+        $('style-text').value = '';
+      }
+      toggleStylePicker('anchor', false);
+      $('style-status').textContent = '已保存';
     }
-    toggleStylePicker('anchor', false);
-    $('style-status').textContent = '已保存';
     return true;
   }).catch(error => {
-    if (writingStyleView === view && !signal.aborted) {
-      failedStyleSave = error.message;
-      setError('style-error', error.message);
+    if (signal.aborted || error.name === 'AbortError') return false;
+    failedStyleSave = error.message || '写作风格保存失败';
+    if (writingStyleView === view) {
+      setError('style-error', failedStyleSave);
       $('style-status').textContent = '';
     }
     return false;
