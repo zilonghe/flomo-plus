@@ -37,6 +37,7 @@ final class InsightsStore {
     @ObservationIgnored private var profileGeneration = 0
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var runGeneration = 0
+    @ObservationIgnored private var runningReportId: String?
     @ObservationIgnored private var viewReportTask: Task<Void, Never>?
     @ObservationIgnored private var viewReportGeneration = 0
     private(set) var viewedReportID: String?
@@ -216,6 +217,7 @@ final class InsightsStore {
         runGeneration += 1
         runTask?.cancel()
         runTask = nil
+        runningReportId = nil
         running = false
     }
 
@@ -223,6 +225,7 @@ final class InsightsStore {
         guard !running else { return }
         runGeneration += 1
         let stamp = runGeneration
+        runningReportId = nil
         liveReport = nil
         liveReportText = ""
         liveReportError = nil
@@ -235,7 +238,12 @@ final class InsightsStore {
         fields["useProfile"] = .bool(useProfile)
         fields["clientRequestId"] = .string(UUID().uuidString.lowercased())
         runTask = Task {
-            defer { if stamp == runGeneration { running = false } }
+            defer {
+                if stamp == runGeneration {
+                    runningReportId = nil
+                    running = false
+                }
+            }
             do {
                 if useProfile { try await awaitProfileSave() }
                 let result: ReportResponse = try await api.stream("/api/insights/run", fields) { [weak self] frame in
@@ -254,15 +262,34 @@ final class InsightsStore {
                 reports.insert(result.report, at: 0)
             } catch is CancellationError {
             } catch {
-                if stamp == runGeneration { liveReportError = error.localizedDescription }
+                if stamp == runGeneration {
+                    if let id = runningReportId, deletedReportIds.contains(id) {
+                        liveReport = nil
+                        liveReportText = ""
+                    }
+                    liveReportError = error.localizedDescription
+                }
             }
         }
     }
 
     private func receiveReport(_ frame: SSEParser.Frame, generation stamp: Int) {
-        guard stamp == runGeneration, frame.event == "delta",
-              let delta = try? JSONDecoder().decode(StreamDelta.self, from: Data(frame.data.utf8)) else { return }
-        liveReportText += delta.text
+        guard stamp == runGeneration else { return }
+        switch frame.event {
+        case "delta":
+            if let id = runningReportId, deletedReportIds.contains(id) { return }
+            guard let delta = try? JSONDecoder().decode(StreamDelta.self, from: Data(frame.data.utf8)) else { return }
+            liveReportText += delta.text
+        case "done":
+            guard let result = try? JSONDecoder().decode(ReportResponse.self, from: Data(frame.data.utf8)) else { return }
+            runningReportId = result.report.id
+            if deletedReportIds.contains(result.report.id) {
+                liveReport = nil
+                liveReportText = ""
+            }
+        default:
+            break
+        }
     }
 
     private func cancelViewedReportLoad() {
@@ -284,10 +311,11 @@ final class InsightsStore {
         deletedReportIds.insert(id)
         reportsGeneration += 1
         reports.removeAll { $0.id == id }
-        if liveReport?.id == id {
+        let matchesLive = liveReport?.id == id
+        if matchesLive || runningReportId == id {
             liveReport = nil
             liveReportText = ""
-            if let errorMessage { liveReportError = errorMessage }
+            if matchesLive, let errorMessage { liveReportError = errorMessage }
         }
         if viewedReport?.id == id || viewedReportID == id {
             if loadingReport { cancelViewedReportLoad() }
@@ -312,10 +340,11 @@ final class InsightsStore {
                 viewedReportText = response.report.content ?? ""
             } catch is CancellationError {
             } catch {
-                if stamp == viewReportGeneration { viewedReportError = error.localizedDescription }
                 if context == contextGeneration, (error as? WeijiAPIError)?.status == 404 {
-                    invalidateConfirmedDeletedReport(summary.id)
+                    invalidateConfirmedDeletedReport(summary.id, errorMessage: error.localizedDescription)
                     onReportDeleted?(summary.id)
+                } else if stamp == viewReportGeneration, !deletedReportIds.contains(summary.id) {
+                    viewedReportError = error.localizedDescription
                 }
             }
         }
@@ -331,26 +360,20 @@ final class InsightsStore {
         do {
             let _: DeletedResponse = try await api.delete("/api/insights/reports/\(id)")
             guard context == contextGeneration, !Task.isCancelled else { return false }
-            deletedReportIds.insert(id)
-            reportsGeneration += 1
-            reports.removeAll { $0.id == id }
-            if liveReport?.id == id {
-                liveReport = nil
-                liveReportText = ""
-                liveReportError = nil
-            }
+            if liveReport?.id == id { liveReportError = nil }
             if viewedReportID == id { clearViewedReport() }
+            invalidateConfirmedDeletedReport(id)
             onReportDeleted?(id)
             return true
         } catch is CancellationError {
         } catch {
-            if context == contextGeneration {
+            guard context == contextGeneration else { return false }
+            if (error as? WeijiAPIError)?.status == 404 {
+                invalidateConfirmedDeletedReport(id, errorMessage: error.localizedDescription)
+                onReportDeleted?(id)
+            } else if !deletedReportIds.contains(id) {
                 if liveReport?.id == id { liveReportError = error.localizedDescription }
                 if viewedReportID == id { viewedReportError = error.localizedDescription }
-                if (error as? WeijiAPIError)?.status == 404 {
-                    invalidateConfirmedDeletedReport(id)
-                    onReportDeleted?(id)
-                }
             }
         }
         return false

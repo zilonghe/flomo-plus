@@ -136,6 +136,17 @@ final class AppStore {
         self.makeTransport = makeTransport
         self.runSearch = runSearch
         self.cache = cache ?? (reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore())
+        chat.onSessionRemoved = { [weak self] id, wasActive in
+            guard let self else { return }
+            switch self.pendingChatSwitch {
+            case .new where wasActive:
+                self.cancelChatSwitch()
+            case .session(let pendingId) where pendingId == id:
+                self.cancelChatSwitch()
+            default:
+                break
+            }
+        }
         insights.onReportDeleted = { [weak self] id in self?.handleConfirmedDeletedInsight(id) }
         insights.onReportsLoaded = { [weak self] loaded, api in
             guard let self else { return }

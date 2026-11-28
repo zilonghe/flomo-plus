@@ -108,6 +108,8 @@ final class AIChatStore {
     private(set) var sourceNoteId: String?
     @ObservationIgnored private var validNoteIds: Set<String>?
     @ObservationIgnored private var deletedInsightIds: Set<String> = []
+    @ObservationIgnored private var blockedDeletedInsightId: String?
+    @ObservationIgnored var onSessionRemoved: (@MainActor (String, Bool) -> Void)?
     @ObservationIgnored private var pinsEditedDuringLoad = false
     @ObservationIgnored private var draftContextKey = "new"
     // Inactive drafts and rescues not yet shown in the active New Chat composer.
@@ -198,6 +200,7 @@ final class AIChatStore {
         // An abandoned automatic prompt must not come back as an ordinary saved draft.
         if isOwnedInDraft(draft) { draft = "" }
         rewriteIntent = nil
+        blockedDeletedInsightId = nil
         if nextKey != draftContextKey {
             // Stop can restore the interrupted question before the old context is saved.
             if draftContextKey == Self.postDeleteDraftKey || isDeletedDraftContext(draftContextKey) {
@@ -255,9 +258,15 @@ final class AIChatStore {
     }
 
     func markInsightDeleted(_ id: String) {
-        deletedInsightIds.insert(id)
+        let wasActiveInsight = Self.boundInsightId(forContextKey: draftContextKey) == id || insight?.id == id
+        let newlyDeleted = deletedInsightIds.insert(id).inserted
         if insight?.id == id { insight = nil }
-        if sending && pendingRequiredInsightId == id { cancelDeletedInsightSend(id) }
+        if sending && pendingRequiredInsightId == id {
+            cancelDeletedInsightSend(id)
+        } else if newlyDeleted, !sending, wasActiveInsight, Self.hasDraftText(draft) {
+            blockedDeletedInsightId = id
+            error = Self.deletedInsightReportMessage
+        }
         rescueOrphanedDrafts()
     }
 
@@ -528,9 +537,11 @@ final class AIChatStore {
         do {
             let _: DeletedResponse = try await api.delete("/api/ai/sessions/\(id)")
             guard stamp == listGeneration else { return }
-            if session?.id == id { start() }
+            let removedActive = session?.id == id
+            if removedActive { start() }
             draftsByKey.removeValue(forKey: "session:\(id)")
             sessions.removeAll { $0.id == id }
+            onSessionRemoved?(id, removedActive)
         } catch is CancellationError {
         } catch {
             if stamp == listGeneration { self.error = error.localizedDescription }
@@ -582,6 +593,11 @@ final class AIChatStore {
         let styled = useWritingStyle
         guard !(styled && isRelayMode()) else { error = InsightsStore.writingStyleRelayMessage; return }
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if blockedDeletedInsightId != nil {
+            blockedDeletedInsightId = nil
+            error = Self.deletedInsightReportMessage
+            return
+        }
         let typed = draft
         inflightDraft = typed
         if isOwnedInDraft(typed) { rewriteIntent?.promptLocation = .inFlight }
@@ -624,6 +640,18 @@ final class AIChatStore {
                 if styled && isRelayMode() {
                     reconcileRelayMode(true)
                     return
+                }
+                if effectiveRequiredSource != nil || requiredInsightId != nil {
+                    // Wait for the API actor without releasing the source guards.
+                    _ = try await api.request("/api/ai/chat", method: "POST", stream: true)
+                    try Task.checkCancellation()
+                    guard stamp == generation else { return }
+                    guard validateRequiredSource(effectiveRequiredSource) else { return }
+                    guard validateRequiredInsight(requiredInsightId) else { return }
+                    if styled && isRelayMode() {
+                        reconcileRelayMode(true)
+                        return
+                    }
                 }
                 let message = Self.message(typed, insight: session == nil ? insight : nil)
                 let signature = ChatSignature(sessionId: session?.id, expectedVersion: session?.version,
