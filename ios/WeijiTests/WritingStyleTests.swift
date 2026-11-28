@@ -2195,6 +2195,7 @@ final class WritingStyleTests: XCTestCase {
                         }
                         reply.finish()
                         wire.reply("/api/notes", body: Self.initialNotes)
+                        if deleting { wire.reply(historyPath, status: 404, body: #"{"error":"会话已删除"}"#) }
                         try await reauthenticate(store, wire: wire)
                     case .confirmBeforeEOF:
                         requestSwitchDuringDelete(.new, store: store)
@@ -2356,6 +2357,375 @@ final class WritingStyleTests: XCTestCase {
                 XCTAssertTrue(chat.pins.isEmpty)
             }
         }
+    }
+
+    func testParkedFollowUpDuringSessionDeleteRescuesToNewChat() async throws {
+        for switchToOther in [true, false] {
+            for saved in ["", Self.deleteBackground] {
+                for succeeds in [true, false] {
+                    let wire = try StyleHTTP()
+                    defer { wire.close() }
+                    let (store, api, _) = try await connected(wire, mode: "gateway")
+                    let chat = store.chat
+                    chat.updateDraftFromUser(saved)
+                    try await enterDeletionTestSession("history", store: store, wire: wire)
+                    let (removal, receipt) = try await beginHeldHistoryDelete(chat, api: api, wire: wire)
+                    chat.updateDraftFromUser(Self.nextDraft)
+                    if switchToOther {
+                        try await enterDeletionTestSession("other", store: store, wire: wire)
+                        chat.updateDraftFromUser(Self.deleteHistoryDraft)
+                        try await enterDeletionTestSession("history", store: store, wire: wire)
+                        XCTAssertEqual(chat.draft, Self.nextDraft)
+                        try await enterDeletionTestSession("other", store: store, wire: wire)
+                    } else {
+                        store.requestNewChat()
+                    }
+                    XCTAssertEqual(chat.recoverableDraftSnapshot.savedDrafts["session:history"], Self.nextDraft)
+                    receipt.complete(status: succeeds ? 200 : 503,
+                                     body: succeeds ? #"{"deleted":"history"}"# : #"{"error":"稍后再试"}"#)
+                    await removal.value
+                    XCTAssertTrue(wire.requests(chatPath).isEmpty)
+                    if switchToOther {
+                        XCTAssertEqual(chat.session?.id, "other")
+                        XCTAssertEqual(chat.draft, Self.deleteHistoryDraft)
+                        store.requestNewChat()
+                    }
+                    if succeeds {
+                        XCTAssertNil(chat.recoverableDraftSnapshot.savedDrafts["session:history"])
+                        try await rejectNotesRefresh(store, wire: wire)
+                        wire.reply("/api/notes", body: Self.initialNotes)
+                        try await reauthenticate(store, wire: wire)
+                        let expected = Self.deleteDrafts(saved, Self.nextDraft)
+                        XCTAssertEqual(chat.draft, expected)
+                        if !chat.draft.isEmpty { try await assertOrdinaryChatSend(expected, store: store, wire: wire) }
+                    } else {
+                        XCTAssertEqual(chat.draft, saved)
+                        try await enterDeletionTestSession("history", store: store, wire: wire)
+                        XCTAssertEqual(chat.draft, Self.nextDraft)
+                        wire.reply(chatPath, body: Self.sse("done", Self.history), stream: true)
+                        chat.send(api: api, options: store.options, profile: store.insights)
+                        await chat.waitForIdle()
+                        XCTAssertEqual(wire.requests(chatPath).count, 1)
+                        XCTAssertEqual(wire.requests(chatPath).last?["sessionId"] as? String, "history")
+                        XCTAssertEqual(wire.requests(chatPath).last?["message"] as? String, Self.nextDraft)
+                    }
+                }
+            }
+        }
+    }
+
+    func testSecondSendOnDeletingHistoryPreservesFollowUpAcrossDeleteAnd404() async throws {
+        let updated = Self.history.replacingOccurrences(of: #""version":1"#, with: #""version":2"#)
+        for deleteFirst in [true, false] {
+            for saved in ["", Self.deleteBackground] {
+                for extra in ["", "再次键入"] {
+                    let wire = try StyleHTTP()
+                    defer { wire.close() }
+                    let (store, api, note) = try await connected(wire, mode: "gateway")
+                    let chat = store.chat
+                    chat.updateDraftFromUser(saved)
+                    try await enterDeletionTestSession("history", store: store, wire: wire)
+                    let first = try await beginHeldNoteSend(store, api: api, wire: wire, source: note)
+                    let (removal, receipt) = try await beginHeldHistoryDelete(chat, api: api, wire: wire)
+                    chat.updateDraftFromUser(Self.nextDraft)
+                    try await finishDeletionTestSend(first, done: updated, chat: chat, eof: false)
+                    chat.send(api: api, options: store.options, profile: store.insights)
+                    XCTAssertEqual(wire.requests(chatPath).count, 1)
+                    first.finish()
+                    await chat.waitForIdle()
+                    XCTAssertEqual(chat.session?.version, 2)
+                    XCTAssertEqual(chat.draft, Self.nextDraft)
+                    wire.hold(chatPath)
+                    chat.send(api: api, options: store.options, profile: store.insights)
+                    try await eventually("追问 POST 发到正在删除的会话") { wire.waiting(self.chatPath) == 1 }
+                    let second = try XCTUnwrap(wire.take(chatPath))
+                    let post = try XCTUnwrap(wire.requests(chatPath).last)
+                    XCTAssertEqual(post["sessionId"] as? String, "history")
+                    XCTAssertEqual(post["expectedVersion"] as? Int, 2)
+                    XCTAssertEqual(post["message"] as? String, Self.nextDraft)
+                    chat.updateDraftFromUser(extra)
+                    requestSwitchDuringDelete(.new, store: store)
+                    if deleteFirst {
+                        receipt.complete(body: #"{"deleted":"history"}"#)
+                        await removal.value
+                    }
+                    second.complete(status: 404, body: #"{"error":"找不到这段对话。"}"#)
+                    await chat.waitForIdle()
+                    if !deleteFirst {
+                        XCTAssertEqual(chat.draft, Self.deleteDrafts(Self.nextDraft, extra))
+                        receipt.complete(body: #"{"deleted":"history"}"#)
+                        await removal.value
+                    }
+                    let expected = Self.deleteDrafts(saved, Self.nextDraft, extra)
+                    try await assertMigratedDeleteDraft(expected, target: .new, store: store, wire: wire)
+                    XCTAssertEqual(wire.requests(chatPath).count, 2)
+                    try await rejectNotesRefresh(store, wire: wire)
+                    wire.reply("/api/notes", body: Self.initialNotes)
+                    try await reauthenticate(store, wire: wire)
+                    XCTAssertEqual(chat.draft, expected)
+                    if !chat.draft.isEmpty { try await assertOrdinaryChatSend(expected, store: store, wire: wire) }
+                }
+            }
+        }
+    }
+
+    func testExistingHistoryDraftDoesNotEscapeDeleteWhenFollowUpMigrates() async throws {
+        enum End: CaseIterable { case deleteBeforeDone, eof, stop, disconnect }
+        for end in End.allCases {
+            for status in [200, 503, 401, 0] where end != .deleteBeforeDone || status == 200 {
+                for saved in ["", Self.deleteBackground] {
+                    let wire = try StyleHTTP()
+                    defer { wire.close() }
+                    let (store, api, note) = try await connected(wire, mode: "gateway")
+                    let chat = store.chat
+                    chat.updateDraftFromUser(saved)
+                    try await enterDeletionTestSession("history", store: store, wire: wire)
+                    chat.updateDraftFromUser(Self.deleteHistoryDraft)
+                    wire.reply(sourcePath, body: Self.history)
+                    store.askAbout(note)
+                    try await eventually("笔记来源加载已存在的会话") { !chat.loadingSession && chat.session?.id == "history" }
+                    XCTAssertEqual(chat.draft, "")
+                    XCTAssertEqual(chat.recoverableDraftSnapshot.savedDrafts["session:history"], Self.deleteHistoryDraft)
+                    let first = try await beginHeldNoteSend(store, api: api, wire: wire, source: note)
+                    let (removal, receipt) = try await beginHeldHistoryDelete(chat, api: api, wire: wire)
+                    chat.updateDraftFromUser(Self.nextDraft)
+                    if end == .deleteBeforeDone {
+                        receipt.complete(body: #"{"deleted":"history"}"#)
+                        await removal.value
+                        first.complete(body: Self.sse("done", Self.history), stream: true)
+                        await chat.waitForIdle()
+                    } else {
+                        try await finishDeletionTestSend(first, done: Self.history, chat: chat, eof: end == .eof)
+                        if end == .stop { chat.stop(); first.finish() }
+                        if end == .disconnect { first.fail(URLError(.networkConnectionLost)) }
+                        await chat.waitForIdle()
+                        XCTAssertEqual(chat.session?.id, "history")
+                        XCTAssertEqual(chat.draft, Self.nextDraft)
+                        let snapshot = chat.recoverableDraftSnapshot
+                        XCTAssertEqual(snapshot.activeDraft, Self.nextDraft)
+                        XCTAssertEqual(snapshot.savedDrafts["session:history"], Self.deleteHistoryDraft)
+                        // Failure can also land after leaving the isolated history composer.
+                        if status == 0 {
+                            store.requestNewChat()
+                            receipt.fail(URLError(.networkConnectionLost))
+                        } else {
+                            receipt.complete(status: status, body: status == 200 ? #"{"deleted":"history"}"# : Self.expired)
+                        }
+                        await removal.value
+                    }
+                    if status == 200 {
+                        try await assertMigratedDeleteDraft(Self.deleteDrafts(saved, Self.nextDraft),
+                                                            target: .none, store: store, wire: wire)
+                        try await assertOrdinaryChatSend(Self.deleteDrafts(saved, Self.nextDraft), store: store, wire: wire)
+                    } else {
+                        if status == 401 {
+                            try await reauthenticate(store, wire: wire)
+                        }
+                        if status == 401 || status == 0 {
+                            XCTAssertEqual(chat.draft, saved)
+                            try await enterDeletionTestSession("history", store: store, wire: wire)
+                        }
+                        XCTAssertEqual(chat.draft, Self.deleteDrafts(Self.deleteHistoryDraft, Self.nextDraft))
+                        store.requestNewChat()
+                        XCTAssertEqual(chat.draft, saved)
+                    }
+                }
+            }
+        }
+    }
+
+    func testRefusedSessionDelete401PreservesHistoryOwnership() async throws {
+        for status in [401, 503, 0, 200] {
+            for saved in ["", Self.deleteBackground] {
+                for edit in [Self.nextDraft, "", Self.deleteHistoryDraft] {
+                    let wire = try StyleHTTP()
+                    defer { wire.close() }
+                    let (store, api, _) = try await connected(wire, mode: "gateway")
+                    let chat = store.chat
+                    chat.updateDraftFromUser(saved)
+                    try await enterDeletionTestSession("history", store: store, wire: wire)
+                    chat.updateDraftFromUser(Self.deleteHistoryDraft)
+                    let (removal, receipt) = try await beginHeldHistoryDelete(chat, api: api, wire: wire)
+                    chat.updateDraftFromUser(Self.nextDraft)
+                    chat.updateDraftFromUser(edit)
+                    if status == 0 { receipt.fail(URLError(.networkConnectionLost)) }
+                    else { receipt.complete(status: status, body: status == 200 ? #"{"deleted":"history"}"# : Self.expired) }
+                    await removal.value
+                    if status == 401 {
+                        try await reauthenticate(store, wire: wire)
+                        XCTAssertEqual(wire.requests(historyPath).count, 1, "已拒绝的 DELETE 不需要核实")
+                        XCTAssertEqual(chat.draft, saved)
+                        try await enterDeletionTestSession("history", store: store, wire: wire)
+                    }
+                    if status != 200 {
+                        XCTAssertEqual(chat.draft, edit)
+                        store.requestNewChat()
+                    }
+                    let expected = status == 200 ? Self.deleteDrafts(saved, edit) : saved
+                    XCTAssertEqual(chat.draft, expected)
+                    try await assertOrdinaryChatSend(expected, store: store, wire: wire)
+                }
+            }
+        }
+
+        // A different request can reject authentication while the server's DELETE outcome is still unknown.
+        for detailStatus in [200, 404, 503] {
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, api, _) = try await connected(wire, mode: "gateway")
+            let chat = store.chat
+            let first = try await beginHeldReportSend(store, api: api, wire: wire, saved: Self.deleteBackground)
+            let report = try XCTUnwrap(chat.insight)
+            let (removal, _) = try await beginHeldHistoryDelete(chat, api: api, wire: wire)
+            chat.updateDraftFromUser(Self.nextDraft)
+            try await deliverHeldChatDone(first, chat: chat)
+            try await rejectNotesRefresh(store, wire: wire)
+            first.finish()
+            await removal.value
+            wire.reply(historyPath, status: detailStatus, body: detailStatus == 200 ? Self.history : #"{"error":"会话已删除"}"#)
+            wire.reply("/api/notes", body: Self.initialNotes)
+            try await reauthenticate(store, wire: wire)
+            XCTAssertEqual(wire.requests(historyPath).count, 1)
+            store.askAbout(report)
+            XCTAssertEqual(chat.draft, "", "已确认提交的原问不能恢复到报告")
+            store.requestNewChat()
+            let expected = detailStatus == 404 ? Self.deleteDrafts(Self.deleteBackground, Self.nextDraft) : Self.deleteBackground
+            XCTAssertEqual(chat.draft, expected)
+            if detailStatus != 404 {
+                try await enterDeletionTestSession("history", store: store, wire: wire)
+                XCTAssertEqual(chat.draft, Self.nextDraft)
+                store.requestNewChat()
+            }
+            try await assertOrdinaryChatSend(expected, store: store, wire: wire)
+        }
+
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let (store, api, _) = try await connected(wire, mode: "gateway")
+        let chat = store.chat
+        let report = try await openInsightReport("report", store: store, wire: wire)
+        store.askAbout(report)
+        chat.updateDraftFromUser(Self.deleteBackground)
+        store.requestNewChat()
+        chat.updateDraftFromUser(Self.firstDraft)
+        wire.hold(chatPath)
+        chat.send(api: api, options: store.options, profile: store.insights)
+        try await eventually("全局首问已发出") { wire.waiting(self.chatPath) == 1 }
+        let first = try XCTUnwrap(wire.take(chatPath))
+        try await confirmReportDeletion(report, via: .delete200, store: store, api: api, wire: wire)
+        let (removal, _) = try await beginHeldHistoryDelete(chat, api: api, wire: wire)
+        chat.updateDraftFromUser(Self.nextDraft)
+        try await finishDeletionTestSend(first, done: Self.history, chat: chat, eof: false)
+        XCTAssertEqual(chat.recoverableDraftSnapshot.savedDrafts["new"], Self.deleteBackground)
+        try await rejectNotesRefresh(store, wire: wire)
+        first.finish()
+        await removal.value
+        wire.reply(historyPath, status: 404, body: #"{"error":"会话已删除"}"#)
+        wire.reply("/api/notes", body: Self.initialNotes)
+        try await reauthenticate(store, wire: wire)
+        try await assertOrdinaryChatSend(Self.deleteDrafts(Self.deleteBackground, Self.nextDraft), store: store, wire: wire)
+    }
+
+    func testActionBetweenSourceConflict409AndDeleteAckDefersRetryAndRescuesParkedDraft() async throws {
+        enum Action: CaseIterable { case retry, switchNew, switchOther, stopRetry }
+        for action in Action.allCases {
+            for status in [200, 503, 0] {
+                let wire = try StyleHTTP()
+                defer { wire.close() }
+                let (store, api, note) = try await connected(wire, mode: "gateway")
+                let chat = store.chat
+                chat.updateDraftFromUser(Self.deleteBackground)
+                wire.reply(sourcePath, body: #"{"session":null}"#)
+                store.askAbout(note)
+                try await eventually("笔记来源没有历史会话") { !chat.loadingSession && chat.session == nil }
+                let first = try await beginHeldNoteSend(store, api: api, wire: wire, source: note)
+                try await listHistoryWhileSending(chat, api: api, wire: wire)
+                let (removal, receipt) = try await beginHeldHistoryDelete(chat, api: api, wire: wire)
+                chat.updateDraftFromUser(Self.nextDraft)
+                if action == .retry { requestSwitchDuringDelete(.new, store: store) }
+                first.complete(body: Self.sse("error", #"{"status":409,"error":"该对话已被删除。"}"#), stream: true)
+                await chat.waitForIdle()
+                XCTAssertEqual(chat.draft, Self.nextDraft)
+                // A premature POST must fail the assertion without leaving the test waiting on the DELETE.
+                wire.reply(chatPath, status: 503, body: Self.expired)
+                switch action {
+                case .retry, .stopRetry:
+                    chat.send(api: api, options: store.options, profile: store.insights)
+                    await chat.waitForIdle()
+                    XCTAssertEqual(chat.draft, Self.nextDraft)
+                    if action == .stopRetry {
+                        chat.stop()
+                        XCTAssertEqual(chat.draft, Self.nextDraft)
+                    }
+                case .switchNew:
+                    store.requestNewChat()
+                case .switchOther:
+                    try await enterDeletionTestSession("other", store: store, wire: wire)
+                    chat.updateDraftFromUser(Self.deleteHistoryDraft)
+                }
+                let attemptedEarly = wire.requests(chatPath).count != 1
+                XCTAssertFalse(attemptedEarly)
+                wire.hold(chatPath)
+                if status == 0 { receipt.fail(URLError(.networkConnectionLost)) }
+                else { receipt.complete(status: status, body: status == 200 ? #"{"deleted":"history"}"# : Self.expired) }
+                await removal.value
+                if status == 200 {
+                    if action == .switchOther {
+                        XCTAssertEqual(chat.draft, Self.deleteHistoryDraft)
+                        store.requestNewChat()
+                    }
+                    XCTAssertNil(store.pendingChatSwitch)
+                    XCTAssertNil(chat.sourceNoteId)
+                    XCTAssertNil(chat.recoverableDraftSnapshot.savedDrafts["note:\(note.id)"])
+                    XCTAssertEqual(wire.requests(chatPath).count, 1)
+                    try await assertOrdinaryChatSend(Self.deleteDrafts(Self.deleteBackground, Self.nextDraft), store: store, wire: wire)
+                } else if action == .retry && !attemptedEarly {
+                    try await eventually("删除失败后恢复同源重试") { wire.waiting(self.chatPath) == 1 }
+                    let post = try XCTUnwrap(wire.requests(chatPath).last)
+                    XCTAssertEqual(wire.requests(chatPath).count, 2)
+                    XCTAssertEqual(post["sourceNoteId"] as? String, note.id)
+                    XCTAssertEqual(post["referencedNoteIds"] as? [String], [note.id])
+                    XCTAssertEqual(post["message"] as? String, Self.nextDraft)
+                    try XCTUnwrap(wire.take(chatPath)).complete(body: Self.sse("done", Self.history), stream: true)
+                    await chat.waitForIdle()
+                } else if action != .retry {
+                    if action != .stopRetry {
+                        wire.reply(sourcePath, body: #"{"session":null}"#)
+                        store.askAbout(note)
+                        try await eventually("返回仍有效的来源") { !chat.loadingSession }
+                    }
+                    XCTAssertEqual(chat.sourceNoteId, note.id)
+                    XCTAssertEqual(chat.draft, Self.nextDraft)
+                    XCTAssertEqual(wire.requests(chatPath).count, 1)
+                    store.requestNewChat()
+                    XCTAssertEqual(chat.draft, Self.deleteBackground)
+                }
+            }
+        }
+    }
+
+    private static let deleteHistoryDraft = " " + String(repeating: "旧", count: 7) + "\t"
+    private static let deleteBackground = " " + String(repeating: "新", count: 26) + "\t"
+
+    private static func deleteDrafts(_ parts: String...) -> String {
+        parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    private func enterDeletionTestSession(_ id: String, store: AppStore, wire: StyleHTTP) async throws {
+        let body = id == "history" ? Self.history
+            : #"{"session":{"id":"\#(id)","title":"其他会话","version":1,"updatedAt":"2026-11-28","origin":"global","turns":[]}}"#
+        wire.reply("\(sourcePath)/\(id)", body: body)
+        store.requestSelectChatSession(id)
+        try await eventually("打开历史 \(id)") { !store.chat.loadingSession && store.chat.session?.id == id }
+    }
+
+    private func finishDeletionTestSend(_ reply: StyleProtocol, done: String, chat: AIChatStore, eof: Bool) async throws {
+        reply.begin(stream: true)
+        reply.write(Self.sse("status", #"{"stage":"writing","message":"回复中"}"#))
+        try await eventually("发送进入流式状态") { chat.status == "回复中" }
+        reply.write(Self.sse("done", done))
+        try await eventually("已获 done 但未收到 EOF") { chat.status == nil && chat.sending }
+        if eof { reply.finish() }
     }
 
     private enum DeleteSwitch: CaseIterable { case none, new, history }

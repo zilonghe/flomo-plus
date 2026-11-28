@@ -238,8 +238,10 @@ actor WeijiAPIClient {
         try await send(request(path, method: "POST", body: JSONEncoder().encode(body)))
     }
 
-    func delete<Result: Decodable & Sendable>(_ path: String) async throws -> Result {
-        try await send(request(path, method: "DELETE"))
+    func delete<Result: Decodable & Sendable>(
+        _ path: String, onAuthenticationRejected: (@Sendable () async -> Void)? = nil
+    ) async throws -> Result {
+        try await send(request(path, method: "DELETE"), onAuthenticationRejected: onAuthenticationRejected)
     }
 
     func authProviders() async throws -> OAuthProviders {
@@ -269,12 +271,16 @@ actor WeijiAPIClient {
         if !result.ok { throw WeijiAPIError.interrupted }
     }
 
-    private func send<Result: Decodable>(_ request: URLRequest) async throws -> Result {
+    private func send<Result: Decodable>(
+        _ request: URLRequest, onAuthenticationRejected: (@Sendable () async -> Void)? = nil
+    ) async throws -> Result {
         do {
             let (data, response) = try await session.data(for: request)
             try Task.checkCancellation()
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard (200..<300).contains(code) else { throw await responseError(code, data) }
+            guard (200..<300).contains(code) else {
+                throw await responseError(code, data, beforeAuthenticationRejection: onAuthenticationRejected)
+            }
             return try JSONDecoder().decode(Result.self, from: data)
         } catch {
             if Task.isCancelled { throw CancellationError() }
@@ -309,9 +315,14 @@ actor WeijiAPIClient {
         }
     }
 
-    private func responseError(_ status: Int, _ data: Data) async -> WeijiAPIError {
+    private func responseError(
+        _ status: Int, _ data: Data, beforeAuthenticationRejection: (@Sendable () async -> Void)? = nil
+    ) async -> WeijiAPIError {
         let failure = WeijiAPIError.response(status, data)
-        if failure.rejectsAuthentication { await onAuthenticationRejected?(failure) }
+        if failure.rejectsAuthentication {
+            await beforeAuthenticationRejection?()
+            await onAuthenticationRejected?(failure)
+        }
         return failure
     }
 

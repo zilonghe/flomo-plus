@@ -75,13 +75,28 @@ final class AIChatStore {
     static let deletedInsightReportMessage = "原洞察报告已删除，已取消基于该报告继续追问。"
     private static let postDeleteDraftKey = "post-delete"
 
+    struct OwnedDraft: Equatable, Sendable {
+        let key: String
+        let text: String
+    }
+
+    struct UnconfirmedRemoval: Equatable, Sendable {
+        var historyDraft = ""
+        var followUps: [OwnedDraft] = []
+        var isEmpty: Bool { historyDraft.isEmpty && followUps.isEmpty }
+    }
+
     struct RecoverableDraftSnapshot: Equatable, Sendable {
         let activeContextKey: String
         let activeDraft: String
         let savedDrafts: [String: String]
         let suppressedAutomaticPrompt: Bool
         let requiresDeletedInsightConfirmation: Bool
-        var isEmpty: Bool { activeDraft.isEmpty && savedDrafts.isEmpty }
+        var unconfirmedRemovals: [String: UnconfirmedRemoval] = [:]
+        var withheldSavedKeys: Set<String> = []
+        var withholdsActiveDraft = false
+        var preservesHistoryOwnership = false
+        var isEmpty: Bool { activeDraft.isEmpty && savedDrafts.isEmpty && unconfirmedRemovals.isEmpty }
 
         init(activeContextKey: String, activeDraft: String, savedDrafts: [String: String],
              suppressedAutomaticPrompt: Bool, requiresDeletedInsightConfirmation: Bool = false) {
@@ -108,21 +123,41 @@ final class AIChatStore {
         var suppressBackgroundOnEmpty = false
     }
 
+    private struct PendingSourceConflict {
+        let sourceNoteId: String
+        let styled: Bool
+        var draftKey: String { "note:\(sourceNoteId)" }
+    }
+
+    private struct ActiveRemoval {
+        let token = UUID()
+        let sourceNoteId: String?
+        let draftBeforeDelete: String
+        let contextBeforeDelete: String
+        var followUpEdited = false
+        var isolatedFromHistoryDraft = false
+        var parkedFollowUp: OwnedDraft?
+        var pendingSourceConflict: PendingSourceConflict?
+        // Only one composer can request a retry. Leave its text editable until DELETE settles.
+        var retryOnFailure: (@MainActor () -> Void)?
+    }
+
     var draft = ""
     var recoverableDraftSnapshot: RecoverableDraftSnapshot {
         let committedId = completedSendSessionId
         let destinationKey = committedId.map { "session:\($0)" } ?? draftContextKey
-        let deletingFollowUp = (committedId ?? Self.boundSessionId(forContextKey: draftContextKey)).map { id in
-            activeRemovals[id] != nil && (committedId != nil || followUpDraftSessionIds.contains(id))
-        } ?? false
+        let boundId = committedId ?? composerSessionId
+        let boundRemoval = boundId.flatMap { activeRemovals[$0] }
+        let deletingFollowUp = boundRemoval.map { committedId != nil || hasRemovalFollowUp($0) } ?? false
+        // This key also describes a follow-up whose destination is still undecided.
         let activeKey = deletingFollowUp || isDeletedDraftContext(destinationKey)
             ? Self.postDeleteDraftKey : destinationKey
         var activeDraft = activeUserText()
         var savedDrafts = draftsByKey
-        if activeKey == destinationKey, activeKey != draftContextKey {
+        if boundRemoval == nil, activeKey == destinationKey, activeKey != draftContextKey {
             activeDraft = Self.appendDraft(savedDrafts.removeValue(forKey: activeKey) ?? "", activeDraft)
         }
-        if draftContextKey == "new", activeKey == "new" || activeKey == Self.postDeleteDraftKey,
+        if !deletingFollowUp, draftContextKey == "new", activeKey == "new" || activeKey == Self.postDeleteDraftKey,
            sending || holdingRescuedForPendingNewChat, let rescued = savedDrafts.removeValue(forKey: "new") {
             activeDraft = mergeHeldNewChatDraft(activeDraft, held: rescued)
         }
@@ -132,15 +167,66 @@ final class AIChatStore {
             || (!Self.hasDraftText(activeDraft)
                 && (draftContextKey == Self.postDeleteDraftKey || rewriteIntent?.suppressBackgroundOnEmpty == true))
         savedDrafts = savedDrafts.filter { key, text in
-            key != activeKey && (key != draftContextKey || key == "new")
+            key != activeKey && (key != draftContextKey || key == "new" || boundRemoval?.isolatedFromHistoryDraft == true)
                 && key != Self.postDeleteDraftKey && Self.hasDraftText(text)
                 && !isDeletedDraftContext(key)
         }
         let needsDeletedInsightConfirmation = requiresDeletedInsightConfirmation
             || (sending && committedId == nil && pendingRequiredInsightId.map { !canReferenceInsight($0) } == true)
-        return RecoverableDraftSnapshot(activeContextKey: activeKey, activeDraft: activeDraft,
-                                        savedDrafts: savedDrafts, suppressedAutomaticPrompt: suppressed,
-                                        requiresDeletedInsightConfirmation: needsDeletedInsightConfirmation)
+        var snapshot = RecoverableDraftSnapshot(activeContextKey: activeKey, activeDraft: activeDraft,
+                                                savedDrafts: savedDrafts, suppressedAutomaticPrompt: suppressed,
+                                                requiresDeletedInsightConfirmation: needsDeletedInsightConfirmation)
+        snapshot.preservesHistoryOwnership = composerSessionId != nil
+        captureUnconfirmedRemovals(in: &snapshot, boundId: boundId, destinationKey: destinationKey,
+                                   deletingFollowUp: deletingFollowUp)
+        return snapshot
+    }
+
+    private func captureUnconfirmedRemovals(in snapshot: inout RecoverableDraftSnapshot, boundId: String?,
+                                           destinationKey: String, deletingFollowUp: Bool) {
+        snapshot.unconfirmedRemovals = unconfirmedRemovals
+        let activeDraft = snapshot.activeDraft
+        for (id, removal) in activeRemovals {
+            let key = "session:\(id)"
+            var pending = snapshot.unconfirmedRemovals[id] ?? UnconfirmedRemoval()
+            pending.historyDraft = Self.appendDraft(pending.historyDraft, draftsByKey[key] ?? "")
+            snapshot.withheldSavedKeys.insert(key)
+            if let parked = removal.parkedFollowUp {
+                pending.followUps.append(parked)
+                snapshot.withheldSavedKeys.insert(parked.key)
+                if parked.key == key && !removal.isolatedFromHistoryDraft {
+                    pending.historyDraft = snapshot.unconfirmedRemovals[id]?.historyDraft ?? ""
+                }
+            }
+            let ownsActiveDraft = boundId == id && (destinationKey == key || deletingFollowUp || inflightDeletionFollowUpId == id)
+            if ownsActiveDraft {
+                snapshot.withholdsActiveDraft = true
+                if deletingFollowUp || inflightDeletionFollowUpId == id {
+                    // An uncommitted turn started before DELETE belongs to H, even if a newer draft is visible.
+                    let followUp = inflightDeletionFollowUpId == id ? activeDraft : (isOwnedInDraft(draft) ? "" : draft)
+                    if Self.hasDraftText(followUp) {
+                        pending.followUps.append(OwnedDraft(key: destinationKey, text: followUp))
+                    }
+                    if inflightDeletionFollowUpId != id, let original = inflightDraft, !isOwnedInFlight(original) {
+                        pending.historyDraft = Self.appendDraft(pending.historyDraft, original)
+                    }
+                } else {
+                    pending.historyDraft = Self.appendDraft(pending.historyDraft, activeDraft)
+                }
+            }
+            if let conflict = removal.pendingSourceConflict, removal.parkedFollowUp?.key != conflict.draftKey {
+                let isActive = draftContextKey == conflict.draftKey && (boundId == nil || boundId == id)
+                if !isActive || !ownsActiveDraft {
+                    if isActive { snapshot.withholdsActiveDraft = true }
+                    let text = isActive ? activeDraft : draftsByKey[conflict.draftKey] ?? ""
+                    if Self.hasDraftText(text) {
+                        pending.followUps.append(OwnedDraft(key: conflict.draftKey, text: text))
+                        snapshot.withheldSavedKeys.insert(conflict.draftKey)
+                    }
+                }
+            }
+            if !pending.isEmpty { snapshot.unconfirmedRemovals[id] = pending }
+        }
     }
     var recoverableDraft: String {
         let snapshot = recoverableDraftSnapshot
@@ -176,9 +262,8 @@ final class AIChatStore {
     @ObservationIgnored private var deletedSessionIds: Set<String> = []
     @ObservationIgnored private var completedSendSession: ChatSession?
     private var completedSendSessionId: String? { completedSendSession?.id }
-    @ObservationIgnored private var activeRemovals: [String: String?] = [:]
-    @ObservationIgnored private var followUpDraftSessionIds: Set<String> = []
-    @ObservationIgnored private var pendingSourceConflict: (sessionId: String, sourceNoteId: String, styled: Bool)?
+    @ObservationIgnored private var activeRemovals: [String: ActiveRemoval] = [:]
+    @ObservationIgnored private var unconfirmedRemovals: [String: UnconfirmedRemoval] = [:]
     @ObservationIgnored private var deletedInFlightSourceNoteId: String?
     @ObservationIgnored private var deletedInFlightSessionId: String?
     @ObservationIgnored private var requiresDeletedInsightConfirmation = false
@@ -191,6 +276,7 @@ final class AIChatStore {
     @ObservationIgnored private var heldNewChatOrder: HeldNewChatMergeOrder = .appendHeld
     @ObservationIgnored private var requestID = ChatRequestID()
     @ObservationIgnored private var inflightDraft: String?
+    @ObservationIgnored private var inflightDeletionFollowUpId: String?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var listGeneration = 0
     @ObservationIgnored private var resetGeneration = 0
@@ -204,11 +290,32 @@ final class AIChatStore {
 
     func updateDraftFromUser(_ text: String) {
         if rewriteIntent?.promptLocation == .inDraft { rewriteIntent?.promptLocation = .none }
-        if Self.hasDraftText(text) {
-            rewriteIntent?.suppressBackgroundOnEmpty = false
-            followUpDraftSessionIds.formUnion(activeRemovals.keys)
+        let hasText = Self.hasDraftText(text)
+        if hasText { rewriteIntent?.suppressBackgroundOnEmpty = false }
+        let removalId = completedSendSessionId ?? composerSessionId
+            ?? (sending ? sourceNoteId.flatMap(removalForSource) : nil)
+        if let removalId, activeRemovals[removalId] != nil {
+            activeRemovals[removalId]?.followUpEdited = hasText
+            if !hasText { activeRemovals[removalId]?.parkedFollowUp = nil }
         }
+        cancelDeferredSourceRetry()
         draft = text
+    }
+
+    private var composerSessionId: String? { session?.id ?? Self.boundSessionId(forContextKey: draftContextKey) }
+
+    private func removalForSource(_ source: String) -> String? {
+        activeRemovals.first { $0.value.sourceNoteId == source }?.key
+    }
+
+    private func hasRemovalFollowUp(_ removal: ActiveRemoval) -> Bool {
+        Self.hasDraftText(draft) && !isOwnedInDraft(draft)
+            && (removal.followUpEdited
+                || (draftContextKey == removal.contextBeforeDelete && draft != removal.draftBeforeDelete))
+    }
+
+    private func cancelDeferredSourceRetry() {
+        for id in activeRemovals.keys { activeRemovals[id]?.retryOnFailure = nil }
     }
 
     func setPendingNewChatConfirmation(_ pending: Bool) {
@@ -229,6 +336,8 @@ final class AIChatStore {
     func restoreRecoverableDrafts(_ snapshot: RecoverableDraftSnapshot) {
         requiresDeletedInsightConfirmation = false
         draftsByKey = snapshot.savedDrafts
+        unconfirmedRemovals = snapshot.unconfirmedRemovals
+        for key in snapshot.withheldSavedKeys { draftsByKey.removeValue(forKey: key) }
         if snapshot.suppressedAutomaticPrompt {
             draftContextKey = Self.postDeleteDraftKey
             draft = ""
@@ -236,12 +345,13 @@ final class AIChatStore {
         }
         let savedNew = draftsByKey.removeValue(forKey: "new") ?? ""
         draftContextKey = "new"
-        let key = snapshot.activeContextKey
-        let active = snapshot.activeDraft
+        let key = snapshot.withholdsActiveDraft ? "new" : snapshot.activeContextKey
+        let active = snapshot.withholdsActiveDraft ? "" : snapshot.activeDraft
         let isSourceBoundContext = (key.hasPrefix("insight:") && !isDeletedDraftContext(key))
             || (key.hasPrefix("walk:") && isValidNoteDraftContext(key))
         let isIndependentContext = key != "new" && key != Self.postDeleteDraftKey && !isDeletedDraftContext(key)
-        if Self.hasDraftText(active), isSourceBoundContext || (isIndependentContext && Self.hasDraftText(savedNew)) {
+        if Self.hasDraftText(active), isSourceBoundContext
+            || (isIndependentContext && (snapshot.preservesHistoryOwnership || Self.hasDraftText(savedNew))) {
             draftsByKey[key] = active
             draft = savedNew
         } else {
@@ -283,8 +393,6 @@ final class AIChatStore {
         setPendingNewChatConfirmation(false)
         // A confirmed switch saves the follow-up in the context the user is leaving.
         stop(commitCompletedSession: false)
-        followUpDraftSessionIds.removeAll()
-        pendingSourceConflict = nil
         // An abandoned automatic prompt must not come back as an ordinary saved draft.
         if isOwnedInDraft(draft) { draft = "" }
         rewriteIntent = nil
@@ -296,13 +404,11 @@ final class AIChatStore {
                 if Self.hasDraftText(draft) {
                     draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", draft)
                 }
-            } else if Self.hasDraftText(draft) {
-                draftsByKey[draftContextKey] = draft
             } else {
-                draftsByKey.removeValue(forKey: draftContextKey)
+                parkLeavingDraft()
             }
             draftContextKey = nextKey
-            draft = draftsByKey.removeValue(forKey: nextKey) ?? ""
+            draft = takeParkedFollowUp(for: nextKey) ?? draftsByKey.removeValue(forKey: nextKey) ?? ""
         } else if resettingNew {
             draft = unseenRescued ?? ""
         }
@@ -317,6 +423,31 @@ final class AIChatStore {
         error = nil
     }
 
+    private func parkLeavingDraft() {
+        // A report opened before this send stays independent until the committed session is applied.
+        if let id = composerSessionId, let removal = activeRemovals[id] {
+            if hasRemovalFollowUp(removal) {
+                activeRemovals[id]?.parkedFollowUp = OwnedDraft(key: draftContextKey, text: draft)
+            }
+            if removal.isolatedFromHistoryDraft && draftContextKey == "session:\(id)" { return }
+        }
+        draftsByKey[draftContextKey] = Self.hasDraftText(draft) ? draft : nil
+    }
+
+    private func takeParkedFollowUp(for key: String) -> String? {
+        let id = Self.boundSessionId(forContextKey: key)
+            ?? activeRemovals.first(where: { $0.value.parkedFollowUp?.key == key })?.key
+        guard let id, var removal = activeRemovals[id], let parked = removal.parkedFollowUp else { return nil }
+        if !removal.isolatedFromHistoryDraft || parked.key != "session:\(id)" {
+            draftsByKey.removeValue(forKey: parked.key)
+        }
+        removal.parkedFollowUp = nil
+        removal.followUpEdited = true
+        if key == "session:\(id)", draftsByKey[key] != nil { removal.isolatedFromHistoryDraft = true }
+        activeRemovals[id] = removal
+        return parked.text
+    }
+
     func reset() {
         resetGeneration += 1
         validNoteIds = nil
@@ -325,6 +456,7 @@ final class AIChatStore {
         start()
         deletedSessionIds = []
         activeRemovals = [:]
+        unconfirmedRemovals = [:]
         draftsByKey = [:]
         draftContextKey = "new"
         draft = ""
@@ -383,11 +515,19 @@ final class AIChatStore {
         let orphanedKeys = draftsByKey.keys.filter { isDeletedDraftContext($0) }.sorted()
         for key in orphanedKeys {
             guard let rescued = draftsByKey.removeValue(forKey: key), Self.hasDraftText(rescued) else { continue }
-            if draftContextKey == "new" && !sending && !holdingRescuedForPendingNewChat {
-                draft = Self.appendDraft(draft, rescued)
-            } else {
-                draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", rescued)
+            for id in activeRemovals.keys where activeRemovals[id]?.parkedFollowUp?.key == key {
+                activeRemovals[id]?.parkedFollowUp = nil
             }
+            rescueToNewChat(rescued)
+        }
+    }
+
+    private func rescueToNewChat(_ text: String) {
+        guard Self.hasDraftText(text) else { return }
+        if draftContextKey == "new" && !sending && !holdingRescuedForPendingNewChat {
+            draft = Self.appendDraft(draft, text)
+        } else {
+            draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", text)
         }
     }
 
@@ -406,8 +546,12 @@ final class AIChatStore {
         return Self.appendDraft(keepUnsent, keepDraft)
     }
 
-    private func restoreInterruptedDraft(_ unsent: String?, preserveWithFollowUp: Bool = false) {
+    private func restoreInterruptedDraft(_ unsent: String?, preserveWithFollowUp: Bool = false,
+                                         removalFollowUpId: String? = nil) {
         let unsentIsAuto = unsent.map(isOwnedInFlight) ?? false
+        if let removalFollowUpId, let unsent, !unsentIsAuto, Self.hasDraftText(unsent) {
+            activeRemovals[removalFollowUpId]?.followUpEdited = true
+        }
         let hasHeldRescue = draftContextKey == "new" && holdingRescuedForPendingNewChat && draftsByKey["new"] != nil
         let rescued = draftContextKey == "new" && !holdingRescuedForPendingNewChat
             ? draftsByKey.removeValue(forKey: "new") : nil
@@ -419,7 +563,8 @@ final class AIChatStore {
             }
             return
         }
-        if rescued != nil || hasHeldRescue || preserveWithFollowUp || isDeletedDraftContext(draftContextKey) {
+        if rescued != nil || hasHeldRescue || preserveWithFollowUp || removalFollowUpId != nil
+            || isDeletedDraftContext(draftContextKey) {
             let keepUnsent = unsentIsAuto ? "" : (unsent ?? "")
             draft = Self.appendDraft(Self.appendDraft(keepUnsent, draft), rescued ?? "")
             if unsentIsAuto { rewriteIntent?.promptLocation = .none }
@@ -532,11 +677,13 @@ final class AIChatStore {
     }
 
     func stop(preserveInFlightWithDraft: Bool = false, commitCompletedSession: Bool = true) {
+        cancelDeferredSourceRetry()
         _ = pendingDispatchGate?.cancelIfPending()
         let wasDispatched = pendingDispatchGate?.isDispatched ?? false
         let requiredInsightId = pendingRequiredInsightId
         let wasSending = sending
         let unsent = inflightDraft
+        let removalFollowUpId = inflightDeletionFollowUpId
         generation += 1
         task?.cancel()
         sessionTask?.cancel()
@@ -548,7 +695,8 @@ final class AIChatStore {
         }
         finishSend()
         if wasSending {
-            restoreInterruptedDraft(unsent, preserveWithFollowUp: preserveInFlightWithDraft)
+            restoreInterruptedDraft(unsent, preserveWithFollowUp: preserveInFlightWithDraft,
+                                    removalFollowUpId: removalFollowUpId)
             if wasDispatched, let requiredInsightId, !canReferenceInsight(requiredInsightId), Self.hasDraftText(draft) {
                 requiresDeletedInsightConfirmation = true
                 error = Self.deletedInsightReportMessage
@@ -559,7 +707,8 @@ final class AIChatStore {
     func restorePendingSessionDraftIfPresent() -> Bool {
         guard let id = session?.id else { return false }
         let key = "session:\(id)"
-        guard let pending = draftsByKey.removeValue(forKey: key), Self.hasDraftText(pending) else { return false }
+        guard let pending = takeParkedFollowUp(for: key) ?? draftsByKey.removeValue(forKey: key),
+              Self.hasDraftText(pending) else { return false }
         draftContextKey = key
         draft = pending
         return true
@@ -593,6 +742,7 @@ final class AIChatStore {
                 let response: ChatResponse = try await api.get(path)
                 guard stamp == generation, !Task.isCancelled else { return false }
                 if let loaded = response.session, deletedSessionIds.contains(loaded.id) { return false }
+                if let loaded = response.session { resolveUnconfirmedRemoval(loaded.id, exists: true) }
                 session = response.session
                 if let rawSource = response.session?.sourceNoteId {
                     let source = validSource(rawSource)
@@ -609,7 +759,13 @@ final class AIChatStore {
             } catch is CancellationError {
                 return false
             } catch {
-                if stamp == generation, !Task.isCancelled { self.error = error.localizedDescription }
+                if stamp == generation, !Task.isCancelled {
+                    if restoreSourcePin, (error as? WeijiAPIError)?.status == 404,
+                       let id = Self.boundSessionId(forContextKey: draftContextKey) {
+                        resolveUnconfirmedRemoval(id, exists: false)
+                    }
+                    self.error = error.localizedDescription
+                }
                 return false
             }
         }
@@ -632,6 +788,7 @@ final class AIChatStore {
                 let page: ChatPage = try await api.get(path)
                 guard stamp == listGeneration else { return }
                 let visible = page.sessions.filter { !deletedSessionIds.contains($0.id) }
+                for item in visible { resolveUnconfirmedRemoval(item.id, exists: true) }
                 sessions = more ? sessions + visible.filter { item in !sessions.contains { $0.id == item.id } } : visible
                 cursor = page.nextCursor
             } catch is CancellationError {
@@ -645,65 +802,141 @@ final class AIChatStore {
         guard activeRemovals[id] == nil else { return }
         let accountStamp = resetGeneration
         let knownSource = (session?.id == id ? session?.sourceNoteId : nil)
+            ?? (completedSendSessionId == id ? completedSendSession?.sourceNoteId : nil)
             ?? sessions.first(where: { $0.id == id })?.sourceNoteId
-        let draftBeforeDelete = draft
-        let contextBeforeDelete = draftContextKey
-        // A session with no source note still has a deletion in progress.
-        activeRemovals.updateValue(knownSource, forKey: id)
+        let removal = ActiveRemoval(sourceNoteId: knownSource, draftBeforeDelete: draft,
+                                    contextBeforeDelete: draftContextKey)
+        let token = removal.token
+        activeRemovals[id] = removal
+        var deleted = false
         defer {
-            if accountStamp == resetGeneration {
-                activeRemovals.removeValue(forKey: id)
-                followUpDraftSessionIds.remove(id)
-                if pendingSourceConflict?.sessionId == id { pendingSourceConflict = nil }
+            if accountStamp == resetGeneration, activeRemovals[id]?.token == token {
+                finishRemoval(id, keepDrafts: !deleted, retry: !deleted && !Task.isCancelled)
             }
         }
         do {
-            let _: DeletedResponse = try await api.delete("/api/ai/sessions/\(id)")
-            guard accountStamp == resetGeneration, !Task.isCancelled else { return }
-            let removedSource = (session?.id == id ? session?.sourceNoteId : nil)
-                ?? sessions.first(where: { $0.id == id })?.sourceNoteId ?? knownSource
-            deletedSessionIds.insert(id)
-            sessions.removeAll { $0.id == id }
-            if sending && completedSendSessionId == id {
-                settleDeletedInFlightSend(id)
-                return
-            }
-            let deletedKey = "session:\(id)"
-            let removedActive = session?.id == id || draftContextKey == deletedKey
-            if let conflict = pendingSourceConflict, conflict.sessionId == id,
-               removedSource == conflict.sourceNoteId || sourceNoteId == conflict.sourceNoteId {
+            let _: DeletedResponse = try await api.delete("/api/ai/sessions/\(id)", onAuthenticationRejected: { [weak self] in
+                await self?.markRemovalRefused(id, token: token, accountStamp: accountStamp)
+            })
+            guard accountStamp == resetGeneration, let removal = activeRemovals[id], removal.token == token else { return }
+            deleted = true
+            applySessionRemoval(id, removal: removal)
+        } catch is CancellationError {
+        } catch {
+            if accountStamp == resetGeneration, !Task.isCancelled { self.error = error.localizedDescription }
+        }
+    }
+
+    private func applySessionRemoval(_ id: String, removal: ActiveRemoval) {
+        let removedSource = (session?.id == id ? session?.sourceNoteId : nil)
+            ?? sessions.first(where: { $0.id == id })?.sourceNoteId ?? removal.sourceNoteId
+        let deletedKey = "session:\(id)"
+        deletedSessionIds.insert(id)
+        sessions.removeAll { $0.id == id }
+        draftsByKey.removeValue(forKey: deletedKey)
+        resolveUnconfirmedRemoval(id, exists: false)
+        if let parked = removal.parkedFollowUp {
+            draftsByKey.removeValue(forKey: parked.key)
+            rescueToNewChat(parked.text)
+        }
+
+        let removedActive = composerSessionId == id
+        if let conflict = removal.pendingSourceConflict {
+            if draftContextKey == conflict.draftKey, composerSessionId == nil || removedActive {
+                stop(preserveInFlightWithDraft: true, commitCompletedSession: false)
                 session = nil
                 moveDraftFromDeletedSession(id, styled: conflict.styled)
                 onSessionRemoved?(id, true)
                 return
             }
-            if removedActive {
-                let preserveFollowUp = followUpDraftSessionIds.contains(id)
-                    || (draftContextKey == contextBeforeDelete && Self.hasDraftText(draft) && draft != draftBeforeDelete)
-                // Discard only the draft owned by the history the user deleted.
-                if draftContextKey == deletedKey {
-                    inflightDraft = nil
-                    if !preserveFollowUp { draft = "" }
-                }
-                if preserveFollowUp {
-                    stop(commitCompletedSession: false)
-                    session = nil
-                    useWritingStyle = false
-                    error = nil
-                    moveDraftFromDeletedSession(id, styled: false)
-                    onSessionRemoved?(id, true)
-                    return
-                }
-                start()
-            } else if sending, let removedSource, !removedSource.isEmpty, sourceNoteId == removedSource {
-                deletedInFlightSourceNoteId = removedSource
-                deletedInFlightSessionId = id
+            if let parked = draftsByKey.removeValue(forKey: conflict.draftKey) { rescueToNewChat(parked) }
+        }
+        if sending && completedSendSessionId == id {
+            settleDeletedInFlightSend(id)
+            return
+        }
+        if removedActive {
+            let sendingFollowUp = sending && inflightDeletionFollowUpId == id
+            let preserveFollowUp = sendingFollowUp || hasRemovalFollowUp(removal)
+            if draftContextKey == deletedKey {
+                // The old history draft goes away even if a newer send is still waiting for its response.
+                if !sendingFollowUp { inflightDraft = nil }
+                if !preserveFollowUp { draft = "" }
             }
-            draftsByKey.removeValue(forKey: deletedKey)
-            onSessionRemoved?(id, removedActive)
-        } catch is CancellationError {
-        } catch {
-            if accountStamp == resetGeneration, !Task.isCancelled { self.error = error.localizedDescription }
+            if preserveFollowUp {
+                stop(preserveInFlightWithDraft: sendingFollowUp, commitCompletedSession: false)
+                session = nil
+                useWritingStyle = false
+                error = nil
+                moveDraftFromDeletedSession(id, styled: false)
+                onSessionRemoved?(id, true)
+                return
+            }
+            start()
+        } else if sending, let removedSource, !removedSource.isEmpty, sourceNoteId == removedSource {
+            deletedInFlightSourceNoteId = removedSource
+            deletedInFlightSessionId = id
+        }
+        onSessionRemoved?(id, removedActive)
+    }
+
+    private func finishRemoval(_ id: String, keepDrafts: Bool, retry: Bool) {
+        guard let removal = activeRemovals.removeValue(forKey: id), keepDrafts else { return }
+        let key = "session:\(id)"
+        if removal.isolatedFromHistoryDraft {
+            if draftContextKey == key {
+                draft = Self.appendDraft(draftsByKey.removeValue(forKey: key) ?? "", draft)
+            } else if let parked = removal.parkedFollowUp, parked.key == key {
+                draftsByKey[key] = Self.appendDraft(draftsByKey[key] ?? "", parked.text)
+            }
+        }
+        if retry { removal.retryOnFailure?() }
+    }
+
+    private func markRemovalRefused(_ id: String, token: UUID, accountStamp: Int) {
+        guard accountStamp == resetGeneration, activeRemovals[id]?.token == token else { return }
+        finishRemoval(id, keepDrafts: true, retry: false)
+        if completedSendSessionId == id { stop() }
+    }
+
+    func verifyUnconfirmedRemovals(api: WeijiAPIClient) async {
+        let stamp = resetGeneration
+        for id in unconfirmedRemovals.keys.sorted() {
+            guard stamp == resetGeneration, !Task.isCancelled else { return }
+            guard unconfirmedRemovals[id] != nil else { continue }
+            let exists: Bool
+            do {
+                let response: ChatResponse = try await api.get("/api/ai/sessions/\(id)")
+                guard response.session?.id == id else { continue }
+                exists = true
+            } catch let failure as WeijiAPIError where failure.status == 404 {
+                exists = false
+            } catch { continue }
+            guard stamp == resetGeneration, !Task.isCancelled else { return }
+            resolveUnconfirmedRemoval(id, exists: exists)
+        }
+    }
+
+    private func resolveUnconfirmedRemoval(_ id: String, exists: Bool) {
+        guard let removal = unconfirmedRemovals.removeValue(forKey: id) else { return }
+        if exists {
+            restoreUnconfirmedDraft(removal.historyDraft, to: "session:\(id)")
+            for followUp in removal.followUps { restoreUnconfirmedDraft(followUp.text, to: followUp.key) }
+        } else {
+            deletedSessionIds.insert(id)
+            sessions.removeAll { $0.id == id }
+            for followUp in removal.followUps { rescueToNewChat(followUp.text) }
+        }
+    }
+
+    private func restoreUnconfirmedDraft(_ text: String, to key: String) {
+        guard Self.hasDraftText(text) else { return }
+        if isDeletedDraftContext(key) {
+            rescueToNewChat(text)
+        } else if key == draftContextKey, !sending {
+            draft = Self.appendDraft(draft, text)
+        } else {
+            draftsByKey[key] = Self.appendDraft(draftsByKey[key] ?? "", text)
         }
     }
 
@@ -757,6 +990,18 @@ final class AIChatStore {
             error = Self.deletedInsightReportMessage
             return
         }
+        if session == nil, let source = sourceNoteId,
+           let id = removalForSource(source), activeRemovals[id]?.pendingSourceConflict?.draftKey == draftContextKey {
+            activeRemovals[id]?.retryOnFailure = { [weak self] in
+                self?.send(api: api, options: options, profile: profile,
+                           requiredSourceNoteId: effectiveRequiredSource, isRelayMode: isRelayMode)
+            }
+            return
+        }
+        let target = composerSessionId
+        inflightDeletionFollowUpId = target.flatMap { id in
+            activeRemovals[id].map(hasRemovalFollowUp) == true ? id : nil
+        }
         let typed = draft
         inflightDraft = typed
         if isOwnedInDraft(typed) { rewriteIntent?.promptLocation = .inFlight }
@@ -770,7 +1015,6 @@ final class AIChatStore {
         pendingRequiredSourceNoteId = effectiveRequiredSource
         pendingRequiredInsightId = requiredInsightId
         completedSendSession = nil
-        pendingSourceConflict = nil
         deletedInFlightSourceNoteId = nil
         deletedInFlightSessionId = nil
         error = nil
@@ -835,7 +1079,7 @@ final class AIChatStore {
                     return
                 }
                 if error is CancellationError {
-                    restoreInterruptedDraft(inflightDraft)
+                    restoreInterruptedDraft(inflightDraft, removalFollowUpId: inflightDeletionFollowUpId)
                     return
                 }
                 guard let failure = error as? WeijiAPIError, failure.status == 409 else {
@@ -857,9 +1101,8 @@ final class AIChatStore {
                     let latest: ChatResponse? = try? await api.get("/api/ai/sessions/\(id)")
                     guard stamp == generation else { return }
                     if let updated = latest?.session, !deletedSessionIds.contains(updated.id) { updateSession(updated) }
-                } else if let source = sentSourceNoteId,
-                          let removal = activeRemovals.first(where: { $0.value == source }) {
-                    pendingSourceConflict = (removal.key, source, styled)
+                } else if let source = sentSourceNoteId, let id = removalForSource(source) {
+                    activeRemovals[id]?.pendingSourceConflict = PendingSourceConflict(sourceNoteId: source, styled: styled)
                 }
                 restoreFailedSend(failure.message, requiredInsightId: requiredInsightId)
             }
@@ -882,16 +1125,17 @@ final class AIChatStore {
         error = nil
         rewriteIntent = nil
         if styled { useWritingStyle = false }
-        if activeRemovals[latest.id] != nil, Self.hasDraftText(draft) {
-            followUpDraftSessionIds.insert(latest.id)
-        }
+        activeRemovals[latest.id]?.followUpEdited = Self.hasDraftText(draft)
         let nextKey = "session:\(latest.id)"
         if nextKey != draftContextKey {
             // Keep any background New Chat draft and merge only drafts for this session.
             if draftContextKey != "new" { draftsByKey.removeValue(forKey: draftContextKey) }
-            let saved = draftsByKey.removeValue(forKey: nextKey) ?? ""
             draftContextKey = nextKey
-            draft = Self.appendDraft(saved, draft)
+            if activeRemovals[latest.id] != nil {
+                activeRemovals[latest.id]?.isolatedFromHistoryDraft = true
+            } else {
+                draft = Self.appendDraft(draftsByKey.removeValue(forKey: nextKey) ?? "", draft)
+            }
         }
         insight = nil
         requestID.clear()
@@ -902,6 +1146,7 @@ final class AIChatStore {
         pendingQuestion = ""
         streamedText = ""
         inflightDraft = nil
+        inflightDeletionFollowUpId = nil
         sending = false
         sendingWithStyle = false
         pendingRequiredSourceNoteId = nil
@@ -925,7 +1170,7 @@ final class AIChatStore {
     }
 
     private func detachDeletedConflictToNew(_ id: String, styled: Bool, message: String, requiredInsightId: String?) {
-        restoreInterruptedDraft(inflightDraft)
+        restoreInterruptedDraft(inflightDraft, removalFollowUpId: inflightDeletionFollowUpId)
         session = nil
         moveDraftFromDeletedSession(id, styled: styled)
         setFailedSendError(message, requiredInsightId: requiredInsightId)
@@ -955,7 +1200,7 @@ final class AIChatStore {
     }
 
     private func restoreFailedSend(_ message: String, requiredInsightId: String?) {
-        restoreInterruptedDraft(inflightDraft)
+        restoreInterruptedDraft(inflightDraft, removalFollowUpId: inflightDeletionFollowUpId)
         setFailedSendError(message, requiredInsightId: requiredInsightId)
     }
 
@@ -1005,6 +1250,7 @@ final class AIChatStore {
             if let latest = (try? decoder.decode(ChatResponse.self, from: data))?.session {
                 completedSendSession = latest
                 // Only the new composer text is unsent once the server commits this turn.
+                inflightDeletionFollowUpId = nil
                 inflightDraft = nil
                 if deletedSessionIds.contains(latest.id) {
                     settleDeletedInFlightSend(latest.id)

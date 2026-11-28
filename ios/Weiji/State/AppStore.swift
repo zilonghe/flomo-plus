@@ -256,10 +256,13 @@ final class AppStore {
                     await self?.rejectConnection(config, failure: failure, generation: stamp)
                 })
                 api = client
-                if let rejectedChatDraft, rejectedChatDraft.key == key {
-                    chat.restoreRecoverableDrafts(rejectedChatDraft.snapshot)
-                }
+                let recovery = rejectedChatDraft
                 rejectedChatDraft = nil
+                if let recovery, recovery.key == key {
+                    chat.restoreRecoverableDrafts(recovery.snapshot)
+                    await chat.verifyUnconfirmedRemovals(api: client)
+                    guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                }
                 settingsSection = nil
                 if let confirmedSnapshot {
                     await replace(with: confirmedSnapshot.notes, etag: confirmedSnapshot.etag, persist: false)
