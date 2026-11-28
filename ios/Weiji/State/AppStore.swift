@@ -125,6 +125,25 @@ final class AppStore {
         self.makeTransport = makeTransport
         self.runSearch = runSearch
         self.cache = cache ?? (reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore())
+        insights.onReportDeleted = { [weak self] id in self?.chat.markInsightDeleted(id) }
+        insights.onReportsLoaded = { [weak self] loaded, api in
+            guard let self else { return }
+            await self.verifyMissingInsightDrafts(loaded: loaded, api: api, connection: self.connectionGeneration)
+        }
+    }
+
+    private func verifyMissingInsightDrafts(loaded: [InsightReport], api: WeijiAPIClient, connection: Int) async {
+        let loadedIds = Set(loaded.map(\.id))
+        let missing = chat.pendingInsightDraftIds.filter { !loadedIds.contains($0) }
+        for id in missing {
+            guard connection == connectionGeneration, !Task.isCancelled else { return }
+            do {
+                let _: ReportResponse = try await api.get("/api/insights/reports/\(id)")
+            } catch let failure as WeijiAPIError where failure.status == 404 {
+                guard connection == connectionGeneration, !Task.isCancelled else { return }
+                chat.markInsightDeleted(id)
+            } catch {}
+        }
     }
 
     func start() {

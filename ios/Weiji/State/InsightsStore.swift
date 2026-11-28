@@ -41,6 +41,8 @@ final class InsightsStore {
     @ObservationIgnored private var viewReportGeneration = 0
     private(set) var viewedReportID: String?
     @ObservationIgnored private var reportsGeneration = 0
+    @ObservationIgnored var onReportDeleted: (@MainActor (String) -> Void)?
+    @ObservationIgnored var onReportsLoaded: (@MainActor ([InsightReport], WeijiAPIClient) async -> Void)?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var previewGeneration = 0
     @ObservationIgnored private var contextGeneration = 0
@@ -162,7 +164,10 @@ final class InsightsStore {
             guard stamp == contextGeneration, !Task.isCancelled else { return }
             self.lenses = lenses.lenses
             if !lenses.lenses.contains(where: { $0.id == lensId }) { lensId = lenses.lenses.first?.id ?? "builtin:default" }
-            if reportsStamp == reportsGeneration { self.reports = reports.reports }
+            if reportsStamp == reportsGeneration {
+                self.reports = reports.reports
+                await onReportsLoaded?(reports.reports, api)
+            }
         } catch is CancellationError {
         } catch {
             if stamp == contextGeneration { self.error = error.localizedDescription }
@@ -265,6 +270,7 @@ final class InsightsStore {
     }
 
     func openReport(_ summary: InsightReport, api: WeijiAPIClient) {
+        let context = contextGeneration
         clearViewedReport()
         let stamp = viewReportGeneration
         viewedReportID = summary.id
@@ -278,6 +284,9 @@ final class InsightsStore {
                 viewedReportText = response.report.content ?? ""
             } catch is CancellationError {
             } catch {
+                if context == contextGeneration, (error as? WeijiAPIError)?.status == 404 {
+                    onReportDeleted?(summary.id)
+                }
                 if stamp == viewReportGeneration { viewedReportError = error.localizedDescription }
             }
         }
@@ -301,10 +310,12 @@ final class InsightsStore {
                 liveReportError = nil
             }
             if viewedReportID == id { clearViewedReport() }
+            onReportDeleted?(id)
             return true
         } catch is CancellationError {
         } catch {
             if context == contextGeneration {
+                if (error as? WeijiAPIError)?.status == 404 { onReportDeleted?(id) }
                 if liveReport?.id == id { liveReportError = error.localizedDescription }
                 if viewedReportID == id { viewedReportError = error.localizedDescription }
             }
