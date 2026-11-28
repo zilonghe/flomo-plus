@@ -586,8 +586,8 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
   await wait(renderedNotes, 'notes rendered');
   const styleTab = '[data-action=profile-pane][data-pane=style]';
   const openStyle = async () => {
-    await click(action('open-ai-insights'));
-    await click('[data-action=ins-tab][data-tab=profile]');
+    await click('#note-nav-actions [data-action=open-settings]');
+    await click('[data-action=settings-pane][data-pane=ai]');
     assert.ok(await evaluate(hasBox('#profile-pane-bio')));
     await click(styleTab);
     await wait(`${hasBox('#style-rules')} && !${nodeExpr(action('style-edit'))}.disabled`);
@@ -642,11 +642,11 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
   await click('#style-anchor-toggle');
   await checkTouch(evaluate, '#profile-pane-style');
   await click('#style-anchor-toggle');
-  await click(action('ins-mobile-menu'));
-  await click('#sidebar [data-filter="all"]');
+  await click('[data-close=settings-dialog]');
   await wait(hasBox(`[data-open-note="${uuid(1)}"]`), 'notes view');
   await click(`[data-open-note="${uuid(1)}"]`);
   const starter = '#note-dialog [data-use-style=true]';
+  await click(action('reader-options'));
   await wait(hasBox(starter));
   await checkContrast(evaluate, [[starter]], 'dark');
   await click(starter);
@@ -657,11 +657,12 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
   assert.match(web.chatRequests[0].message, /按我的写作风格改写/);
   await wait(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed') === 'false' && ${nodeExpr('#ai-style-toggle')}.getAttribute('aria-disabled') === 'false'`);
   await checkTouch(evaluate, '.ai-composer-actions');
+  await click(action('ai-options'));
   await click('#ai-model-toggle');
-  await checkTouch(evaluate, '.ai-composer-actions');
+  await checkTouch(evaluate, '#ai-options');
   await click('#ai-model-toggle');
   await click('#ai-effort-toggle');
-  await checkTouch(evaluate, '.ai-composer-actions');
+  await checkTouch(evaluate, '#ai-options');
   await click('#ai-effort-toggle');
   await checkContrast(evaluate, [['#ai-style-toggle']], 'dark');
   const touch = await evaluate(`(() => {
@@ -679,6 +680,7 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
   await checkContrast(evaluate, [['#ai-style-toggle']], 'dark pressed');
   await media('light');
   await checkContrast(evaluate, [['#ai-style-toggle']], 'light pressed');
+  await click(action('ai-options'));
   await value('#ai-chat-input', '再写一轮');
   await click('#ai-chat-send');
   await wait(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-disabled') === 'false' && ${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed') === 'false'`);
@@ -693,14 +695,17 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
   await send('Page.reload', { ignoreCache: true });
   await wait(renderedNotes);
   await click(`[data-open-note="${uuid(1)}"]`);
+  await click(action('reader-options'));
   await click(starter);
   assert.match(await evaluate(`${nodeExpr('#detail-error')}.textContent`), /Codex 中转暂不支持/);
   assert.equal(await evaluate(`${nodeExpr('#note-dialog')}.open`), true);
-  await click('#note-dialog [data-close=note-dialog]');
+  await click(action('reader-back'));
   await openStyle();
   assert.match(await evaluate(`${nodeExpr('#style-relay')}.textContent`), /Codex 中转暂不支持/);
   assert.equal(await evaluate(`${nodeExpr(action('style-generate'))}.disabled && ${nodeExpr(action('style-blind'))}.disabled`), true);
+  await click('[data-close=settings-dialog]');
   await click(action('open-ai-chat'));
+  await click(action('ai-options'));
   assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-disabled')`), 'true');
   await click('#ai-style-toggle');
   assert.match(await evaluate(`${nodeExpr('#ai-chat-error')}.textContent`), /Codex 中转暂不支持/);
@@ -716,17 +721,18 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
     }
     return realFetch(url, init);
   });
-  await click(action('open-settings'));
-  await wait(`${nodeExpr('#settings-dialog')}.open`);
+  await click('.top-nav [data-ai-nav] [data-action=open-settings]');
+  await click('[data-action=settings-pane][data-pane=ai]');
   await value('#chat-provider', 'openai');
   await value('#openai-key', 'sk-test-key-1234567890');
   await click('#settings-form button[type=submit]');
   await wait(`!${nodeExpr('#settings-dialog')}.open`);
+  await click(action('ai-options'));
   await click('#ai-style-toggle');
   assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed')`), 'true');
   await value('#ai-chat-input', '切到中转后不能静默发普通对话');
-  await click(action('open-settings'));
-  await wait(`${nodeExpr('#settings-dialog')}.open`);
+  await click('.top-nav [data-ai-nav] [data-action=open-settings]');
+  await click('[data-action=settings-pane][data-pane=ai]');
   await value('#chat-provider', 'codex');
   await click('#settings-form button[type=submit]');
   await wait(`!${nodeExpr('#settings-dialog')}.open`);
@@ -738,6 +744,7 @@ test('[WS-9] 真实 Chromium 写作闭环、relay 阻断、浅深 AA 与 375px �
   assert.equal(web.chatRequests.length, successfulChats);
   assert.equal(relayCalls, 0);
   assert.equal(await evaluate(`${nodeExpr('#ai-chat-input')}.value`), '切到中转后不能静默发普通对话');
+  await click(action('ai-options'));
   await click('#ai-style-toggle');
   assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed')`), 'false');
   assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-disabled')`), 'true');
@@ -784,18 +791,21 @@ test('[WS-10] Chromium 保存失败拦截、跨视图等待、同文档恢复与
     await wait(`[...document.querySelectorAll('.card-body')].some(node => node.textContent.includes(${JSON.stringify(accountNote)}))`);
   };
   const save = async text => {
-    await click(action('open-ai-insights'));
-    await click('[data-action=ins-tab][data-tab=profile]');
+    await evaluate(`[...document.querySelectorAll('.top-nav [data-action=open-settings]')].find(node => node.getClientRects().length).click()`);
+    await click('[data-action=settings-pane][data-pane=ai]');
     await click('[data-action=profile-pane][data-pane=style]');
     await click(action('style-edit'));
     await value('#style-text', text);
     await click(action('style-save'));
   };
   const sendStyled = async text => {
+    if (await evaluate(`${nodeExpr('#settings-dialog')}.open`)) await click('[data-close=settings-dialog]');
     await click(action('open-ai-chat'));
+    await click(action('ai-options'));
     await wait(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-disabled') === 'false'`);
-    await click('#ai-style-toggle');
+    if (await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed') === 'false'`)) await click('#ai-style-toggle');
     assert.equal(await evaluate(`${nodeExpr('#ai-style-toggle')}.getAttribute('aria-pressed')`), 'true');
+    await click(action('ai-options'));
     await value('#ai-chat-input', text);
     await click('#ai-chat-send');
   };
@@ -842,10 +852,11 @@ test('[WS-10] Chromium 保存失败拦截、跨视图等待、同文档恢复与
   assert.ok(latest(web.modelRequests.at(-1)).includes(fresh));
 
   await failSave();
-  await click('#sidebar [data-filter="all"]');
+  await click('[data-close=settings-dialog]');
+  await click(action('open-notes'));
   web.switchAccount('B');
   // The Worker rejects the stale account header, so the old page must invalidate itself before re-login.
-  await click('#refresh-button');
+  await evaluate("window.dispatchEvent(new Event('focus'))");
   await wait(`${hasBox('#connection-error')} && ${nodeExpr('#connection-error-text')}.textContent.includes('登录状态已失效')`);
   assert.ok(!(await evaluate(hasBox('#ai-chat-view'))));
   await jsonResponse(api(stylePath, { account: 'B', body: { rules: nextAccountRules } }));

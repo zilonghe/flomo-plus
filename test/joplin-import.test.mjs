@@ -443,6 +443,14 @@ test('Joplin E2E: desktop JEX and directory import, retry, tombstone, and 375px 
   };
   const click = selector => evaluate('document.querySelector(' + JSON.stringify(selector) + ').click()');
   const openImportInPage = () => {
+    const settings = document.querySelector('#settings-dialog');
+    if (!settings.open) {
+      const narrow = matchMedia('(max-width: 768px)').matches;
+      if (narrow && !document.querySelector('#sidebar').open) document.querySelector('#mobile-toggle').click();
+      document.querySelector(narrow ? '#sidebar [data-action=open-settings]' : '#note-nav-actions [data-action=open-settings]').click();
+    }
+    const data = document.querySelector('[data-action=settings-pane][data-pane=data]');
+    if (data.getClientRects().length) data.click();
     const entry = document.querySelector('[data-action="open-import-hub"]');
     if (!entry.getClientRects().length) throw new Error('Import hub entry is not visible');
     entry.click();
@@ -463,6 +471,7 @@ test('Joplin E2E: desktop JEX and directory import, retry, tombstone, and 375px 
   const save = async () => {
     await submit();
     await wait('!document.querySelector("#joplin-dialog").open', 'import completed');
+    await click('[data-close=settings-dialog]');
   };
   const metrics = (width, height, mobile) => send('Emulation.setDeviceMetricsOverride', {
     width, height, deviceScaleFactor: 1, mobile,
@@ -520,6 +529,7 @@ test('Joplin E2E: desktop JEX and directory import, retry, tombstone, and 375px 
   assert.ok(await evaluate('!!document.querySelector(\'#tag-list [data-filter="tag:工作/项目_a" i]\')'));
   await click('[data-open-note="' + directoryId + '"]');
   await wait('document.querySelector("#note-dialog").open', 'opening imported note');
+  await click('[data-action=reader-options]');
   await click('[data-action="delete-note"]');
   await click('[data-action="confirm-delete"]');
   await wait('!document.querySelector("#note-dialog").open', 'note deleted');
