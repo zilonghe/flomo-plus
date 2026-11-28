@@ -1913,6 +1913,273 @@ final class WritingStyleTests: XCTestCase {
         }
     }
 
+    func testDeletedSessionLateSendSettlesPendingNewChatConfirmation() async throws {
+        enum Target: CaseIterable { case newBeforeDelete, newAfterDelete, otherHistory }
+        for doneFirst in [false, true] {
+            for target in Target.allCases where !doneFirst || target != .newAfterDelete {
+                for saved in ["", Self.firstDraft + "\n\n" + Self.nextDraft] {
+                    let label = "doneFirst=\(doneFirst), \(target), saved=\(saved.utf8.count)"
+                    let wire = try StyleHTTP()
+                    defer { wire.close() }
+                    let (store, api, _) = try await connected(wire, mode: "gateway")
+                    let chat = store.chat
+                    let reply = try await beginHeldReportSend(store, api: api, wire: wire, saved: saved)
+                    try await listHistoryWhileSending(chat, api: api, wire: wire)
+                    wire.hold(historyPath, method: "DELETE")
+                    let removal = Task { await chat.remove("history", api: api) }
+                    try await eventually("会话删除等待响应") { wire.waiting(self.historyPath, method: "DELETE") == 1 }
+                    chat.updateDraftFromUser(Self.nextDraft)
+                    if target == .newBeforeDelete {
+                        store.requestNewChat()
+                        XCTAssertEqual(store.pendingChatSwitch?.isNewChat, true, label)
+                    } else if target == .otherHistory {
+                        store.requestSelectChatSession("history-a")
+                        guard case .session("history-a") = store.pendingChatSwitch else { return XCTFail(label) }
+                    }
+                    if doneFirst { try await deliverHeldChatDone(reply, chat: chat) }
+                    try XCTUnwrap(wire.take(historyPath, method: "DELETE")).complete(body: #"{"deleted":"history"}"#)
+                    await removal.value
+                    if target == .newAfterDelete {
+                        store.requestNewChat()
+                        XCTAssertEqual(store.pendingChatSwitch?.isNewChat, true, label)
+                    }
+                    if !doneFirst { try await deliverHeldChatDone(reply, chat: chat) }
+                    reply.finish()
+                    await chat.waitForIdle()
+
+                    let expected = saved.isEmpty ? Self.nextDraft : saved + "\n\n" + Self.nextDraft
+                    XCTAssertEqual(chat.recoverableDraftSnapshot.activeContextKey, "new", label)
+                    XCTAssertNil(chat.recoverableDraftSnapshot.savedDrafts["new"], label)
+                    XCTAssertEqual(Array(chat.draft.utf8), Array(expected.utf8), label)
+                    if target == .otherHistory {
+                        guard case .session("history-a") = store.pendingChatSwitch else { return XCTFail(label) }
+                        wire.reply(rewriteHistoryPath, body: Self.rewriteHistoryA)
+                        store.confirmChatSwitch()
+                        try await eventually("未删除的确认目标仍可打开") { chat.session?.id == "history-a" }
+                        XCTAssertEqual(chat.draft, "", label)
+                        store.requestNewChat()
+                    } else {
+                        XCTAssertNil(store.pendingChatSwitch, label)
+                        store.confirmChatSwitch()
+                    }
+                    XCTAssertEqual(Array(chat.draft.utf8), Array(expected.utf8), label)
+                    XCTAssertEqual(wire.requests(chatPath).count, 1, label)
+                    try await assertOrdinaryChatSend(expected, store: store, wire: wire)
+                }
+            }
+        }
+    }
+
+    func testDeletedSessionKnownDoneSettlesBeforeDisconnectStopOr401() async throws {
+        enum End: CaseIterable { case disconnect, stop, reauth, differentID, failedDelete }
+        for doneFirst in [false, true] {
+            for end in End.allCases {
+                let deleted = end != .differentID && end != .failedDelete
+                for followUp in ["", Self.nextDraft] where deleted || !followUp.isEmpty {
+                    let label = "doneFirst=\(doneFirst), \(end), followUp=\(followUp.utf8.count)"
+                    let wire = try StyleHTTP()
+                    defer { wire.close() }
+                    let (store, api, _) = try await connected(wire, mode: "gateway")
+                    let chat = store.chat
+                    let reply = try await beginHeldReportSend(store, api: api, wire: wire)
+                    try await listHistoryWhileSending(chat, api: api, wire: wire)
+                    chat.updateDraftFromUser(followUp)
+                    if doneFirst { try await deliverHeldChatDone(reply, chat: chat) }
+                    let id = end == .differentID ? "other" : "history"
+                    wire.reply("\(sourcePath)/\(id)", method: "DELETE", status: end == .failedDelete ? 503 : 200,
+                               body: end == .failedDelete ? #"{"error":"删除失败"}"# : #"{"deleted":"\#(id)"}"#)
+                    await chat.remove(id, api: api)
+                    if !doneFirst { try await deliverHeldChatDone(reply, chat: chat) }
+
+                    XCTAssertEqual(chat.sending, !deleted, label)
+                    XCTAssertEqual(chat.pendingQuestion, deleted ? "" : Self.firstDraft, label)
+                    XCTAssertEqual(chat.streamedText, deleted ? "" : "部分回复", label)
+                    XCTAssertEqual(chat.sessions.contains { $0.id == "history" }, !deleted, label)
+                    switch end {
+                    case .disconnect: reply.fail(URLError(.networkConnectionLost))
+                    case .stop: chat.stop(); reply.finish()
+                    case .reauth:
+                        try await rejectNotesRefresh(store, wire: wire)
+                        reply.finish()
+                        wire.reply("/api/notes", body: Self.initialNotes)
+                        try await reauthenticate(store, wire: wire)
+                    case .differentID, .failedDelete: reply.finish()
+                    }
+                    await chat.waitForIdle()
+                    XCTAssertEqual(chat.session?.id, deleted ? nil : "history", label)
+                    XCTAssertEqual(Array(chat.draft.utf8), Array(followUp.utf8), label)
+                    if deleted {
+                        XCTAssertEqual(chat.recoverableDraftSnapshot.activeContextKey, "new", label)
+                        XCTAssertTrue(chat.recoverableDraftSnapshot.savedDrafts.isEmpty, label)
+                        XCTAssertFalse(chat.useWritingStyle, label)
+                        XCTAssertNil(chat.insight, label)
+                        try await assertOrdinaryChatSend(followUp, store: store, wire: wire)
+                    }
+                }
+            }
+        }
+    }
+
+    func testDeletedSourceSession409DetachesToNewChat() async throws {
+        enum Conflict: CaseIterable { case sourceOnly, noFollowUp, deletedCurrent, deletedReport, differentID, failedDelete, liveCurrent }
+        for scenario in Conflict.allCases {
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, api, note) = try await connected(wire, mode: "gateway")
+            let chat = store.chat
+            let saved = Self.firstDraft + "\n\n" + Self.nextDraft
+            let report: InsightReport?
+            if scenario == .deletedCurrent || scenario == .deletedReport {
+                report = try await openInsightReport("report", store: store, wire: wire, cited: true)
+                chat.updateDraftFromUser(saved)
+                store.askAbout(try XCTUnwrap(report))
+            } else {
+                report = nil
+                wire.reply(sourcePath, body: #"{"session":null}"#)
+                store.askAbout(note)
+                try await eventually("初次查询来源会话返回空") { !chat.loadingSession }
+                XCTAssertNil(chat.session)
+                XCTAssertEqual(chat.sourceNoteId, note.id)
+            }
+            chat.useWritingStyle = true
+            chat.updateDraftFromUser(Self.firstDraft)
+            wire.hold(chatPath)
+            chat.send(api: api, options: store.options, profile: store.insights)
+            try await eventually("冲突前请求已发送") { wire.waiting(self.chatPath) == 1 }
+            let reply = try XCTUnwrap(wire.take(chatPath))
+            let posted = try XCTUnwrap(wire.requests(chatPath).first)
+            XCTAssertNil(posted["sessionId"])
+            XCTAssertEqual(posted["sourceNoteId"] as? String, report == nil ? note.id : nil)
+            XCTAssertEqual(posted["referencedNoteIds"] as? [String], [note.id])
+            try await listHistoryWhileSending(chat, api: api, wire: wire)
+            let id = scenario == .differentID ? "other" : "history"
+            let path = "\(sourcePath)/\(id)"
+            let deleted = #"{"deleted":"\#(id)"}"#
+            if scenario == .sourceOnly {
+                wire.hold(path, method: "DELETE")
+                let removal = Task { await chat.remove(id, api: api) }
+                try await eventually("会话删除等待响应") { wire.waiting(path, method: "DELETE") == 1 }
+                wire.reply(sourcePath, body: #"{"sessions":[],"nextCursor":null}"#)
+                chat.refreshSessions(api: api)
+                try await eventually("列表刷新先于删除回包") { !chat.loadingList && chat.sessions.isEmpty }
+                try XCTUnwrap(wire.take(path, method: "DELETE")).complete(body: deleted)
+                await removal.value
+            } else {
+                wire.reply(path, method: "DELETE", status: scenario == .failedDelete ? 503 : 200,
+                           body: scenario == .failedDelete ? #"{"error":"删除失败"}"# : deleted)
+                await chat.remove(id, api: api)
+            }
+            let followUp = scenario == .noFollowUp ? "" : Self.nextDraft
+            chat.updateDraftFromUser(followUp)
+            if scenario == .deletedReport {
+                try await confirmReportDeletion(try XCTUnwrap(report), via: .delete200, store: store, api: api, wire: wire)
+            }
+            switch scenario {
+            case .deletedCurrent, .deletedReport:
+                reply.complete(status: 409, body: #"{"error":"冲突","current":\#(Self.session)}"#)
+            case .liveCurrent:
+                let live = Self.session.replacingOccurrences(of: #""id":"history""#, with: #""id":"live""#)
+                reply.complete(status: 409, body: #"{"error":"冲突","current":\#(live)}"#)
+            default:
+                reply.complete(body: Self.sse("error", #"{"status":409,"error":"冲突"}"#), stream: true)
+            }
+            await chat.waitForIdle()
+            let label = "\(scenario)"
+            XCTAssertEqual(wire.requests(chatPath).count, 1, label)
+            XCTAssertEqual(chat.sessions.contains { $0.id == "history" },
+                           scenario == .differentID || scenario == .failedDelete, label)
+            if scenario == .differentID || scenario == .failedDelete || scenario == .liveCurrent {
+                XCTAssertEqual(chat.session?.id, scenario == .liveCurrent ? "live" : nil, label)
+                XCTAssertEqual(chat.sourceNoteId, note.id, label)
+                XCTAssertEqual(chat.pins, [note.id], label)
+                XCTAssertEqual(chat.recoverableDraftSnapshot.activeContextKey, "note:\(note.id)", label)
+                XCTAssertEqual(Array(chat.draft.utf8), Array(followUp.utf8), label)
+                XCTAssertEqual(chat.error, "冲突", label)
+                continue
+            }
+
+            let expected: String
+            switch scenario {
+            case .noFollowUp: expected = Self.firstDraft
+            case .deletedCurrent: expected = saved + "\n\n" + followUp
+            case .deletedReport: expected = saved + "\n\n" + Self.firstDraft + "\n\n" + followUp
+            default: expected = followUp
+            }
+            XCTAssertNil(chat.session, label)
+            XCTAssertNil(chat.sourceNoteId, label)
+            XCTAssertNil(chat.insight, label)
+            XCTAssertTrue(chat.pins.isEmpty, label)
+            XCTAssertFalse(chat.useWritingStyle, label)
+            XCTAssertEqual(Array(chat.draft.utf8), Array(expected.utf8), label)
+            if scenario == .deletedReport {
+                XCTAssertTrue(chat.recoverableDraftSnapshot.requiresDeletedInsightConfirmation, label)
+                XCTAssertEqual(chat.error, AIChatStore.deletedInsightReportMessage, label)
+                chat.send(api: api, options: store.options, profile: store.insights)
+                await chat.waitForIdle()
+                XCTAssertEqual(wire.requests(chatPath).count, 1, label)
+            } else {
+                XCTAssertEqual(chat.recoverableDraftSnapshot.activeContextKey, "new", label)
+                XCTAssertEqual(chat.error, "冲突", label)
+            }
+            if scenario == .sourceOnly { try await assertDraftSurvivesHistoryRoundTrip(expected, store: store, wire: wire) }
+            try await assertOrdinaryChatSend(expected, store: store, wire: wire)
+        }
+    }
+
+    private func beginHeldReportSend(_ store: AppStore, api: WeijiAPIClient, wire: StyleHTTP,
+                                     saved: String = "") async throws -> StyleProtocol {
+        let report = try await openInsightReport("report", store: store, wire: wire, cited: true, content: "报告正文片段")
+        let chat = store.chat
+        chat.updateDraftFromUser(saved)
+        store.askAbout(report)
+        chat.useWritingStyle = true
+        chat.updateDraftFromUser(Self.firstDraft)
+        wire.hold(chatPath)
+        chat.send(api: api, options: store.options, profile: store.insights)
+        try await eventually("报告追问已发送") { wire.waiting(self.chatPath) == 1 }
+        let original = try XCTUnwrap(wire.requests(chatPath).first?["message"] as? String)
+        XCTAssertEqual(original.utf8.count, 102)
+        XCTAssertEqual(Array(original.utf8), Array(AIChatStore.message(Self.firstDraft, insight: report).utf8))
+        let reply = try XCTUnwrap(wire.take(chatPath))
+        reply.begin(stream: true)
+        reply.write(Self.sse("status", #"{"stage":"writing","message":"回复中"}"#)
+                    + Self.sse("delta", #"{"text":"部分回复"}"#))
+        try await eventually("已显示流式回复") { chat.status == "回复中" && chat.streamedText == "部分回复" }
+        return reply
+    }
+
+    private func deliverHeldChatDone(_ reply: StyleProtocol, chat: AIChatStore) async throws {
+        reply.write(Self.sse("done", Self.history))
+        try await eventually("done 已处理，流未关闭") { chat.status == nil }
+    }
+
+    private func listHistoryWhileSending(_ chat: AIChatStore, api: WeijiAPIClient, wire: StyleHTTP) async throws {
+        let other = #"{"id":"other","title":"另一段对话","version":1,"updatedAt":"2026-11-28","origin":"global","turns":[]}"#
+        wire.reply(sourcePath, body: #"{"sessions":[\#(Self.session),\#(other)],"nextCursor":null}"#)
+        chat.refreshSessions(api: api)
+        try await eventually("发送中历史列表已加载") { !chat.loadingList && chat.sessions.map(\.id) == ["history", "other"] }
+    }
+
+    private func assertOrdinaryChatSend(_ expected: String, store: AppStore, wire: StyleHTTP,
+                                        file: StaticString = #filePath, line: UInt = #line) async throws {
+        let before = wire.requests(chatPath).count
+        let api = try XCTUnwrap(store.api, file: file, line: line)
+        let result = #"{"session":{"id":"fresh","title":"新对话","version":1,"updatedAt":"2026-11-28","origin":"global","turns":[]}}"#
+        wire.reply(chatPath, body: Self.sse("done", result), stream: true)
+        store.chat.send(api: api, options: store.options, profile: store.insights)
+        await store.chat.waitForIdle()
+        let posts = wire.requests(chatPath)
+        XCTAssertEqual(posts.count, before + (expected.isEmpty ? 0 : 1), file: file, line: line)
+        if expected.isEmpty { return }
+        let post = try XCTUnwrap(posts.dropFirst(before).first, file: file, line: line)
+        let message = try XCTUnwrap(post["message"] as? String, file: file, line: line)
+        XCTAssertEqual(Array(message.utf8), Array(expected.utf8), file: file, line: line)
+        XCTAssertNil(post["sessionId"], file: file, line: line)
+        XCTAssertNil(post["sourceNoteId"], file: file, line: line)
+        XCTAssertNil(post["useWritingStyle"], file: file, line: line)
+        XCTAssertEqual(post["referencedNoteIds"] as? [String], [], file: file, line: line)
+    }
+
     func testConfirmedReportDeletionCancelsWaitingFollowUpAndRestoresBothDrafts() async throws {
         for route in ReportDeletionRoute.allCases {
             for cited in [false, true] {
@@ -2365,6 +2632,66 @@ final class WritingStyleTests: XCTestCase {
                 XCTAssertNil(chat.error, label)
             }
         }
+    }
+
+    func testReauthDeletedInsightAfterBlockedTapFirstNewChatPreservesDraft() async throws {
+        let saved = Self.firstDraft + "\n\n" + Self.nextDraft
+        for route in ReportDeletionRoute.allCases {
+            for background in ["", saved] {
+                for reauthBeforeTap in [false, true] {
+                    let label = "\(route), saved=\(background.utf8.count), relogBeforeTap=\(reauthBeforeTap)"
+                    let wire = try StyleHTTP()
+                    defer { wire.close() }
+                    let (store, api, _) = try await connected(wire, mode: "gateway")
+                    let chat = store.chat
+                    let report = try await openInsightReport("report", store: store, wire: wire, cited: true)
+                    chat.updateDraftFromUser(background)
+                    store.askAbout(report)
+                    chat.updateDraftFromUser(Self.firstDraft)
+                    try await confirmReportDeletion(report, via: route, store: store, api: api, wire: wire)
+                    if reauthBeforeTap {
+                        try await rejectNotesRefresh(store, wire: wire)
+                        wire.reply("/api/notes", body: Self.initialNotes)
+                        try await reauthenticate(store, wire: wire)
+                    }
+
+                    chat.send(api: try XCTUnwrap(store.api), options: store.options, profile: store.insights)
+                    await chat.waitForIdle()
+                    XCTAssertTrue(wire.requests(chatPath).isEmpty, label)
+                    XCTAssertEqual(chat.error, AIChatStore.deletedInsightReportMessage, label)
+                    XCTAssertFalse(chat.recoverableDraftSnapshot.requiresDeletedInsightConfirmation, label)
+                    try await rejectNotesRefresh(store, wire: wire)
+                    wire.reply("/api/notes", body: Self.initialNotes)
+                    try await reauthenticate(store, wire: wire)
+
+                    let expected = background.isEmpty ? Self.firstDraft : background + "\n\n" + Self.firstDraft
+                    XCTAssertEqual(Array(chat.draft.utf8), Array(expected.utf8), label)
+                    store.requestNewChat()
+                    XCTAssertEqual(chat.recoverableDraftSnapshot.activeContextKey, "new", label)
+                    XCTAssertEqual(Array(chat.draft.utf8), Array(expected.utf8), label)
+                    XCTAssertNil(chat.error, label)
+                    if route == .delete200 && reauthBeforeTap {
+                        store.requestNewChat()
+                        XCTAssertEqual(chat.draft, "", label)
+                        try await assertOrdinaryChatSend("", store: store, wire: wire)
+                    } else {
+                        try await assertOrdinaryChatSend(expected, store: store, wire: wire)
+                    }
+                }
+            }
+        }
+
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let (store, _, _) = try await connected(wire, mode: "gateway")
+        store.chat.updateDraftFromUser(saved)
+        try await rejectNotesRefresh(store, wire: wire)
+        wire.reply("/api/notes", body: Self.initialNotes)
+        try await reauthenticate(store, wire: wire)
+        XCTAssertEqual(Array(store.chat.draft.utf8), Array(saved.utf8))
+        store.requestNewChat()
+        XCTAssertEqual(store.chat.draft, "")
+        try await assertOrdinaryChatSend("", store: store, wire: wire)
     }
 
     func testStoppedDispatchedDeletedInsightRequiresConfirmationBeforeRetry() async throws {
