@@ -143,8 +143,8 @@ input[type=checkbox] { accent-color: var(--inverse-bg); }
 [data-level="2"] { --level: var(--heat-2); }
 [data-level="3"] { --level: var(--heat-3); }
 [data-level="4"] { --level: var(--heat-4); }
-.heatmap { display: grid; grid-template-columns: repeat(7, 1fr); align-self: center; width: min(100%,350px); margin-block: 6px 16px; }
-.heatmap-square { display: grid; place-items: center; min-height: 24px; padding: 0; }
+.heatmap { display: grid; flex: none; grid-template-columns: repeat(7, 1fr); align-self: center; width: min(100%,350px); margin-block: 6px 16px; }
+.heatmap-square { display: grid; place-items: center; min-height: 24px; padding: 0; border-radius: 0; }
 .heatmap-square::before { content: ''; width: 12px; height: 12px; border-radius: 2px; background: var(--level); }
 .heatmap-square:is(:hover,[aria-pressed=true])::before { outline: 1px solid var(--ink); outline-offset: 2px; }
 .filter-tabs { margin: 8px 0; }
@@ -466,7 +466,7 @@ hr{border:0;border-top:1px solid var(--sep);margin:18px 0}
   .tag-children { padding-inline-start: 4px; }
   #reader-related-list { grid-template-columns: minmax(0,1fr); gap: 4px; }
   .reader-scroll { padding-top: 24px; }
-  .button, button, summary, .field, .search-field input, .auth-footer a, .profile-toggle, .ins-profile-toggle, .weread-select-all, .drawer button, #ins-tag-trigger, .ai-picker-row, .ai-picker-option, .ai-pin-chip { min-width: 48px; min-height: 48px; }
+  .button, .icon-button, .top-nav button, .top-nav .icon-button, button, summary, .field, .search-field input, .auth-footer a, .profile-toggle, .ins-profile-toggle, .weread-select-all, .drawer button, #ins-tag-trigger, .ai-picker-row, .ai-picker-option, .ai-pin-chip { min-width: 48px; min-height: 48px; }
   summary, .profile-toggle, .ins-profile-toggle, .weread-select-all { align-content: center; }
   .save-note, .ai-send-btn { width: 48px; height: 48px; }
   #profile-pane-style :is(.ins-model,.style-row>.field), .import-modes .button { min-height: 48px; }

@@ -1244,7 +1244,16 @@ function updateAISettings() {
   syncSettingsModels();
 }
 
+function cleanupSettings() {
+  closeProfile();
+  closeWritingStyle();
+  $('openai-key').value = '';
+  $('admin-invite-created').textContent = '';
+  $('admin-invite-created').hidden = true;
+}
+
 function openSettings() {
+  if (!$('settings-dialog').open) cleanupSettings();
   $('chat-provider').value = state.chatProvider;
   updateAISettings();
   $('openai-key').value = state.apiKey;
@@ -3057,8 +3066,9 @@ function aiNoteTitle(note) {
 
 function storeAISession(view, session) {
   const { turns, ...summary } = session;
-  if ((view.sessions.get(session.id)?.version ?? 0) <= session.version) view.sessions.set(session.id, summary);
-  if (turns && (view.sessionCache.get(session.id)?.version ?? 0) <= session.version) view.sessionCache.set(session.id, session);
+  const nextVersion = session.version ?? 0;
+  if ((view.sessions.get(session.id)?.version ?? 0) <= nextVersion) view.sessions.set(session.id, summary);
+  if (turns && (view.sessionCache.get(session.id)?.version ?? 0) <= nextVersion) view.sessionCache.set(session.id, session);
   if (session.sourceNoteId) view.upgradedNoteIds.add(session.sourceNoteId);
 }
 
@@ -4530,11 +4540,7 @@ $('joplin-dir').addEventListener('change', () => {
 });
 $('settings-dialog').addEventListener('close', () => {
   if ($('settings-dialog').open) return;
-  closeProfile();
-  closeWritingStyle();
-  $('openai-key').value = '';
-  $('admin-invite-created').textContent = '';
-  $('admin-invite-created').hidden = true;
+  cleanupSettings();
 });
 $('settings-form').addEventListener('submit', saveSettings);
 $('chat-provider').addEventListener('change', updateAISettings);

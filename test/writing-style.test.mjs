@@ -776,6 +776,7 @@ test('[WS-10] Chromium 保存失败拦截、跨视图等待、同文档恢复与
     }
   } });
   const { send, evaluate, wait, click, value } = await browser(t);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
     const realFetch = window.fetch.bind(window);
     const order = window.styleRequestOrder = [];

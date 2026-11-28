@@ -713,7 +713,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     await page.evaluate(`import('/ux-helpers.js').then(m => m.notesCacheTransaction('readwrite', s => s.put(${JSON.stringify(cached)})))`);
 
     await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
-    await until(() => page.evaluate("document.querySelectorAll('[data-session-id]').length >= 4"), 'history list');
+    await until(() => page.evaluate("document.querySelectorAll('[data-action=\"ai-select-session\"][data-session-id]').length >= 2"), 'history list');
     const select = i => page.evaluate(`
       document.querySelector('[data-action=ai-toggle-sessions]').click();
       document.querySelector('[data-action="ai-select-session"][data-session-id="${sessionEntries[i].id}"]').click();
@@ -1372,7 +1372,7 @@ test('Paper and ink light/dark themes maintain opaque surfaces, AA roles and AAA
       const page = await open({ scheme });
       const click = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
       const notes = await measurePaper(page, [
-        ['body'], ['.space-nav [aria-current]'], ['.top-nav [data-action=open-sidebar]'],
+        ['body'], ['.space-nav [aria-current]'], ['.top-nav [data-action=open-sidebar]:not(.mobile-only)'],
         ['.card-body'], ['.day-head'], ['.inline-tag'], ['#note-body', '::placeholder'],
       ]);
       assert.equal(await page.evaluate("document.querySelector('.top-nav').getBoundingClientRect().height"), 60);
@@ -1405,7 +1405,7 @@ test('Paper and ink light/dark themes maintain opaque surfaces, AA roles and AAA
       await click('[data-action=ai-options]');
       await click('#ai-model-toggle');
       const chat = await measurePaper(page, [
-        ['#ai-chat-view'], ['.ai-msg-user'], ['.ai-msg-assistant p'], ['.citation-chip'],
+        ['#ai-chat-view'], ['.ai-msg-user'], ['#ai-turns .ai-msg-assistant p'], ['.citation-chip'],
         ['.ai-steps-card summary'], ['.ai-step-heading strong'], ['#ai-chat-input', '::placeholder'],
         ['#ai-model-options [aria-pressed=true] .ai-picker-label'], ['#ai-model-search', '::placeholder'],
       ]);
@@ -1423,7 +1423,7 @@ test('Paper and ink light/dark themes maintain opaque surfaces, AA roles and AAA
 
       for (const [selector, sample] of Object.entries({ ...notes, ...drawer, ...imports, ...history, ...chat, ...insights, ...login })) {
         assert.equal(sample.bg[3], 255, `${scheme} ${selector} should resolve to an opaque surface`);
-        const minimum = ['body', '.card-body', '.inline-tag', '.citation-chip', '.ai-msg-assistant p'].includes(selector) ? 7 : 4.5;
+        const minimum = ['body', '.card-body', '.inline-tag', '.citation-chip', '#ai-turns .ai-msg-assistant p'].includes(selector) ? 7 : 4.5;
         assert.ok(sample.ratio >= minimum, `${scheme} ${selector} contrast ${sample.ratio.toFixed(3)}:1`);
         if (scheme === 'dark') {
           assert.ok(sample.bright < 0.12, `dark ${selector} background luminance ${sample.bright}`);
