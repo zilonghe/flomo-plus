@@ -21,7 +21,9 @@ final class WritingStyleTests: XCTestCase {
     private let generatePath = "/api/ai/writing-style/generate"
     private let blindPath = "/api/ai/writing-style/blind-test"
     private let chatPath = "/api/ai/chat"
+    private let profilePath = "/api/ai/profile"
     private let reportsPath = "/api/insights/reports"
+    private let runReportPath = "/api/insights/run"
     private let sourcePath = "/api/ai/sessions"
     private let historyPath = "/api/ai/sessions/history"
     private let rewriteHistoryPath = "/api/ai/sessions/history-a"
@@ -1572,6 +1574,305 @@ final class WritingStyleTests: XCTestCase {
         XCTAssertEqual(chat.recoverableDraftSnapshot.activeContextKey, "new")
     }
 
+    func testDeletingCurrentRewriteDuringNewChatConfirmationPreservesTheOtherDraft() async throws {
+        enum Background: CaseIterable { case newChat, reportFirst, rewriteFirst }
+        enum Decision: CaseIterable { case confirm, cancel, reauthenticate, history }
+        let outside = String(repeating: "另", count: 26) + "  "
+        let followUp = " " + String(repeating: "续", count: 14) + " "
+        let merged = outside + "\n\n" + followUp
+        XCTAssertEqual([outside, followUp, merged].map { $0.utf8.count }, [80, 44, 126])
+
+        for background in Background.allCases {
+            for decision in Decision.allCases {
+                let label = "\(background), \(decision)"
+                let wire = try StyleHTTP()
+                defer { wire.close() }
+                let (store, api, note) = try await connected(wire, mode: "gateway")
+                let chat = store.chat
+                let report = background == .newChat ? nil : try await openInsightReport("report", store: store, wire: wire)
+                if let report { store.askAbout(report) }
+                chat.updateDraftFromUser(outside)
+                let save = try await beginAutomaticRewriteWaitingForSave(note, store: store, api: api, wire: wire)
+                chat.updateDraftFromUser(followUp)
+                store.requestNewChat()
+                guard case .new = store.pendingChatSwitch else { return XCTFail(label) }
+
+                if let report, background == .reportFirst {
+                    try await confirmReportDeletion(report, via: .delete200, store: store, api: api, wire: wire)
+                }
+                try await syncDeleteRewriteSource(note, store: store, wire: wire)
+                if let report, background == .rewriteFirst {
+                    try await confirmReportDeletion(report, via: .delete200, store: store, api: api, wire: wire)
+                }
+                XCTAssertFalse(chat.sending, label)
+                XCTAssertEqual(chat.error, AIChatStore.deletedRewriteSourceMessage, label)
+                XCTAssertEqual(Array(chat.draft.utf8), Array(followUp.utf8), label)
+                XCTAssertEqual(Array(chat.recoverableDraftSnapshot.activeDraft.utf8), Array(merged.utf8), label)
+                try await finishWritingStyleSave(save, wire: wire)
+                await chat.waitForIdle()
+
+                switch decision {
+                case .confirm: store.confirmChatSwitch()
+                case .cancel: store.cancelChatSwitch()
+                case .reauthenticate:
+                    try await rejectNotesRefresh(store, wire: wire)
+                    wire.reply("/api/notes", body: Self.emptyNotes)
+                    try await reauthenticate(store, wire: wire)
+                case .history:
+                    try await assertDraftSurvivesHistoryRoundTrip(merged, store: store, wire: wire)
+                }
+                XCTAssertNil(store.pendingChatSwitch, label)
+                XCTAssertEqual(Array(chat.draft.utf8), Array((decision == .confirm ? outside : merged).utf8), label)
+                store.requestNewChat()
+                XCTAssertEqual(chat.draft, "", label)
+                XCTAssertTrue(wire.requests(chatPath).isEmpty, label)
+            }
+        }
+    }
+
+    func testConfirmedReportDeletionCancelsWaitingFollowUpAndRestoresBothDrafts() async throws {
+        for route in ReportDeletionRoute.allCases {
+            for cited in [false, true] {
+                let label = "\(route), cited=\(cited)"
+                let wire = try StyleHTTP()
+                defer { wire.close() }
+                let (store, api, _) = try await connected(wire, mode: "gateway")
+                let chat = store.chat
+                let report = try await openInsightReport("report", store: store, wire: wire, cited: cited)
+                store.askAbout(report)
+                XCTAssertEqual(chat.pins, cited ? ["note"] : [], label)
+                let save = try await holdProfileSave(store, api: api, wire: wire)
+                wire.reply(chatPath, body: Self.sse("done", Self.history), stream: true)
+                chat.updateDraftFromUser(Self.firstDraft)
+                chat.send(api: api, options: store.options, profile: store.insights)
+                XCTAssertTrue(chat.sending, label)
+                XCTAssertEqual(chat.pendingQuestion, Self.firstDraft, label)
+                chat.updateDraftFromUser(Self.nextDraft)
+
+                try await confirmReportDeletion(report, via: route, store: store, api: api, wire: wire)
+                let restored = Self.firstDraft + "\n\n" + Self.nextDraft
+                XCTAssertFalse(chat.sending, label)
+                XCTAssertNil(chat.insight, label)
+                XCTAssertEqual(chat.error, AIChatStore.deletedInsightReportMessage, label)
+                XCTAssertEqual(Array(chat.draft.utf8), Array(restored.utf8), label)
+
+                try await finishProfileSave(save, wire: wire)
+                await chat.waitForIdle()
+                XCTAssertTrue(wire.requests(chatPath).isEmpty, label)
+                XCTAssertNil(chat.session, label)
+                XCTAssertEqual(chat.error, AIChatStore.deletedInsightReportMessage, label)
+                store.requestNewChat()
+                XCTAssertEqual(Array(chat.draft.utf8), Array(restored.utf8), label)
+            }
+        }
+    }
+
+    func testReportFollowUpContinuesAfterDispatchOrDeletionOfAnUnrelatedReport() async throws {
+        for deleteOtherBeforeDispatch in [false, true] {
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, api, _) = try await connected(wire, mode: "gateway")
+            let chat = store.chat
+            let other = try await openInsightReport("other", store: store, wire: wire)
+            let report = try await openInsightReport("report", store: store, wire: wire, cited: true)
+            store.askAbout(report)
+            let save = deleteOtherBeforeDispatch ? try await holdProfileSave(store, api: api, wire: wire) : nil
+            wire.hold(chatPath)
+            chat.updateDraftFromUser(Self.firstDraft)
+            chat.send(api: api, options: store.options, profile: store.insights)
+            if let save {
+                try await confirmReportDeletion(other, via: .delete200, store: store, api: api, wire: wire)
+                XCTAssertTrue(chat.sending)
+                XCTAssertTrue(wire.requests(chatPath).isEmpty)
+                try await finishProfileSave(save, wire: wire)
+            }
+            try await eventually("追问 POST 已发出") { wire.waiting(self.chatPath) == 1 }
+            if !deleteOtherBeforeDispatch {
+                try await confirmReportDeletion(report, via: .delete200, store: store, api: api, wire: wire)
+                XCTAssertTrue(chat.sending)
+            }
+            let requests = wire.requests(chatPath)
+            XCTAssertEqual(requests.count, 1)
+            let message = try XCTUnwrap(requests.first?["message"] as? String)
+            XCTAssertEqual(Array(message.utf8), Array(AIChatStore.message(Self.firstDraft, insight: report).utf8))
+            XCTAssertEqual(requests.first?["referencedNoteIds"] as? [String], ["note"])
+            try XCTUnwrap(wire.take(chatPath)).complete(body: Self.sse("done", Self.history), stream: true)
+            await chat.waitForIdle()
+            XCTAssertEqual(chat.session?.id, "history")
+            XCTAssertEqual(chat.draft, "")
+            XCTAssertNil(chat.error)
+        }
+    }
+
+    func testLateInsightResultCannotRestoreAConfirmedDeletedReport() async throws {
+        enum Outcome { case deleted(ReportDeletionRoute), failedDelete, differentID }
+        let outcomes = ReportDeletionRoute.allCases.map(Outcome.deleted) + [.failedDelete, .differentID]
+        for outcome in outcomes {
+            let label = "\(outcome)"
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, api, _) = try await connected(wire, mode: "gateway")
+            let insights = store.insights
+            let report = try await openInsightReport("report", store: store, wire: wire)
+            store.askAbout(report)
+            store.chat.updateDraftFromUser(Self.firstDraft)
+            store.requestNewChat()
+
+            wire.hold(runReportPath, method: "POST")
+            insights.run(api: api, options: store.options)
+            try await eventually("洞察生成 POST 已发出") { wire.waiting(self.runReportPath, method: "POST") == 1 }
+            let stream = try XCTUnwrap(wire.take(runReportPath, method: "POST"))
+            stream.begin(stream: true)
+            stream.write(Self.sse("delta", #"{"text":"部分内容"}"#))
+            try await eventually("已显示流式内容") { insights.liveReportText == "部分内容" }
+
+            var deleted = false
+            let path = "\(reportsPath)/\(report.id)"
+            switch outcome {
+            case .deleted(let route):
+                try await confirmReportDeletion(report, via: route, store: store, api: api, wire: wire)
+                deleted = true
+                XCTAssertFalse(insights.reports.contains { $0.id == report.id }, label)
+            case .failedDelete:
+                wire.reply(path, method: "DELETE", status: 500, body: #"{"error":"稍后再试"}"#)
+                let success = await insights.deleteReport(report.id, api: api)
+                XCTAssertFalse(success)
+            case .differentID:
+                wire.reply("\(reportsPath)/other", method: "DELETE", body: #"{"deleted":"other"}"#)
+                let success = await insights.deleteReport("other", api: api)
+                XCTAssertTrue(success)
+            }
+            let envelope = #"{"report":\#(Self.reportJSON(report.id))}"#
+            stream.write(Self.sse("done", envelope))
+            stream.finish()
+            try await eventually("洞察生成流已结束") { !insights.running }
+            XCTAssertEqual(insights.liveReport?.id, deleted ? nil : report.id, label)
+            XCTAssertEqual(insights.liveReportText, deleted ? "" : "正文", label)
+            XCTAssertEqual(insights.reports.map(\.id), deleted ? [] : [report.id], label)
+            XCTAssertNil(insights.liveReportError, label)
+        }
+    }
+
+    func testStartingDeletedInsightDoesNotResetDraftOrStopChat() async throws {
+        for sending in [false, true] {
+            for pinned in [false, true] {
+                let wire = try StyleHTTP()
+                defer { wire.close() }
+                let (store, api, _) = try await connected(wire, mode: "gateway")
+                let chat = store.chat
+                let report = try await openInsightReport("report", store: store, wire: wire)
+                try await confirmReportDeletion(report, via: .delete200, store: store, api: api, wire: wire)
+                chat.updateDraftFromUser(Self.newDraft)
+                let save = sending ? try await holdProfileSave(store, api: api, wire: wire) : nil
+                if sending {
+                    wire.reply(chatPath, body: Self.sse("done", Self.history), stream: true)
+                    chat.send(api: api, options: store.options, profile: store.insights)
+                    XCTAssertTrue(chat.sending)
+                    chat.updateDraftFromUser(Self.nextDraft)
+                }
+                let previous = chat.recoverableDraftSnapshot
+                chat.start(pins: pinned ? ["note"] : [], insight: report)
+                XCTAssertEqual(chat.recoverableDraftSnapshot, previous)
+                XCTAssertEqual(chat.sending, sending)
+                XCTAssertNil(chat.insight)
+                XCTAssertEqual(chat.pins, [])
+                if let save {
+                    chat.stop()
+                    try await finishProfileSave(save, wire: wire)
+                    await chat.waitForIdle()
+                }
+                XCTAssertTrue(wire.requests(chatPath).isEmpty)
+            }
+        }
+    }
+
+    func testVerification404ReplacesMissingOrStaleErrorOnVisibleReport() async throws {
+        for priorFailure in [false, true] {
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, api, _) = try await connected(wire, mode: "gateway")
+            let insights = store.insights
+            let report = try await openInsightReport("report", store: store, wire: wire)
+            let path = "\(reportsPath)/\(report.id)"
+            wire.reply(runReportPath, method: "POST",
+                       body: Self.sse("done", #"{"report":\#(Self.reportJSON(report.id))}"#), stream: true)
+            insights.run(api: api, options: store.options)
+            try await eventually("已显示生成结果") { !insights.running && insights.liveReport?.id == report.id }
+            store.askAbout(report)
+            store.chat.updateDraftFromUser(Self.firstDraft)
+            store.requestNewChat()
+            if priorFailure {
+                wire.reply(path, method: "DELETE", status: 500, body: #"{"error":"稍后再试"}"#)
+                let success = await insights.deleteReport(report.id, api: api)
+                XCTAssertFalse(success)
+            }
+            XCTAssertEqual(insights.viewedReportError, priorFailure ? "稍后再试" : nil)
+            XCTAssertEqual(insights.liveReportError, priorFailure ? "稍后再试" : nil)
+
+            try await confirmReportDeletion(report, via: .verify404, store: store, api: api, wire: wire)
+            XCTAssertNil(insights.viewedReport)
+            XCTAssertNil(insights.liveReport)
+            XCTAssertEqual(insights.viewedReportText, "")
+            XCTAssertEqual(insights.liveReportText, "")
+            XCTAssertEqual(insights.viewedReportError, "报告不存在")
+            XCTAssertEqual(insights.liveReportError, "报告不存在")
+            XCTAssertEqual(wire.requests(path).count, 2)
+        }
+    }
+
+    func testReportVerificationQueueSkipsDraftsAlreadySentOrDeleted() async throws {
+        enum LaterDraft: CaseIterable { case sent, deleted, parked, inFlight }
+        for laterDraft in LaterDraft.allCases {
+            let label = "\(laterDraft)"
+            let wire = try StyleHTTP()
+            defer { wire.close() }
+            let (store, api, _) = try await connected(wire, mode: "gateway")
+            let chat = store.chat
+            let first = try await openInsightReport("report-1", store: store, wire: wire)
+            let second = try await openInsightReport("report-2", store: store, wire: wire)
+            store.askAbout(first)
+            chat.updateDraftFromUser(Self.firstDraft)
+            store.askAbout(second)
+            chat.updateDraftFromUser(Self.nextDraft)
+            if laterDraft == .sent || laterDraft == .inFlight {
+                wire.hold(chatPath)
+                chat.send(api: api, options: store.options, profile: store.insights)
+                try await eventually("第二份报告的追问已发出") { wire.waiting(self.chatPath) == 1 }
+            } else {
+                store.requestNewChat()
+            }
+
+            let firstPath = "\(reportsPath)/\(first.id)"
+            let secondPath = "\(reportsPath)/\(second.id)"
+            let before = wire.requests(secondPath).count
+            let shouldProbe = laterDraft == .parked || laterDraft == .inFlight
+            wire.reply(reportsPath, body: #"{"reports":[]}"#)
+            wire.hold(firstPath)
+            wire.reply(secondPath, status: shouldProbe ? 200 : 401,
+                       body: shouldProbe ? #"{"report":\#(Self.reportJSON(second.id))}"# : Self.expired)
+            let loading = Task { await store.insights.loadLibrary(api: api) }
+            defer { loading.cancel() }
+            try await eventually("第一份报告正在核实") { wire.waiting(firstPath) == 1 }
+            XCTAssertEqual(wire.requests(secondPath).count, before, label)
+            if laterDraft == .sent {
+                try XCTUnwrap(wire.take(chatPath)).complete(body: Self.sse("done", Self.history), stream: true)
+                await chat.waitForIdle()
+                XCTAssertEqual(chat.session?.id, "history")
+            } else if laterDraft == .deleted {
+                try await confirmReportDeletion(second, via: .delete200, store: store, api: api, wire: wire)
+                XCTAssertEqual(Array(chat.draft.utf8), Array(Self.nextDraft.utf8))
+            }
+            try XCTUnwrap(wire.take(firstPath)).complete(body: #"{"report":\#(Self.reportJSON(first.id))}"#)
+            await loading.value
+            XCTAssertEqual(wire.requests(secondPath).count - before, shouldProbe ? 1 : 0, label)
+            XCTAssertEqual(store.authScreenState, .online, label)
+            if laterDraft == .inFlight {
+                try XCTUnwrap(wire.take(chatPath)).complete(body: Self.sse("done", Self.history), stream: true)
+                await chat.waitForIdle()
+            }
+        }
+    }
+
     func testUncancelledInsightProbeFromPreviousAccountDoesNotMoveNewAccountsDraft() async throws {
         let id = "shared-report"
         let path = "\(reportsPath)/\(id)"
@@ -1874,16 +2175,43 @@ final class WritingStyleTests: XCTestCase {
         }
     }
 
-    private static func reportJSON(_ id: String) -> String {
-        #"{"id":"\#(id)","title":"洞察","lensName":"回顾","content":"正文","createdAt":"2026-11-28"}"#
+    private enum ReportDeletionRoute: CaseIterable { case delete200, delete404, open404, verify404 }
+
+    private func confirmReportDeletion(_ report: InsightReport, via route: ReportDeletionRoute, store: AppStore,
+                                       api: WeijiAPIClient, wire: StyleHTTP) async throws {
+        let path = "\(reportsPath)/\(report.id)"
+        let missing = #"{"error":"报告不存在"}"#
+        let insights = store.insights
+        switch route {
+        case .delete200, .delete404:
+            let success = route == .delete200
+            wire.reply(path, method: "DELETE", status: success ? 200 : 404,
+                       body: success ? #"{"deleted":"\#(report.id)"}"# : missing)
+            let deleted = await insights.deleteReport(report.id, api: api)
+            XCTAssertEqual(deleted, success)
+        case .open404:
+            wire.reply(path, status: 404, body: missing)
+            insights.openReport(report, api: api)
+            try await eventually("打开报告返回 404") { !insights.loadingReport }
+        case .verify404:
+            wire.reply(reportsPath, body: #"{"reports":[]}"#)
+            wire.reply(path, status: 404, body: missing)
+            await insights.loadLibrary(api: api)
+        }
     }
 
-    private func openInsightReport(_ id: String, store: AppStore, wire: StyleHTTP) async throws -> InsightReport {
+    private static func reportJSON(_ id: String, cited: Bool = false) -> String {
+        let citations = cited ? #","citations":[{"ref":"1","noteId":"note","excerpt":"原句"}]"# : ""
+        return #"{"id":"\#(id)","title":"洞察","lensName":"回顾","content":"正文","createdAt":"2026-11-28"\#(citations)}"#
+    }
+
+    private func openInsightReport(_ id: String, store: AppStore, wire: StyleHTTP, cited: Bool = false) async throws -> InsightReport {
         let api = try XCTUnwrap(store.api)
         let insights = store.insights
+        let report = Self.reportJSON(id, cited: cited)
         wire.reply("/api/insights/lenses", body: #"{"lenses":[]}"#)
-        wire.reply(reportsPath, body: #"{"reports":[\#(Self.reportJSON(id))]}"#)
-        wire.reply("\(reportsPath)/\(id)", body: #"{"report":\#(Self.reportJSON(id))}"#)
+        wire.reply(reportsPath, body: #"{"reports":[\#(report)]}"#)
+        wire.reply("\(reportsPath)/\(id)", body: #"{"report":\#(report)}"#)
         await insights.loadLibrary(api: api)
         insights.openReport(try XCTUnwrap(insights.reports.first { $0.id == id }), api: api)
         try await eventually("报告详情已加载") { !insights.loadingReport }
@@ -2080,6 +2408,19 @@ final class WritingStyleTests: XCTestCase {
             try await assertDraftSurvivesHistoryRoundTrip(pasted, store: store, wire: wire)
             XCTAssertTrue(wire.requests(chatPath).isEmpty)
         }
+    }
+
+    private func holdProfileSave(_ store: AppStore, api: WeijiAPIClient, wire: StyleHTTP) async throws -> Task<Bool, Never> {
+        wire.hold(profilePath, method: "POST")
+        let save = try XCTUnwrap(store.insights.saveProfile(.init(content: "画像", enabled: true), api: api))
+        try await eventually("画像保存已挂起") { wire.waiting(self.profilePath, method: "POST") == 1 }
+        return save
+    }
+
+    private func finishProfileSave(_ save: Task<Bool, Never>, wire: StyleHTTP) async throws {
+        try XCTUnwrap(wire.take(profilePath, method: "POST")).complete(body: #"{"profile":null}"#)
+        let saved = await save.value
+        XCTAssertTrue(saved)
     }
 
     private func holdWritingStyleSave(_ store: AppStore, api: WeijiAPIClient, wire: StyleHTTP) async throws -> Task<Bool, Never> {
@@ -2622,9 +2963,13 @@ private final class StyleProtocol: URLProtocol, @unchecked Sendable {
         deliver { $0.urlProtocol(self, didLoad: Data(body.utf8)) }
     }
 
+    func finish() {
+        deliver { $0.urlProtocolDidFinishLoading(self) }
+    }
+
     func complete(status: Int = 200, body: String, stream: Bool = false) {
         begin(status: status, stream: stream)
         write(body)
-        deliver { $0.urlProtocolDidFinishLoading(self) }
+        finish()
     }
 }

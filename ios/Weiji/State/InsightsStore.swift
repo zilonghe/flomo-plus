@@ -41,6 +41,7 @@ final class InsightsStore {
     @ObservationIgnored private var viewReportGeneration = 0
     private(set) var viewedReportID: String?
     @ObservationIgnored private var reportsGeneration = 0
+    @ObservationIgnored private var deletedReportIds: Set<String> = []
     @ObservationIgnored var onReportDeleted: (@MainActor (String) -> Void)?
     @ObservationIgnored var onReportsLoaded: (@MainActor ([InsightReport], WeijiAPIClient) async -> Void)?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
@@ -151,6 +152,7 @@ final class InsightsStore {
         useProfile = false
         lenses = []
         reports = []
+        deletedReportIds = []
         stats = nil
     }
 
@@ -240,6 +242,11 @@ final class InsightsStore {
                     await self?.receiveReport(frame, generation: stamp)
                 }
                 guard stamp == runGeneration, !Task.isCancelled else { return }
+                if deletedReportIds.contains(result.report.id) {
+                    liveReport = nil
+                    liveReportText = ""
+                    return
+                }
                 liveReport = result.report
                 liveReportText = result.report.content ?? ""
                 reportsGeneration += 1
@@ -273,17 +280,20 @@ final class InsightsStore {
         viewedReportError = nil
     }
 
-    func invalidateConfirmedDeletedReport(_ id: String) {
+    func invalidateConfirmedDeletedReport(_ id: String, errorMessage: String? = nil) {
+        deletedReportIds.insert(id)
         reportsGeneration += 1
         reports.removeAll { $0.id == id }
         if liveReport?.id == id {
             liveReport = nil
             liveReportText = ""
+            if let errorMessage { liveReportError = errorMessage }
         }
         if viewedReport?.id == id || viewedReportID == id {
             if loadingReport { cancelViewedReportLoad() }
             viewedReport = nil
             viewedReportText = ""
+            if let errorMessage { viewedReportError = errorMessage }
         }
     }
 
@@ -321,6 +331,7 @@ final class InsightsStore {
         do {
             let _: DeletedResponse = try await api.delete("/api/insights/reports/\(id)")
             guard context == contextGeneration, !Task.isCancelled else { return false }
+            deletedReportIds.insert(id)
             reportsGeneration += 1
             reports.removeAll { $0.id == id }
             if liveReport?.id == id {

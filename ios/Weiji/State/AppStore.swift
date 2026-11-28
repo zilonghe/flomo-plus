@@ -148,17 +148,18 @@ final class AppStore {
         let missing = chat.pendingInsightDraftIds.filter { !loadedIds.contains($0) }
         for id in missing {
             guard connection == connectionGeneration, !Task.isCancelled else { return }
+            guard chat.needsInsightVerification(id) else { continue }
             do {
                 let _: ReportResponse = try await api.get("/api/insights/reports/\(id)")
             } catch let failure as WeijiAPIError where failure.status == 404 {
                 guard connection == connectionGeneration, !Task.isCancelled else { return }
-                handleConfirmedDeletedInsight(id)
+                handleConfirmedDeletedInsight(id, errorMessage: failure.localizedDescription)
             } catch {}
         }
     }
 
-    private func handleConfirmedDeletedInsight(_ id: String) {
-        insights.invalidateConfirmedDeletedReport(id)
+    private func handleConfirmedDeletedInsight(_ id: String, errorMessage: String? = nil) {
+        insights.invalidateConfirmedDeletedReport(id, errorMessage: errorMessage)
         if pendingChatSwitch?.requiredInsightId == id { cancelChatSwitch() }
         chat.markInsightDeleted(id)
     }

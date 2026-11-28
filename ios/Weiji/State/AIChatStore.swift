@@ -33,6 +33,7 @@ struct ChatRequestID {
 final class AIChatStore {
     static let rewriteNotePrompt = "请基于这条笔记的真实内容，按我的写作风格改写成一段自然流畅的文字，保留原意和事实，不要编造经历。"
     static let deletedRewriteSourceMessage = "原笔记已删除，已取消按风格改写。"
+    static let deletedInsightReportMessage = "原洞察报告已删除，已取消基于该报告继续追问。"
     private static let postDeleteDraftKey = "post-delete"
 
     struct RecoverableDraftSnapshot: Equatable, Sendable {
@@ -47,6 +48,10 @@ final class AIChatStore {
         case none, inDraft, inFlight
     }
 
+    private enum HeldNewChatMergeOrder {
+        case appendHeld, prependHeld
+    }
+
     private struct RewriteIntent {
         let sourceNoteId: String
         var introducedByRewrite: Bool
@@ -58,7 +63,7 @@ final class AIChatStore {
     var recoverableDraftSnapshot: RecoverableDraftSnapshot {
         var activeDraft = activeUserText()
         if draftContextKey == "new", sending || holdingRescuedForPendingNewChat, let rescued = draftsByKey["new"] {
-            activeDraft = Self.appendDraft(activeDraft, rescued)
+            activeDraft = mergeHeldNewChatDraft(activeDraft, held: rescued)
         }
         let hasUserDraft = Self.hasDraftText(draft) && !isOwnedInDraft(draft)
         let suppressed = isOwnedInDraft(draft)
@@ -83,6 +88,7 @@ final class AIChatStore {
     var useWritingStyle = false
     @ObservationIgnored private var sendingWithStyle = false
     @ObservationIgnored private var pendingRequiredSourceNoteId: String?
+    @ObservationIgnored private var pendingRequiredInsightId: String?
     @ObservationIgnored private var rewriteIntent: RewriteIntent?
     private(set) var pins: [String] = []
     private(set) var session: ChatSession?
@@ -107,6 +113,7 @@ final class AIChatStore {
     // Inactive drafts and rescues not yet shown in the active New Chat composer.
     @ObservationIgnored private var draftsByKey: [String: String] = [:]
     @ObservationIgnored private var holdingRescuedForPendingNewChat = false
+    @ObservationIgnored private var heldNewChatOrder: HeldNewChatMergeOrder = .appendHeld
     @ObservationIgnored private var requestID = ChatRequestID()
     @ObservationIgnored private var inflightDraft: String?
     @ObservationIgnored private var generation = 0
@@ -128,7 +135,15 @@ final class AIChatStore {
     func setPendingNewChatConfirmation(_ pending: Bool) {
         holdingRescuedForPendingNewChat = pending
         if !pending, draftContextKey == "new", !sending, let held = draftsByKey.removeValue(forKey: "new") {
-            draft = Self.appendDraft(draft, held)
+            draft = mergeHeldNewChatDraft(draft, held: held)
+        }
+        heldNewChatOrder = .appendHeld
+    }
+
+    private func mergeHeldNewChatDraft(_ active: String, held: String) -> String {
+        switch heldNewChatOrder {
+        case .appendHeld: Self.appendDraft(active, held)
+        case .prependHeld: Self.appendDraft(held, active)
         }
     }
 
@@ -156,10 +171,10 @@ final class AIChatStore {
 
     func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil,
                useWritingStyle: Bool = false, rewriteSourceNoteId: String? = nil) {
+        if let insight, !canReferenceInsight(insight.id) { return }
         let source = source.flatMap { $0.isEmpty ? nil : $0 }
-        let validInsight = insight.flatMap { canReferenceInsight($0.id) ? $0 : nil }
         let nextKey = source.map { "note:\($0)" }
-            ?? validInsight.map { "insight:\($0.id)" }
+            ?? insight.map { "insight:\($0.id)" }
             ?? pins.first.map { "walk:\($0)" }
             ?? "new"
         switchDraftContext(to: nextKey, resetNew: true)
@@ -167,7 +182,7 @@ final class AIChatStore {
         var seen = Set<String>()
         let candidates = (source.map { [$0] } ?? []) + pins
         self.pins = Array(candidates.filter { isValidNote($0) && seen.insert($0).inserted }.prefix(10))
-        self.insight = validInsight
+        self.insight = insight
         self.useWritingStyle = useWritingStyle
         if let id = rewriteSourceNoteId {
             rewriteIntent = RewriteIntent(sourceNoteId: id, introducedByRewrite: true, promptLocation: .none)
@@ -242,19 +257,24 @@ final class AIChatStore {
     func markInsightDeleted(_ id: String) {
         deletedInsightIds.insert(id)
         if insight?.id == id { insight = nil }
+        if sending && pendingRequiredInsightId == id { cancelDeletedInsightSend(id) }
         rescueOrphanedDrafts()
     }
 
     func canReferenceInsight(_ id: String) -> Bool { !deletedInsightIds.contains(id) }
 
-    var pendingInsightDraftIds: [String] {
-        var ids = Set(draftsByKey.compactMap { key, text in
-            Self.hasDraftText(text) ? Self.boundInsightId(forContextKey: key) : nil
-        })
-        if let id = Self.boundInsightId(forContextKey: draftContextKey), Self.hasDraftText(activeUserText()) {
-            ids.insert(id)
+    func needsInsightVerification(_ id: String) -> Bool {
+        guard canReferenceInsight(id) else { return false }
+        if Self.boundInsightId(forContextKey: draftContextKey) == id, Self.hasDraftText(activeUserText()) {
+            return true
         }
-        return ids.subtracting(deletedInsightIds).sorted()
+        return draftsByKey["insight:\(id)"].map(Self.hasDraftText) ?? false
+    }
+
+    var pendingInsightDraftIds: [String] {
+        var ids = Set(draftsByKey.keys.compactMap(Self.boundInsightId(forContextKey:)))
+        if let id = Self.boundInsightId(forContextKey: draftContextKey) { ids.insert(id) }
+        return ids.filter { needsInsightVerification($0) }.sorted()
     }
 
     private func rescueOrphanedDrafts() {
@@ -320,9 +340,14 @@ final class AIChatStore {
             useWritingStyle = false
         }
         if Self.hasDraftText(preserved) {
-            let savedNew = draftsByKey.removeValue(forKey: "new") ?? ""
             draftContextKey = "new"
-            draft = Self.appendDraft(savedNew, preserved)
+            if holdingRescuedForPendingNewChat {
+                draft = preserved
+                heldNewChatOrder = .prependHeld
+            } else {
+                let savedNew = draftsByKey.removeValue(forKey: "new") ?? ""
+                draft = Self.appendDraft(savedNew, preserved)
+            }
         } else {
             draftContextKey = Self.postDeleteDraftKey
             draft = ""
@@ -346,6 +371,22 @@ final class AIChatStore {
         guard let required, sourceNoteId != required || !canReference(required) else { return true }
         cancelDeletedRewrite(rewriteIntent ?? RewriteIntent(sourceNoteId: required, introducedByRewrite: false, promptLocation: .none))
         return false
+    }
+
+    private func validateRequiredInsight(_ required: String?) -> Bool {
+        guard let required, !canReferenceInsight(required) || insight?.id != required else { return true }
+        cancelDeletedInsightSend(required)
+        return false
+    }
+
+    private func cancelDeletedInsightSend(_ id: String) {
+        if sending {
+            stop()
+        } else if let unsent = inflightDraft {
+            restoreInterruptedDraft(unsent)
+        }
+        if insight?.id == id { insight = nil }
+        error = Self.deletedInsightReportMessage
     }
 
     func canReference(_ id: String) -> Bool { isValidNote(id) }
@@ -393,6 +434,7 @@ final class AIChatStore {
         sending = false
         sendingWithStyle = false
         pendingRequiredSourceNoteId = nil
+        pendingRequiredInsightId = nil
         finishStreaming()
         streamedText = ""
         pendingQuestion = ""
@@ -535,6 +577,8 @@ final class AIChatStore {
               isRelayMode: @escaping @MainActor () -> Bool = { false }) {
         let effectiveRequiredSource = requiredSourceNoteId ?? (isOwnedInDraft(draft) ? rewriteIntent?.sourceNoteId : nil)
         guard validateRequiredSource(effectiveRequiredSource) else { return }
+        let requiredInsightId = session == nil ? insight?.id : nil
+        guard validateRequiredInsight(requiredInsightId) else { return }
         let styled = useWritingStyle
         guard !(styled && isRelayMode()) else { error = InsightsStore.writingStyleRelayMessage; return }
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -549,6 +593,7 @@ final class AIChatStore {
         sending = true
         sendingWithStyle = styled
         pendingRequiredSourceNoteId = effectiveRequiredSource
+        pendingRequiredInsightId = requiredInsightId
         error = nil
         task = Task {
             defer {
@@ -557,6 +602,7 @@ final class AIChatStore {
                     sending = false
                     sendingWithStyle = false
                     pendingRequiredSourceNoteId = nil
+                    pendingRequiredInsightId = nil
                     pendingQuestion = ""
                     streamedText = ""
                     inflightDraft = nil
@@ -574,6 +620,7 @@ final class AIChatStore {
                 try Task.checkCancellation()
                 guard stamp == generation else { return }
                 guard validateRequiredSource(effectiveRequiredSource) else { return }
+                guard validateRequiredInsight(requiredInsightId) else { return }
                 if styled && isRelayMode() {
                     reconcileRelayMode(true)
                     return
@@ -593,6 +640,8 @@ final class AIChatStore {
                 if let id = signature.sessionId { fields["sessionId"] = .string(id) }
                 if let id = signature.sourceNoteId { fields["sourceNoteId"] = .string(id) }
                 if let version = signature.expectedVersion { fields["expectedVersion"] = .number(version) }
+                // Once handed to the API client, deleting the report does not interrupt this request.
+                pendingRequiredInsightId = nil
                 let response: ChatResponse = try await api.stream("/api/ai/chat", fields) { [weak self] frame in
                     await self?.receive(frame, generation: stamp)
                 }
