@@ -260,8 +260,7 @@ final class AppStore {
                 rejectedChatDraft = nil
                 if let recovery, recovery.key == key {
                     chat.restoreRecoverableDrafts(recovery.snapshot)
-                    await chat.verifyUnconfirmedRemovals(api: client)
-                    guard stamp == connectionGeneration, !Task.isCancelled else { return }
+                    chat.scheduleUnconfirmedRemovalVerification(api: client)
                 }
                 settingsSection = nil
                 if let confirmedSnapshot {
@@ -478,7 +477,8 @@ final class AppStore {
             connect(configuration, save: false)
             return
         }
-        guard api != nil else { return }
+        guard let api else { return }
+        chat.scheduleUnconfirmedRemovalVerification(api: api)
         refreshTask?.cancel()
         syncing = true
         refreshTask = Task { await fetchNotes() }

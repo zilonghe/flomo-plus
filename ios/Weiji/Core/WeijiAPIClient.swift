@@ -213,8 +213,8 @@ actor WeijiAPIClient {
         return request
     }
 
-    func get<Result: Decodable & Sendable>(_ path: String) async throws -> Result {
-        try await send(request(path))
+    func get<Result: Decodable & Sendable>(_ path: String, expecting status: Int? = nil) async throws -> Result {
+        try await send(request(path), expectedStatus: status)
     }
 
     func fetchNotes(ifNoneMatch: String? = nil) async throws -> NotesFetchResult {
@@ -272,13 +272,14 @@ actor WeijiAPIClient {
     }
 
     private func send<Result: Decodable>(
-        _ request: URLRequest, onAuthenticationRejected: (@Sendable () async -> Void)? = nil
+        _ request: URLRequest, expectedStatus: Int? = nil,
+        onAuthenticationRejected: (@Sendable () async -> Void)? = nil
     ) async throws -> Result {
         do {
             let (data, response) = try await session.data(for: request)
             try Task.checkCancellation()
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard (200..<300).contains(code) else {
+            guard expectedStatus.map({ code == $0 }) ?? (200..<300).contains(code) else {
                 throw await responseError(code, data, beforeAuthenticationRejection: onAuthenticationRejected)
             }
             return try JSONDecoder().decode(Result.self, from: data)
