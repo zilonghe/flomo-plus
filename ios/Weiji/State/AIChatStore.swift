@@ -34,16 +34,31 @@ final class AIChatStore {
     static let rewriteNotePrompt = "请基于这条笔记的真实内容，按我的写作风格改写成一段自然流畅的文字，保留原意和事实，不要编造经历。"
     static let deletedRewriteSourceMessage = "原笔记已删除，已取消按风格改写。"
 
+    private enum AutomaticPromptLocation {
+        case none, inDraft, inFlight
+    }
+
     private struct RewriteIntent {
         let sourceNoteId: String
         var introducedByRewrite: Bool
-        var ownsAutomaticPrompt: Bool
+        var promptLocation: AutomaticPromptLocation
     }
 
-    var draft = ""
+    var draft = "" {
+        didSet {
+            if rewriteIntent?.promptLocation == .inDraft, draft != Self.rewriteNotePrompt {
+                rewriteIntent?.promptLocation = .none
+            }
+        }
+    }
     var recoverableDraft: String {
-        let candidate = draft.isEmpty ? (inflightDraft ?? "") : draft
-        return isOwnedRewritePrompt(candidate) ? "" : candidate
+        if !draft.isEmpty {
+            return isOwnedInDraft(draft) ? "" : draft
+        }
+        if let inflight = inflightDraft, !inflight.isEmpty {
+            return isOwnedInFlight(inflight) ? "" : inflight
+        }
+        return draftsByKey["new"] ?? ""
     }
     private(set) var composerResetCount = 0
     var useProfile = true
@@ -97,14 +112,14 @@ final class AIChatStore {
         self.insight = insight
         self.useWritingStyle = useWritingStyle
         if let id = rewriteSourceNoteId {
-            rewriteIntent = RewriteIntent(sourceNoteId: id, introducedByRewrite: true, ownsAutomaticPrompt: false)
+            rewriteIntent = RewriteIntent(sourceNoteId: id, introducedByRewrite: true, promptLocation: .none)
         }
     }
 
     private func switchDraftContext(to nextKey: String, resetNew: Bool = false) {
         stop()
         // An abandoned automatic prompt must not come back as an ordinary saved draft.
-        if isOwnedRewritePrompt(draft) { draft = "" }
+        if isOwnedInDraft(draft) { draft = "" }
         rewriteIntent = nil
         // Stop can restore the interrupted question; save it under the context it came from.
         if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -156,33 +171,63 @@ final class AIChatStore {
         }
     }
 
-    private func isOwnedRewritePrompt(_ text: String) -> Bool {
-        rewriteIntent?.ownsAutomaticPrompt == true && text == Self.rewriteNotePrompt
+    private func isOwnedInDraft(_ text: String) -> Bool {
+        rewriteIntent?.promptLocation == .inDraft && text == Self.rewriteNotePrompt
+    }
+
+    private func isOwnedInFlight(_ text: String) -> Bool {
+        rewriteIntent?.promptLocation == .inFlight && text == Self.rewriteNotePrompt
+    }
+
+    private func restoreInterruptedDraft(_ unsent: String?) {
+        if draft.isEmpty, let unsent {
+            draft = unsent
+            if isOwnedInFlight(unsent) {
+                rewriteIntent?.promptLocation = .inDraft
+            }
+        } else if rewriteIntent?.promptLocation == .inFlight {
+            rewriteIntent?.promptLocation = .none
+        }
     }
 
     private func cancelDeletedRewrite(_ intent: RewriteIntent) {
         let unsent = sending ? inflightDraft : nil
         let next = draft
+        let unsentIsAuto = intent.promptLocation == .inFlight && unsent == Self.rewriteNotePrompt
+        let nextIsAuto = intent.promptLocation == .inDraft && next == Self.rewriteNotePrompt
         stop()
-        let keepUnsent = unsent.flatMap { intent.ownsAutomaticPrompt && $0 == Self.rewriteNotePrompt ? nil : $0 }
-        let keepNext = intent.ownsAutomaticPrompt && next == Self.rewriteNotePrompt ? "" : next
+        let keepUnsent = unsentIsAuto ? nil : unsent
+        let keepNext = nextIsAuto ? "" : next
+        let preserved: String
         if let keepUnsent, !keepUnsent.isEmpty {
-            draft = keepNext.isEmpty ? keepUnsent : keepUnsent + "\n\n" + keepNext
+            preserved = keepNext.isEmpty ? keepUnsent : keepUnsent + "\n\n" + keepNext
         } else {
-            draft = keepNext
+            preserved = keepNext
         }
+        draftsByKey.removeValue(forKey: "note:\(intent.sourceNoteId)")
         rewriteIntent = nil
         if intent.introducedByRewrite {
             session = nil
             sourceNoteId = nil
             useWritingStyle = false
         }
+        if preserved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft = ""
+        } else {
+            if intent.introducedByRewrite, draftContextKey.hasPrefix("session:") {
+                draftsByKey.removeValue(forKey: draftContextKey)
+            }
+            draftContextKey = "new"
+            let existingNew = draftsByKey["new"] ?? ""
+            draft = existingNew.isEmpty || existingNew == preserved ? preserved : existingNew + "\n\n" + preserved
+            draftsByKey["new"] = draft
+        }
         error = Self.deletedRewriteSourceMessage
     }
 
     private func validateRequiredSource(_ required: String?) -> Bool {
         guard let required, sourceNoteId != required || !canReference(required) else { return true }
-        cancelDeletedRewrite(rewriteIntent ?? RewriteIntent(sourceNoteId: required, introducedByRewrite: false, ownsAutomaticPrompt: true))
+        cancelDeletedRewrite(rewriteIntent ?? RewriteIntent(sourceNoteId: required, introducedByRewrite: false, promptLocation: .none))
         return false
     }
 
@@ -212,7 +257,7 @@ final class AIChatStore {
         finishStreaming()
         streamedText = ""
         pendingQuestion = ""
-        if wasSending, draft.isEmpty, let unsent { draft = unsent }
+        if wasSending { restoreInterruptedDraft(unsent) }
     }
 
     func restorePendingSessionDraftIfPresent() -> Bool {
@@ -331,9 +376,10 @@ final class AIChatStore {
         guard useWritingStyle || sendingWithStyle else { return }
         if sending && sendingWithStyle {
             let unsent = inflightDraft
+            let unsentIsAuto = unsent.map(isOwnedInFlight) ?? false
             let next = draft
             stop()
-            if let unsent, !next.isEmpty, !isOwnedRewritePrompt(unsent) {
+            if let unsent, !next.isEmpty, !unsentIsAuto {
                 draft = unsent + "\n\n" + next
             }
         }
@@ -345,7 +391,7 @@ final class AIChatStore {
                                    isRelayMode: @escaping @MainActor () -> Bool = { false }) {
         guard !isRelayMode(), self.sourceNoteId == sourceNoteId, canReference(sourceNoteId),
               draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        rewriteIntent = RewriteIntent(sourceNoteId: sourceNoteId, introducedByRewrite: true, ownsAutomaticPrompt: true)
+        rewriteIntent = RewriteIntent(sourceNoteId: sourceNoteId, introducedByRewrite: true, promptLocation: .inDraft)
         draft = Self.rewriteNotePrompt
         send(api: api, options: options, profile: profile, requiredSourceNoteId: sourceNoteId, isRelayMode: isRelayMode)
     }
@@ -353,15 +399,16 @@ final class AIChatStore {
     func send(api: WeijiAPIClient, options: AIOptions, profile: InsightsStore,
               requiredSourceNoteId: String? = nil,
               isRelayMode: @escaping @MainActor () -> Bool = { false }) {
-        let effectiveRequiredSource = requiredSourceNoteId ?? (isOwnedRewritePrompt(draft) ? rewriteIntent?.sourceNoteId : nil)
+        let effectiveRequiredSource = requiredSourceNoteId ?? (isOwnedInDraft(draft) ? rewriteIntent?.sourceNoteId : nil)
         guard validateRequiredSource(effectiveRequiredSource) else { return }
         let styled = useWritingStyle
         guard !(styled && isRelayMode()) else { error = InsightsStore.writingStyleRelayMessage; return }
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let typed = draft
+        inflightDraft = typed
+        if isOwnedInDraft(typed) { rewriteIntent?.promptLocation = .inFlight }
         draft = ""
         composerResetCount += 1
-        inflightDraft = typed
         pendingQuestion = typed
         generation += 1
         let stamp = generation
@@ -434,7 +481,7 @@ final class AIChatStore {
                 requestID.clear()
                 inflightDraft = nil
             } catch is CancellationError {
-                if stamp == generation, draft.isEmpty, let unsent = inflightDraft { draft = unsent }
+                if stamp == generation { restoreInterruptedDraft(inflightDraft) }
             } catch let failure as WeijiAPIError where failure.status == 409 {
                 guard stamp == generation else { return }
                 if let current = failure.current(ChatSession.self) { updateSession(current) }
@@ -443,11 +490,11 @@ final class AIChatStore {
                     guard stamp == generation else { return }
                     if let updated = latest?.session { updateSession(updated) }
                 }
-                if draft.isEmpty, let unsent = inflightDraft { draft = unsent }
+                restoreInterruptedDraft(inflightDraft)
                 error = failure.message
             } catch {
                 if stamp == generation {
-                    if draft.isEmpty, let unsent = inflightDraft { draft = unsent }
+                    restoreInterruptedDraft(inflightDraft)
                     self.error = error.localizedDescription
                 }
             }
