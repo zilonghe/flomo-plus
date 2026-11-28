@@ -76,13 +76,20 @@ struct SidebarSheetView: View {
             .accessibilityIdentifier("sidebar-stats-toggle")
             .accessibilityValue(statsExpanded ? "已展开" : "已收起")
             if statsExpanded {
-                LazyHGrid(rows: Array(repeating: GridItem(.fixed(10), spacing: 3), count: 7), spacing: 3) {
-                    ForEach(days) { day in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Theme.heat(level: level(day.count, peak: peak)))
-                            .frame(width: 10, height: 10)
+                let columns = stride(from: 0, to: days.count, by: 7).map { Array(days[$0..<min($0 + 7, days.count)]) }
+                HStack(alignment: .top, spacing: 4) {
+                    ForEach(columns.indices, id: \.self) { column in
+                        VStack(spacing: 4) {
+                            ForEach(columns[column]) { day in
+                                RoundedRectangle(cornerRadius: 2.5)
+                                    .fill(Theme.heat(level: level(day.count, peak: peak)))
+                                    .aspectRatio(1, contentMode: .fit)
+                            }
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("近 12 周有 \(days.filter { $0.count > 0 }.count) 天记录")
                 Text("近 12 周").font(.footnote).tracking(0.5).foregroundStyle(Theme.ink2)
             }

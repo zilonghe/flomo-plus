@@ -431,9 +431,13 @@ struct AIChatView: View {
                                             Button(value) { ranges[lens.id] = key }
                                         }
                                     } label: {
-                                        Label(Self.rangeTitles.first { $0.0 == range(for: lens) }?.1 ?? "近 7 天",
-                                              systemImage: "chevron.right")
-                                            .labelStyle(.titleAndIcon).foregroundStyle(Theme.ink2).minTouchTarget()
+                                        HStack(spacing: 4) {
+                                            Text(Self.rangeTitles.first { $0.0 == range(for: lens) }?.1 ?? "近 7 天")
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption2.weight(.medium))
+                                                .accessibilityHidden(true)
+                                        }
+                                        .foregroundStyle(Theme.ink2).minTouchTarget()
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityLabel("\(lens.name)的笔记范围")
