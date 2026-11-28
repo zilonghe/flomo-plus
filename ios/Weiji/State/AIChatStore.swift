@@ -217,12 +217,17 @@ final class AIChatStore {
         }
     }
 
+    func canDeleteSession(_ id: String) -> Bool {
+        !(sending && session?.id == id)
+    }
+
     func remove(_ id: String, api: WeijiAPIClient) async {
+        guard canDeleteSession(id) else { return }
         let stamp = listGeneration
         do {
             let _: DeletedResponse = try await api.delete("/api/ai/sessions/\(id)")
             guard stamp == listGeneration else { return }
-            if session?.id == id { start() }
+            if session?.id == id && !sending { start() }
             draftsByKey.removeValue(forKey: "session:\(id)")
             sessions.removeAll { $0.id == id }
         } catch is CancellationError {

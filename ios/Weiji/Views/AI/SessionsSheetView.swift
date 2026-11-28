@@ -113,6 +113,7 @@ struct SessionsDrawerView: View {
                     Button("删除对话", role: .destructive) {
                         if let api = store.api { Task { await chat.remove(session.id, api: api) } }
                     }
+                    .disabled(!chat.canDeleteSession(session.id))
                 case .report(let report):
                     Button("删除报告", role: .destructive) { reportToDelete = report }
                         .disabled(store.insights.deletingReport || (store.presentedReport?.id == report.id && chat.sending))

@@ -2114,6 +2114,73 @@ final class StoreLogicTests: XCTestCase {
         XCTAssertEqual(captured[0], captured[1], "Stop followed by identical resend must preserve clientRequestId")
         XCTAssertNotEqual(captured[1], captured[2], "Fresh/edited request must generate a new clientRequestId")
     }
+
+    func testReaderStackSkipsDeletedNotesAndPrunesTombstones() {
+        let noteA = Note(id: "note-a", body: "正文 A", createdAt: "2026-11-26T00:00:00Z", revision: 1)
+        let noteB = Note(id: "note-b", body: "正文 B", createdAt: "2026-11-27T00:00:00Z", revision: 1)
+        let noteC = Note(id: "note-c", body: "正文 C", createdAt: "2026-11-28T00:00:00Z", revision: 1)
+        var stack = NoteReaderStack()
+        stack.push(noteA.id)
+        stack.push(noteB.id)
+        stack.push(noteC.id)
+
+        // Delete B and C remotely; only A remains live.
+        let afterDelete = [noteA.id: noteA]
+        XCTAssertTrue(stack.hasLiveEntry(in: afterDelete))
+        XCTAssertEqual(stack.popLive(in: afterDelete)?.id, noteA.id)
+        XCTAssertFalse(stack.hasLiveEntry(in: afterDelete))
+        XCTAssertNil(stack.popLive(in: afterDelete))
+
+        stack.push(noteB.id)
+        stack.prune(using: afterDelete)
+        XCTAssertTrue(stack.ids.isEmpty)
+    }
+
+    func testRemoveBlocksDeletingActiveStreamingSession() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let deleteRequests = OSAllocatedUnfairLock(initialState: 0)
+        let (config, transport) = try StubProtocol.make { request in
+            if request.httpMethod == "DELETE" {
+                deleteRequests.withLock { $0 += 1 }
+                return .init(status: 200, body: #"{"deleted":true}"#)
+            }
+            if request.httpMethod == "GET", request.url?.path == "/api/ai/sessions" {
+                return .init(status: 200, body: #"{"sessions":[{"id":"stream-1","title":"进行中的会话","version":1,"origin":"chat","updatedAt":"2026-11-28T00:00:00Z"}]}"#)
+            }
+            if request.httpMethod == "GET", request.url?.path == "/api/ai/sessions/stream-1" {
+                return .init(status: 200, body: #"{"session":{"id":"stream-1","title":"进行中的会话","version":1,"origin":"chat","updatedAt":"2026-11-28T00:00:00Z","turns":[{"role":"user","text":"首问"},{"role":"assistant","text":"首答"}]}}"#)
+            }
+            _ = release.wait(timeout: .now() + 8)
+            return .init(status: 200, body: "event: done\ndata: {\"session\":{\"id\":\"stream-1\",\"version\":2,\"title\":\"进行中的会话\",\"origin\":\"chat\",\"updatedAt\":\"2026-11-28T00:00:00Z\",\"turns\":[]}}\n\n",
+                         headers: ["Content-Type": "text/event-stream"])
+        }
+        defer {
+            release.signal()
+            transport.invalidateAndCancel()
+            StubProtocol.remove(config)
+        }
+        let api = WeijiAPIClient(configuration: config, transport: transport)
+        let chat = AIChatStore()
+        let profile = InsightsStore()
+        chat.refreshSessions(api: api)
+        try await waitUntil("加载会话列表") { chat.sessions.count == 1 }
+        chat.select("stream-1", api: api)
+        try await waitUntil("加载目标会话") { chat.session?.id == "stream-1" }
+
+        chat.draft = "追问中"
+        chat.send(api: api, options: .init(), profile: profile)
+        XCTAssertTrue(chat.sending)
+        XCTAssertFalse(chat.canDeleteSession("stream-1"))
+
+        await chat.remove("stream-1", api: api)
+        XCTAssertEqual(deleteRequests.withLock { $0 }, 0, "Active streaming session must not issue DELETE")
+        XCTAssertTrue(chat.sending, "Blocked delete must keep stream running")
+        XCTAssertEqual(chat.session?.id, "stream-1")
+        XCTAssertEqual(chat.sessions.map(\.id), ["stream-1"])
+
+        chat.stop()
+        XCTAssertTrue(chat.canDeleteSession("stream-1"))
+    }
 }
 
 private let readerSessionFixture = #"{"session":{"id":"reader-session","title":"会话","version":7,"updatedAt":"2026-11-25T00:00:00Z","origin":"chat"}}"#

@@ -664,12 +664,17 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     (await conditional()).writeHead(304, { ETag: cached.etag }).end();
     const composeDraft = '未提交的私密草稿-314';
     await page.evaluate(`(() => {
+      document.querySelector('#note-nav-actions [data-action=open-settings]').click();
+      document.querySelector('[data-action=settings-pane][data-pane=data]').click();
+      document.querySelector('[data-action=open-import-hub]').click();
+      if (!document.getElementById('import-hub-dialog').open) throw new Error('import hub did not open');
       const input = document.getElementById('note-body');
       input.value = ${JSON.stringify(composeDraft)};
       input.dispatchEvent(new InputEvent('input', { bubbles: true }));
     })()`);
     await page.evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })); true");
     assert.equal(await found(page, bodyA), false);
+    assert.equal(await page.evaluate("document.querySelectorAll('dialog[open]').length"), 0, 'account reset closes import-hub and all dialogs');
     assert.equal(await page.evaluate("document.getElementById('note-body').value"), '');
     assert.equal(await skeleton(page), true);
     await page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })); true");
@@ -713,6 +718,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     await page.evaluate(`import('/ux-helpers.js').then(m => m.notesCacheTransaction('readwrite', s => s.put(${JSON.stringify(cached)})))`);
 
     await page.evaluate("document.querySelector('[data-action=open-ai-chat]').click()");
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.space-nav [aria-current="page"]')].map(n => n.dataset.action)`), ['open-ai-chat']);
     await until(() => page.evaluate("document.querySelectorAll('[data-action=\"ai-select-session\"][data-session-id]').length >= 2"), 'history list');
     const select = i => page.evaluate(`
       document.querySelector('[data-action=ai-toggle-sessions]').click();
@@ -723,9 +729,15 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
     for (const i of [0, 1]) {
       const state = await select(i);
       assert.deepEqual(state, [sessionEntries[i].id, true, '']);
+      assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '', 'uncached switch clears previous session draft before GET completes');
+      if (i === 1) await page.evaluate(`document.getElementById('ai-chat-input').value = '加载中输入的新草稿'`);
       (await receive(history, 'history request'))();
       await until(() => found(page, '测试答案 ' + i), 'loaded history');
-      assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '', 'draft does not cross sessions');
+      if (i === 1) {
+        assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '加载中输入的新草稿', 'draft typed while loading stays attached to target session');
+      } else {
+        assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '', 'draft does not cross sessions');
+      }
       await page.evaluate(`document.getElementById('ai-chat-input').value = '会话草稿 ${i}'`);
     }
     assert.deepEqual(await select(0), [id, false, '测试答案 0']);
@@ -1120,6 +1132,7 @@ test('Chromium verifies the shared AI space and the reader stack, tombstones and
     for (const entry of ['本月报告', '旧报告', '已有会话']) assert.ok(history.includes(entry), entry + ' appears in unified history');
     await click(action('ai-close-history'));
     await click(action('open-notes'));
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.space-nav [aria-current="page"]')].map(n => n.dataset.action)`), ['open-notes']);
 
     await page.evaluate(`const input = document.getElementById('note-body'); input.value = '输入中的草稿';
       input.dispatchEvent(new InputEvent('input', { bubbles: true }));
@@ -1148,7 +1161,20 @@ test('Chromium verifies the shared AI space and the reader stack, tombstones and
     await click(action('edit-note'));
     assert.equal(await has('#edit-body'), true);
     assert.equal(await has('#reader-save'), true);
+    await page.evaluate(`(() => {
+      const box = document.getElementById('edit-body');
+      box.value = '未保存的正文修改';
+      window.__origConfirm = window.confirm;
+      window.__confirmCalls = 0;
+      window.confirm = () => { window.__confirmCalls++; return false; };
+    })()`);
     await back();
+    assert.equal(await page.evaluate('window.__confirmCalls'), 1, 'canceling dirty edit asks confirmation');
+    assert.equal(await has('#edit-body'), true, 'declining discard keeps editor open');
+    assert.equal(await page.evaluate("document.getElementById('edit-body').value"), '未保存的正文修改', 'declining discard preserves exact text');
+    await page.evaluate('window.confirm = () => true;');
+    await back();
+    await page.evaluate('window.confirm = window.__origConfirm; delete window.__origConfirm; delete window.__confirmCalls;');
     assert.equal(await has('#edit-body'), false);
 
     // Returning to a completed hop reuses related notes; a held, abandoned hop is fetched once on re-entry.
@@ -1208,6 +1234,20 @@ test('Chromium verifies the shared AI space and the reader stack, tombstones and
     assert.ok(deletedNotes.some(item => item.id === noteA.id), 'original tombstone stays');
     assert.equal(await page.evaluate(`document.querySelector('#feed [data-note-id="${undoPayload.id}"]').closest('.day-group').dataset.day`),
       await page.evaluate(`document.querySelector('#feed [data-note-id="${noteC.id}"]').closest('.day-group').dataset.day`));
+
+    // Remote delete while editing preserves copyable draft and exits cleanly once discard is confirmed.
+    await open(noteC.id);
+    await click(action('edit-note'));
+    await page.evaluate(`document.getElementById('edit-body').value = '尚未保存的远端删稿'`);
+    liveNotes = liveNotes.filter(n => n.id !== noteC.id);
+    deletedNotes = [...deletedNotes, { id: noteC.id, revision: 2 }];
+    await page.evaluate("window.dispatchEvent(new Event('focus'))");
+    await until(() => page.evaluate("document.getElementById('detail-error').textContent.includes('另一端删除')"), 'remote delete notice shown during edit');
+    assert.equal(await page.evaluate("document.getElementById('edit-body').value"), '尚未保存的远端删稿');
+    await page.evaluate('window.__origConfirm = window.confirm; window.confirm = () => true;');
+    await back();
+    await page.evaluate('window.confirm = window.__origConfirm; delete window.__origConfirm;');
+    assert.equal(await page.evaluate("document.getElementById('note-dialog').open"), false, 'confirming cancel on remotely deleted note closes reader cleanly');
   });
 
 test('Chat SSE flushes : connected immediately before upstream replies', async t => {

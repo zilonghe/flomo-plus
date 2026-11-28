@@ -293,7 +293,7 @@ function resetAccount() {
   resetWereadImport();
   resetFileImport('flomo', true);
   resetFileImport('joplin', true);
-  for (const id of ['settings-dialog', 'import-dialog', 'flomo-dialog', 'joplin-dialog']) if ($(id).open) $(id).close();
+  for (const id of ['settings-dialog', 'import-hub-dialog', 'import-dialog', 'flomo-dialog', 'joplin-dialog', 'insight-lens-dialog']) if ($(id).open) $(id).close();
   if ($('note-dialog').open) closeNote(true);
   reader.cache.clear();
   for (const id of ['detail-body', 'detail-meta', 'detail-source', 'edit-remote', 'reader-related-list']) $(id).replaceChildren();
@@ -1121,10 +1121,14 @@ function closeNote(force = false) {
 function readerBack() {
   if (state.detailWorking) return;
   if (state.editRevision !== null) { if (mayCloseNote()) toggleEdit(false); return; }
-  const previous = reader.stack.pop();
-  if (previous && openNote(previous.id, { push: false })) {
-    $('note-dialog').querySelector('.reader-scroll').scrollTop = previous.scroll;
-  } else closeNote();
+  while (reader.stack.length) {
+    const previous = reader.stack.pop();
+    if (state.notes.has(previous.id) && openNote(previous.id, { push: false })) {
+      $('note-dialog').querySelector('.reader-scroll').scrollTop = previous.scroll;
+      return;
+    }
+  }
+  closeNote(true);
 }
 
 function renderDetail() {
@@ -1146,8 +1150,15 @@ function renderDetail() {
 }
 
 function toggleEdit(enabled) {
+  if (state.detailWorking) return;
   const note = state.notes.get(state.noteID);
-  if (!note || state.detailWorking) return;
+  if (!note) {
+    if (!enabled) {
+      state.editRevision = null;
+      readerBack();
+    }
+    return;
+  }
   state.editRevision = enabled ? note.revision : null;
   $('delete-confirm').hidden = $('edit-conflict').hidden = true;
   setUtilityMenu('reader-options', false);
@@ -3516,11 +3527,27 @@ async function selectAISession(path, source = null, { preserveDraft = false, id 
   if (cached) newAISession(state.notes.get(cached.sourceNoteId), cached);
   const seq = ++view.sessionLoadSeq;
   const isCurrent = () => ai === view && seq === view.sessionLoadSeq;
+  const targetDraftKey = id ?? source?.id ?? 'new';
+  if (!cached && !preserveDraft) {
+    rememberAIDraft();
+    clearReport();
+    view.session = null;
+    view.source = source;
+    view.insightContext = null;
+    view.pendingTurn = null;
+    view.useWritingStyle = false;
+    view.pins = new Set(source && state.notes.has(source.id) ? [source.id] : []);
+    view.requestKey = null;
+    $('ai-chat-input').value = '';
+    restoreAIDraft(targetDraftKey);
+    syncAIComposerPlaceholder();
+  }
   view.selectedSessionId = id ?? source?.id ?? null;
   view.loadingSession = !cached;
   setAISessionRail(false);
   if (!cached) {
     setError('ai-chat-error', '');
+    renderAIPins();
     renderAISessions();
     renderAIThread();
     syncAIControls();
@@ -3531,6 +3558,8 @@ async function selectAISession(path, source = null, { preserveDraft = false, id 
     if (session) storeAISession(view, session);
     view.loadingSession = false;
     if (cached && (!session || session.version <= (view.session?.version ?? 0) || view.sending)) return true;
+    const note = source ?? state.notes.get(session?.sourceNoteId);
+    const resolvedKey = session?.id ?? note?.id ?? targetDraftKey;
     if (preserveDraft || cached) {
       if (session && !cached) {
         if (!$('ai-chat-input').value) restoreAIDraft(session.id);
@@ -3541,9 +3570,24 @@ async function selectAISession(path, source = null, { preserveDraft = false, id 
       view.selectedSessionId = session?.id ?? source?.id ?? null;
       renderAIThread();
       renderAISessions();
+      syncAIControls();
     } else {
-      const note = source ?? state.notes.get(session?.sourceNoteId);
-      newAISession(note, session);
+      const typedWhileLoading = $('ai-chat-input').value;
+      view.session = session;
+      view.selectedSessionId = session?.id ?? note?.id ?? null;
+      view.source = note;
+      view.pins = new Set([...view.pins, ...(note && state.notes.has(note.id) ? [note.id] : [])].slice(0, 10));
+      if (!typedWhileLoading) {
+        $('ai-chat-input').value = '';
+        restoreAIDraft(resolvedKey);
+      } else {
+        view.draftKey = resolvedKey;
+      }
+      syncAIComposerPlaceholder();
+      renderAIThread();
+      renderAIPins();
+      renderAISessions();
+      syncAIControls();
       $('ai-chat-input').focus({ preventScroll: true });
     }
     return true;

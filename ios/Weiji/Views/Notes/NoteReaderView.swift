@@ -1,11 +1,34 @@
 import SwiftUI
 
+struct NoteReaderStack: Equatable {
+    private(set) var ids: [String] = []
+
+    mutating func push(_ id: String) {
+        ids.append(id)
+    }
+
+    func hasLiveEntry(in notesById: [String: Note]) -> Bool {
+        ids.contains { notesById[$0] != nil }
+    }
+
+    mutating func popLive(in notesById: [String: Note]) -> Note? {
+        while let id = ids.popLast() {
+            if let note = notesById[id] { return note }
+        }
+        return nil
+    }
+
+    mutating func prune(using notesById: [String: Note]) {
+        ids.removeAll { notesById[$0] == nil }
+    }
+}
+
 struct NoteReaderView: View {
     let store: AppStore
     let source: DetailSource
 
     @State private var displayedNote: Note
-    @State private var backStack: [Note] = []
+    @State private var backStack = NoteReaderStack()
     private var isRandomMode: Bool { source == .walk }
     @ScaledMetric(relativeTo: .body) private var readerFontSize: CGFloat = 20
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -93,6 +116,9 @@ struct NoteReaderView: View {
         .task(id: displayedNote.id) {
             if let api = store.api { store.walk.pivot(to: displayedNote.id, api: api, keepHistory: false) }
         }
+        .onChange(of: Set(store.notesById.keys)) { _, _ in
+            reconcileDeletedNotes()
+        }
     }
 
     private var readingText: some View {
@@ -139,10 +165,20 @@ struct NoteReaderView: View {
     }
 
     private func navigate(to note: Note, push: Bool = true) {
-        if push { backStack.append(displayedNote) }
+        if push { backStack.push(displayedNote.id) }
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
             displayedNote = note
             error = nil
+        }
+    }
+
+    private func reconcileDeletedNotes() {
+        backStack.prune(using: store.notesById)
+        guard store.notesById[displayedNote.id] == nil, draft == nil, !saving else { return }
+        if let fallback = backStack.popLive(in: store.notesById) {
+            navigate(to: fallback, push: false)
+        } else {
+            dismiss()
         }
     }
 
@@ -172,6 +208,7 @@ struct NoteReaderView: View {
                     self.draft = nil
                     selection = nil
                     error = nil
+                    reconcileDeletedNotes()
                 }
                 .disabled(saving)
                 Spacer()
@@ -179,12 +216,16 @@ struct NoteReaderView: View {
                     .disabled(saving || draft.conflict || draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("detail-save-button")
             } else {
-                if backStack.isEmpty {
+                if !backStack.hasLiveEntry(in: store.notesById) {
                     IconAction(symbol: "xmark", label: "关闭", id: "detail-close-button") { dismiss() }
                         .disabled(saving)
                 } else {
                     Button {
-                        if let note = backStack.popLast() { navigate(to: note, push: false) }
+                        if let note = backStack.popLive(in: store.notesById) {
+                            navigate(to: note, push: false)
+                        } else {
+                            dismiss()
+                        }
                     } label: {
                         ViewThatFits(in: .horizontal) {
                             Label("返回", systemImage: "chevron.left").fixedSize()
