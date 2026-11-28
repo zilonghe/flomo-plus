@@ -51,18 +51,20 @@ final class AIChatStore {
         let sourceNoteId: String
         var introducedByRewrite: Bool
         var promptLocation: AutomaticPromptLocation
+        var suppressBackgroundOnEmpty = false
     }
 
     var draft = ""
     var recoverableDraftSnapshot: RecoverableDraftSnapshot {
         var activeDraft = activeUserText()
-        if draftContextKey == "new", sending, let rescued = draftsByKey["new"] {
+        if draftContextKey == "new", sending || holdingRescuedForPendingNewChat, let rescued = draftsByKey["new"] {
             activeDraft = Self.appendDraft(activeDraft, rescued)
         }
         let hasUserDraft = Self.hasDraftText(draft) && !isOwnedInDraft(draft)
         let suppressed = isOwnedInDraft(draft)
             || (!hasUserDraft && sending && inflightDraft.map(isOwnedInFlight) == true)
-            || (draftContextKey == Self.postDeleteDraftKey && !Self.hasDraftText(activeDraft))
+            || (!Self.hasDraftText(activeDraft)
+                && (draftContextKey == Self.postDeleteDraftKey || rewriteIntent?.suppressBackgroundOnEmpty == true))
         let savedDrafts = draftsByKey.filter { key, text in
             key != draftContextKey && key != Self.postDeleteDraftKey && Self.hasDraftText(text)
                 && !isDeletedDraftContext(key)
@@ -102,8 +104,9 @@ final class AIChatStore {
     @ObservationIgnored private var deletedInsightIds: Set<String> = []
     @ObservationIgnored private var pinsEditedDuringLoad = false
     @ObservationIgnored private var draftContextKey = "new"
-    // Inactive drafts and orphaned drafts rescued while New Chat is sending.
+    // Inactive drafts and rescues not yet shown in the active New Chat composer.
     @ObservationIgnored private var draftsByKey: [String: String] = [:]
+    @ObservationIgnored private var holdingRescuedForPendingNewChat = false
     @ObservationIgnored private var requestID = ChatRequestID()
     @ObservationIgnored private var inflightDraft: String?
     @ObservationIgnored private var generation = 0
@@ -118,7 +121,15 @@ final class AIChatStore {
 
     func updateDraftFromUser(_ text: String) {
         if rewriteIntent?.promptLocation == .inDraft { rewriteIntent?.promptLocation = .none }
+        if Self.hasDraftText(text) { rewriteIntent?.suppressBackgroundOnEmpty = false }
         draft = text
+    }
+
+    func setPendingNewChatConfirmation(_ pending: Bool) {
+        holdingRescuedForPendingNewChat = pending
+        if !pending, draftContextKey == "new", !sending, let held = draftsByKey.removeValue(forKey: "new") {
+            draft = Self.appendDraft(draft, held)
+        }
     }
 
     func restoreRecoverableDrafts(_ snapshot: RecoverableDraftSnapshot) {
@@ -146,8 +157,9 @@ final class AIChatStore {
     func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil,
                useWritingStyle: Bool = false, rewriteSourceNoteId: String? = nil) {
         let source = source.flatMap { $0.isEmpty ? nil : $0 }
+        let validInsight = insight.flatMap { canReferenceInsight($0.id) ? $0 : nil }
         let nextKey = source.map { "note:\($0)" }
-            ?? insight.map { "insight:\($0.id)" }
+            ?? validInsight.map { "insight:\($0.id)" }
             ?? pins.first.map { "walk:\($0)" }
             ?? "new"
         switchDraftContext(to: nextKey, resetNew: true)
@@ -155,7 +167,7 @@ final class AIChatStore {
         var seen = Set<String>()
         let candidates = (source.map { [$0] } ?? []) + pins
         self.pins = Array(candidates.filter { isValidNote($0) && seen.insert($0).inserted }.prefix(10))
-        self.insight = insight
+        self.insight = validInsight
         self.useWritingStyle = useWritingStyle
         if let id = rewriteSourceNoteId {
             rewriteIntent = RewriteIntent(sourceNoteId: id, introducedByRewrite: true, promptLocation: .none)
@@ -164,8 +176,9 @@ final class AIChatStore {
 
     private func switchDraftContext(to nextKey: String, resetNew: Bool = false) {
         let resettingNew = resetNew && nextKey == "new" && draftContextKey == nextKey
-        // Take unseen rescued drafts out before stop() merges them into the draft being discarded.
+        // Keep unseen rescues out of the composer being discarded by New Chat.
         let unseenRescued = resettingNew ? draftsByKey.removeValue(forKey: "new") : nil
+        setPendingNewChatConfirmation(false)
         stop()
         // An abandoned automatic prompt must not come back as an ordinary saved draft.
         if isOwnedInDraft(draft) { draft = "" }
@@ -232,11 +245,15 @@ final class AIChatStore {
         rescueOrphanedDrafts()
     }
 
+    func canReferenceInsight(_ id: String) -> Bool { !deletedInsightIds.contains(id) }
+
     var pendingInsightDraftIds: [String] {
         var ids = Set(draftsByKey.compactMap { key, text in
             Self.hasDraftText(text) ? Self.boundInsightId(forContextKey: key) : nil
         })
-        if let id = Self.boundInsightId(forContextKey: draftContextKey) { ids.insert(id) }
+        if let id = Self.boundInsightId(forContextKey: draftContextKey), Self.hasDraftText(activeUserText()) {
+            ids.insert(id)
+        }
         return ids.subtracting(deletedInsightIds).sorted()
     }
 
@@ -244,7 +261,7 @@ final class AIChatStore {
         let orphanedKeys = draftsByKey.keys.filter { isDeletedDraftContext($0) }.sorted()
         for key in orphanedKeys {
             guard let rescued = draftsByKey.removeValue(forKey: key), Self.hasDraftText(rescued) else { continue }
-            if draftContextKey == "new" && !sending {
+            if draftContextKey == "new" && !sending && !holdingRescuedForPendingNewChat {
                 draft = Self.appendDraft(draft, rescued)
             } else {
                 draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", rescued)
@@ -269,13 +286,18 @@ final class AIChatStore {
 
     private func restoreInterruptedDraft(_ unsent: String?, preserveWithFollowUp: Bool = false) {
         let unsentIsAuto = unsent.map(isOwnedInFlight) ?? false
-        let rescued = draftContextKey == "new" ? draftsByKey.removeValue(forKey: "new") : nil
+        let hasHeldRescue = draftContextKey == "new" && holdingRescuedForPendingNewChat && draftsByKey["new"] != nil
+        let rescued = draftContextKey == "new" && !holdingRescuedForPendingNewChat
+            ? draftsByKey.removeValue(forKey: "new") : nil
         if !Self.hasDraftText(draft), rescued == nil, let unsent {
             draft = unsent
-            if unsentIsAuto { rewriteIntent?.promptLocation = .inDraft }
+            if unsentIsAuto {
+                rewriteIntent?.promptLocation = .inDraft
+                rewriteIntent?.suppressBackgroundOnEmpty = true
+            }
             return
         }
-        if rescued != nil || preserveWithFollowUp || isDeletedDraftContext(draftContextKey) {
+        if rescued != nil || hasHeldRescue || preserveWithFollowUp || isDeletedDraftContext(draftContextKey) {
             let keepUnsent = unsentIsAuto ? "" : (unsent ?? "")
             draft = Self.appendDraft(Self.appendDraft(keepUnsent, draft), rescued ?? "")
             if unsentIsAuto { rewriteIntent?.promptLocation = .none }
@@ -347,7 +369,7 @@ final class AIChatStore {
     }
 
     private func isDeletedDraftContext(_ key: String) -> Bool {
-        isDeletedNoteDraftContext(key) || (Self.boundInsightId(forContextKey: key).map { deletedInsightIds.contains($0) } ?? false)
+        isDeletedNoteDraftContext(key) || (Self.boundInsightId(forContextKey: key).map { !canReferenceInsight($0) } ?? false)
     }
 
     private func isValidNote(_ id: String) -> Bool { validNoteIds?.contains(id) ?? true }
@@ -502,7 +524,8 @@ final class AIChatStore {
                                    isRelayMode: @escaping @MainActor () -> Bool = { false }) {
         guard !isRelayMode(), self.sourceNoteId == sourceNoteId, canReference(sourceNoteId),
               draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        rewriteIntent = RewriteIntent(sourceNoteId: sourceNoteId, introducedByRewrite: true, promptLocation: .inDraft)
+        rewriteIntent = RewriteIntent(sourceNoteId: sourceNoteId, introducedByRewrite: true, promptLocation: .inDraft,
+                                      suppressBackgroundOnEmpty: true)
         draft = Self.rewriteNotePrompt
         send(api: api, options: options, profile: profile, requiredSourceNoteId: sourceNoteId, isRelayMode: isRelayMode)
     }

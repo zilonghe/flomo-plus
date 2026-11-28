@@ -258,15 +258,33 @@ final class InsightsStore {
         liveReportText += delta.text
     }
 
-    private func clearViewedReport() {
+    private func cancelViewedReportLoad() {
         viewReportGeneration += 1
         viewReportTask?.cancel()
         viewReportTask = nil
-        viewedReportID = nil
         loadingReport = false
+    }
+
+    private func clearViewedReport() {
+        cancelViewedReportLoad()
+        viewedReportID = nil
         viewedReport = nil
         viewedReportText = ""
         viewedReportError = nil
+    }
+
+    func invalidateConfirmedDeletedReport(_ id: String) {
+        reportsGeneration += 1
+        reports.removeAll { $0.id == id }
+        if liveReport?.id == id {
+            liveReport = nil
+            liveReportText = ""
+        }
+        if viewedReport?.id == id || viewedReportID == id {
+            if loadingReport { cancelViewedReportLoad() }
+            viewedReport = nil
+            viewedReportText = ""
+        }
     }
 
     func openReport(_ summary: InsightReport, api: WeijiAPIClient) {
@@ -284,10 +302,11 @@ final class InsightsStore {
                 viewedReportText = response.report.content ?? ""
             } catch is CancellationError {
             } catch {
+                if stamp == viewReportGeneration { viewedReportError = error.localizedDescription }
                 if context == contextGeneration, (error as? WeijiAPIError)?.status == 404 {
+                    invalidateConfirmedDeletedReport(summary.id)
                     onReportDeleted?(summary.id)
                 }
-                if stamp == viewReportGeneration { viewedReportError = error.localizedDescription }
             }
         }
     }
@@ -315,9 +334,12 @@ final class InsightsStore {
         } catch is CancellationError {
         } catch {
             if context == contextGeneration {
-                if (error as? WeijiAPIError)?.status == 404 { onReportDeleted?(id) }
                 if liveReport?.id == id { liveReportError = error.localizedDescription }
                 if viewedReportID == id { viewedReportError = error.localizedDescription }
+                if (error as? WeijiAPIError)?.status == 404 {
+                    invalidateConfirmedDeletedReport(id)
+                    onReportDeleted?(id)
+                }
             }
         }
         return false

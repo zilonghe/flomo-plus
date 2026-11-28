@@ -22,11 +22,22 @@ final class AppStore {
     enum PendingChatSwitch {
         case note(Note), rewriteNote(Note), walk(RelatedNotes), report(InsightReport), session(String), new
 
-        var readerNoteId: String? {
+        var requiredNoteId: String? {
             switch self {
             case .note(let note), .rewriteNote(let note): note.id
+            case .walk(let walk): walk.focus.id
             default: nil
             }
+        }
+
+        var requiredInsightId: String? {
+            if case .report(let report) = self { return report.id }
+            return nil
+        }
+
+        var isNewChat: Bool {
+            if case .new = self { return true }
+            return false
         }
     }
 
@@ -125,7 +136,7 @@ final class AppStore {
         self.makeTransport = makeTransport
         self.runSearch = runSearch
         self.cache = cache ?? (reset ? NoteCacheStore(directory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)) : NoteCacheStore())
-        insights.onReportDeleted = { [weak self] id in self?.chat.markInsightDeleted(id) }
+        insights.onReportDeleted = { [weak self] id in self?.handleConfirmedDeletedInsight(id) }
         insights.onReportsLoaded = { [weak self] loaded, api in
             guard let self else { return }
             await self.verifyMissingInsightDrafts(loaded: loaded, api: api, connection: self.connectionGeneration)
@@ -141,9 +152,15 @@ final class AppStore {
                 let _: ReportResponse = try await api.get("/api/insights/reports/\(id)")
             } catch let failure as WeijiAPIError where failure.status == 404 {
                 guard connection == connectionGeneration, !Task.isCancelled else { return }
-                chat.markInsightDeleted(id)
+                handleConfirmedDeletedInsight(id)
             } catch {}
         }
+    }
+
+    private func handleConfirmedDeletedInsight(_ id: String) {
+        insights.invalidateConfirmedDeletedReport(id)
+        if pendingChatSwitch?.requiredInsightId == id { cancelChatSwitch() }
+        chat.markInsightDeleted(id)
     }
 
     func start() {
@@ -478,8 +495,8 @@ final class AppStore {
         let stamp = dataGeneration
         let connection = connectionGeneration
         workingNotes = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        if let pendingId = pendingChatSwitch?.readerNoteId, workingNotes[pendingId] == nil {
-            pendingChatSwitch = nil
+        if let pendingId = pendingChatSwitch?.requiredNoteId, workingNotes[pendingId] == nil {
+            cancelChatSwitch()
         }
         let validIds = Set(workingNotes.keys)
         // Invalidate pending rewrites before rebuilding the index can suspend this update.
@@ -607,36 +624,52 @@ final class AppStore {
     func requestSelectChatSession(_ id: String) { requestChatSwitch(.session(id)) }
     func requestNewChat() { requestChatSwitch(.new) }
 
-    func cancelChatSwitch() { pendingChatSwitch = nil }
+    func cancelChatSwitch() {
+        pendingChatSwitch = nil
+        chat.setPendingNewChatConfirmation(false)
+    }
 
     func confirmChatSwitch() {
         guard let target = pendingChatSwitch else { return }
-        pendingChatSwitch = nil
         switchChat(to: target)
     }
 
+    private func canReferenceChatTarget(_ target: PendingChatSwitch) -> Bool {
+        if let id = target.requiredNoteId, !chat.canReference(id) { return false }
+        if let id = target.requiredInsightId, !chat.canReferenceInsight(id) { return false }
+        return true
+    }
+
     private func requestChatSwitch(_ target: PendingChatSwitch) {
-        if let noteId = target.readerNoteId, !chat.canReference(noteId) { return }
+        guard canReferenceChatTarget(target) else { return }
         if case .rewriteNote(let note) = target {
             guard workingNotes[note.id] != nil, api != nil else { return }
             guard !isRelayMode else { error = InsightsStore.writingStyleRelayMessage; return }
         }
-        if chat.sending { pendingChatSwitch = target }
-        else { switchChat(to: target) }
+        if chat.sending {
+            pendingChatSwitch = target
+            chat.setPendingNewChatConfirmation(target.isNewChat)
+        } else {
+            switchChat(to: target)
+        }
     }
 
     private func switchChat(to target: PendingChatSwitch) {
+        pendingChatSwitch = nil
+        defer {
+            if !target.isNewChat { chat.setPendingNewChatConfirmation(false) }
+        }
+        guard canReferenceChatTarget(target) else { return }
         rewriteGeneration += 1
         rewriteTask?.cancel()
         rewriteTask = nil
         switch target {
         case .note(let note):
-            guard chat.canReference(note.id) else { return }
             detail = nil
             chat.start(source: note.id)
             if let api { chat.loadSource(note.id, api: api) }
         case .rewriteNote(let note):
-            guard chat.canReference(note.id), workingNotes[note.id] != nil, let api else { return }
+            guard workingNotes[note.id] != nil, let api else { return }
             guard !isRelayMode else { error = InsightsStore.writingStyleRelayMessage; return }
             detail = nil
             chat.start(source: note.id, useWritingStyle: true, rewriteSourceNoteId: note.id)
