@@ -8,6 +8,27 @@ final class InsightsStore {
     static let writingStyleMaxAnchors = 5
     static let blindTestMaxPrompt = 500
 
+    final class SaveBarrier: @unchecked Sendable {
+        private let lock = NSLock()
+        private var profilePendingOrFailed = false
+        private var stylePendingOrFailed = false
+
+        fileprivate func update(profile: Bool, style: Bool) {
+            lock.lock()
+            profilePendingOrFailed = profile
+            stylePendingOrFailed = style
+            lock.unlock()
+        }
+
+        func hasPendingOrFailed(includeStyle: Bool) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return profilePendingOrFailed || (includeStyle && stylePendingOrFailed)
+        }
+    }
+
+    let saveBarrier = SaveBarrier()
+
     var scope = InsightScope()
     private(set) var lenses: [InsightLens] = []
     var lensId = "builtin:default"
@@ -31,13 +52,14 @@ final class InsightsStore {
     private(set) var generatingProfile = false
     private(set) var savingProfile = false
     private(set) var profileError: String?
-    @ObservationIgnored private var profileSaveError: Error?
-    @ObservationIgnored private var profileSaveTask: Task<Bool, Never>?
+    @ObservationIgnored private var profileSaveError: Error? { didSet { syncSaveBarrier() } }
+    @ObservationIgnored private var profileSaveTask: Task<Bool, Never>? { didSet { syncSaveBarrier() } }
     @ObservationIgnored private var profileTask: Task<Void, Never>?
     @ObservationIgnored private var profileGeneration = 0
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var runGeneration = 0
-    @ObservationIgnored private var runningReportId: String?
+    @ObservationIgnored private var livePreviewReportId: String?
+    @ObservationIgnored private var liveRunReportId: String?
     @ObservationIgnored private var viewReportTask: Task<Void, Never>?
     @ObservationIgnored private var viewReportGeneration = 0
     private(set) var viewedReportID: String?
@@ -64,8 +86,8 @@ final class InsightsStore {
     private(set) var blindTestVote: String?
     private(set) var blindTestError: String?
     @ObservationIgnored private var styleLoadTask: Task<Void, Never>?
-    @ObservationIgnored private var styleSaveTask: Task<Bool, Never>?
-    @ObservationIgnored private var styleSaveError: Error?
+    @ObservationIgnored private var styleSaveTask: Task<Bool, Never>? { didSet { syncSaveBarrier() } }
+    @ObservationIgnored private var styleSaveError: Error? { didSet { syncSaveBarrier() } }
     @ObservationIgnored private var styleTask: Task<Void, Never>?
     @ObservationIgnored private var styleGeneration = 0
     @ObservationIgnored private var styleSaveGeneration = 0
@@ -73,6 +95,11 @@ final class InsightsStore {
     @ObservationIgnored private var blindTestGeneration = 0
 
     var selectedLens: InsightLens? { lenses.first { $0.id == lensId } }
+
+    private func syncSaveBarrier() {
+        saveBarrier.update(profile: profileSaveTask != nil || profileSaveError != nil,
+                           style: styleSaveTask != nil || styleSaveError != nil)
+    }
 
     func prepareRecipe(_ lens: InsightLens, api: WeijiAPIClient?) {
         lensId = lens.id
@@ -143,8 +170,8 @@ final class InsightsStore {
         stopReport()
         deletingReport = false
         runningLensName = nil
-        liveReport = nil
-        liveReportText = ""
+        clearLiveReportPreview()
+        liveRunReportId = nil
         liveReportError = nil
         clearViewedReport()
         error = nil
@@ -217,7 +244,6 @@ final class InsightsStore {
         runGeneration += 1
         runTask?.cancel()
         runTask = nil
-        runningReportId = nil
         running = false
     }
 
@@ -225,9 +251,8 @@ final class InsightsStore {
         guard !running else { return }
         runGeneration += 1
         let stamp = runGeneration
-        runningReportId = nil
-        liveReport = nil
-        liveReportText = ""
+        liveRunReportId = nil
+        clearLiveReportPreview()
         liveReportError = nil
         runningLensName = selectedLens?.name
         running = true
@@ -238,12 +263,7 @@ final class InsightsStore {
         fields["useProfile"] = .bool(useProfile)
         fields["clientRequestId"] = .string(UUID().uuidString.lowercased())
         runTask = Task {
-            defer {
-                if stamp == runGeneration {
-                    runningReportId = nil
-                    running = false
-                }
-            }
+            defer { if stamp == runGeneration { running = false } }
             do {
                 if useProfile { try await awaitProfileSave() }
                 let result: ReportResponse = try await api.stream("/api/insights/run", fields) { [weak self] frame in
@@ -251,8 +271,7 @@ final class InsightsStore {
                 }
                 guard stamp == runGeneration, !Task.isCancelled else { return }
                 if deletedReportIds.contains(result.report.id) {
-                    liveReport = nil
-                    liveReportText = ""
+                    clearLiveReportPreview()
                     return
                 }
                 liveReport = result.report
@@ -263,11 +282,11 @@ final class InsightsStore {
             } catch is CancellationError {
             } catch {
                 if stamp == runGeneration {
-                    if let id = runningReportId, deletedReportIds.contains(id) {
-                        liveReport = nil
-                        liveReportText = ""
+                    if let id = liveRunReportId, deletedReportIds.contains(id) {
+                        clearLiveReportPreview()
+                    } else {
+                        liveReportError = error.localizedDescription
                     }
-                    liveReportError = error.localizedDescription
                 }
             }
         }
@@ -277,19 +296,25 @@ final class InsightsStore {
         guard stamp == runGeneration else { return }
         switch frame.event {
         case "delta":
-            if let id = runningReportId, deletedReportIds.contains(id) { return }
+            if let id = liveRunReportId, deletedReportIds.contains(id) { return }
             guard let delta = try? JSONDecoder().decode(StreamDelta.self, from: Data(frame.data.utf8)) else { return }
             liveReportText += delta.text
         case "done":
             guard let result = try? JSONDecoder().decode(ReportResponse.self, from: Data(frame.data.utf8)) else { return }
-            runningReportId = result.report.id
+            livePreviewReportId = result.report.id
+            liveRunReportId = result.report.id
             if deletedReportIds.contains(result.report.id) {
-                liveReport = nil
-                liveReportText = ""
+                clearLiveReportPreview()
             }
         default:
             break
         }
+    }
+
+    private func clearLiveReportPreview() {
+        liveReport = nil
+        liveReportText = ""
+        livePreviewReportId = nil
     }
 
     private func cancelViewedReportLoad() {
@@ -311,11 +336,9 @@ final class InsightsStore {
         deletedReportIds.insert(id)
         reportsGeneration += 1
         reports.removeAll { $0.id == id }
-        let matchesLive = liveReport?.id == id
-        if matchesLive || runningReportId == id {
-            liveReport = nil
-            liveReportText = ""
-            if matchesLive, let errorMessage { liveReportError = errorMessage }
+        if liveReport?.id == id || livePreviewReportId == id {
+            clearLiveReportPreview()
+            if let errorMessage { liveReportError = errorMessage }
         }
         if viewedReport?.id == id || viewedReportID == id {
             if loadingReport { cancelViewedReportLoad() }
@@ -360,7 +383,7 @@ final class InsightsStore {
         do {
             let _: DeletedResponse = try await api.delete("/api/insights/reports/\(id)")
             guard context == contextGeneration, !Task.isCancelled else { return false }
-            if liveReport?.id == id { liveReportError = nil }
+            if liveReport?.id == id || livePreviewReportId == id { liveReportError = nil }
             if viewedReportID == id { clearViewedReport() }
             invalidateConfirmedDeletedReport(id)
             onReportDeleted?(id)
@@ -400,7 +423,6 @@ final class InsightsStore {
         let stamp = profileGeneration
         savingProfile = true
         profileError = nil
-        profileSaveError = nil
         let task = Task {
             defer {
                 if stamp == profileGeneration {
@@ -425,10 +447,9 @@ final class InsightsStore {
             }
         }
         profileSaveTask = task
+        profileSaveError = nil
         return task
     }
-
-    var hasPendingOrFailedProfileSave: Bool { profileSaveTask != nil || profileSaveError != nil }
 
     func awaitProfileSave() async throws {
         if let task = profileSaveTask { _ = await task.value }
@@ -568,8 +589,6 @@ final class InsightsStore {
         guard ids.count < Self.writingStyleMaxAnchors, !ids.contains(id) else { return nil }
         return saveWritingStyle(.init(anchorNoteIds: ids + [id]), api: api)
     }
-
-    var hasPendingOrFailedWritingStyleSave: Bool { styleSaveTask != nil || styleSaveError != nil }
 
     func awaitWritingStyleSave() async throws {
         let stamp = contextGeneration

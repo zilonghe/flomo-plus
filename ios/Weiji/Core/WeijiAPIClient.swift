@@ -283,9 +283,13 @@ actor WeijiAPIClient {
     }
 
     func stream<Result: Decodable & Sendable>(_ path: String, _ fields: [String: JSONValue],
+                   beforeDispatch: (@Sendable () -> Bool)? = nil,
                    onFrame: @Sendable (SSEParser.Frame) async -> Void) async throws -> Result {
         do {
+            try Task.checkCancellation()
             let request = try request(path, method: "POST", body: JSONEncoder().encode(fields), stream: true)
+            try Task.checkCancellation()
+            if let beforeDispatch, !beforeDispatch() { throw CancellationError() }
             let (bytes, response) = try await session.bytes(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(code) else {

@@ -29,6 +29,39 @@ struct ChatRequestID {
     mutating func clear() { previous = nil; id = "" }
 }
 
+private final class SendDispatchGate: @unchecked Sendable {
+    private enum State { case pending, dispatched, deferredForSave, cancelled }
+    private let lock = NSLock()
+    private var state: State = .pending
+
+    func commitIfReady(saveBarrier: InsightsStore.SaveBarrier, includeStyle: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard state == .pending else { return false }
+        // The save snapshot orders dispatch while the gate excludes cancellation.
+        if saveBarrier.hasPendingOrFailed(includeStyle: includeStyle) {
+            state = .deferredForSave
+            return false
+        }
+        state = .dispatched
+        return true
+    }
+
+    func cancelIfPending() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard state == .pending || state == .deferredForSave else { return false }
+        state = .cancelled
+        return true
+    }
+
+    var wasDeferredForSave: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return state == .deferredForSave
+    }
+}
+
 @Observable @MainActor
 final class AIChatStore {
     static let rewriteNotePrompt = "请基于这条笔记的真实内容，按我的写作风格改写成一段自然流畅的文字，保留原意和事实，不要编造经历。"
@@ -41,7 +74,17 @@ final class AIChatStore {
         let activeDraft: String
         let savedDrafts: [String: String]
         let suppressedAutomaticPrompt: Bool
+        let requiresDeletedInsightConfirmation: Bool
         var isEmpty: Bool { activeDraft.isEmpty && savedDrafts.isEmpty }
+
+        init(activeContextKey: String, activeDraft: String, savedDrafts: [String: String],
+             suppressedAutomaticPrompt: Bool, requiresDeletedInsightConfirmation: Bool = false) {
+            self.activeContextKey = activeContextKey
+            self.activeDraft = activeDraft
+            self.savedDrafts = savedDrafts
+            self.suppressedAutomaticPrompt = suppressedAutomaticPrompt
+            self.requiresDeletedInsightConfirmation = requiresDeletedInsightConfirmation
+        }
     }
 
     private enum AutomaticPromptLocation {
@@ -75,8 +118,11 @@ final class AIChatStore {
                 && !isDeletedDraftContext(key)
         }
         let activeKey = isDeletedDraftContext(draftContextKey) ? Self.postDeleteDraftKey : draftContextKey
+        let needsDeletedInsightConfirmation = requiresDeletedInsightConfirmation
+            || (sending && pendingRequiredInsightId.map { !canReferenceInsight($0) } == true)
         return RecoverableDraftSnapshot(activeContextKey: activeKey, activeDraft: activeDraft,
-                                        savedDrafts: savedDrafts, suppressedAutomaticPrompt: suppressed)
+                                        savedDrafts: savedDrafts, suppressedAutomaticPrompt: suppressed,
+                                        requiresDeletedInsightConfirmation: needsDeletedInsightConfirmation)
     }
     var recoverableDraft: String {
         let snapshot = recoverableDraftSnapshot
@@ -89,6 +135,7 @@ final class AIChatStore {
     @ObservationIgnored private var sendingWithStyle = false
     @ObservationIgnored private var pendingRequiredSourceNoteId: String?
     @ObservationIgnored private var pendingRequiredInsightId: String?
+    @ObservationIgnored private var pendingDispatchGate: SendDispatchGate?
     @ObservationIgnored private var rewriteIntent: RewriteIntent?
     private(set) var pins: [String] = []
     private(set) var session: ChatSession?
@@ -108,7 +155,8 @@ final class AIChatStore {
     private(set) var sourceNoteId: String?
     @ObservationIgnored private var validNoteIds: Set<String>?
     @ObservationIgnored private var deletedInsightIds: Set<String> = []
-    @ObservationIgnored private var blockedDeletedInsightId: String?
+    @ObservationIgnored private var deletedSessionIds: Set<String> = []
+    @ObservationIgnored private var requiresDeletedInsightConfirmation = false
     @ObservationIgnored var onSessionRemoved: (@MainActor (String, Bool) -> Void)?
     @ObservationIgnored private var pinsEditedDuringLoad = false
     @ObservationIgnored private var draftContextKey = "new"
@@ -120,6 +168,7 @@ final class AIChatStore {
     @ObservationIgnored private var inflightDraft: String?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var listGeneration = 0
+    @ObservationIgnored private var resetGeneration = 0
     @ObservationIgnored private var pendingDelta = ""
     @ObservationIgnored private var pendingReasoning = ""
     @ObservationIgnored private var reasoningLength = 0
@@ -150,6 +199,7 @@ final class AIChatStore {
     }
 
     func restoreRecoverableDrafts(_ snapshot: RecoverableDraftSnapshot) {
+        requiresDeletedInsightConfirmation = false
         draftsByKey = snapshot.savedDrafts
         if snapshot.suppressedAutomaticPrompt {
             draftContextKey = Self.postDeleteDraftKey
@@ -168,6 +218,10 @@ final class AIChatStore {
             draft = savedNew
         } else {
             draft = Self.appendDraft(savedNew, active)
+        }
+        if snapshot.requiresDeletedInsightConfirmation && Self.hasDraftText(draft) {
+            requiresDeletedInsightConfirmation = true
+            error = Self.deletedInsightReportMessage
         }
     }
 
@@ -200,7 +254,7 @@ final class AIChatStore {
         // An abandoned automatic prompt must not come back as an ordinary saved draft.
         if isOwnedInDraft(draft) { draft = "" }
         rewriteIntent = nil
-        blockedDeletedInsightId = nil
+        requiresDeletedInsightConfirmation = false
         if nextKey != draftContextKey {
             // Stop can restore the interrupted question before the old context is saved.
             if draftContextKey == Self.postDeleteDraftKey || isDeletedDraftContext(draftContextKey) {
@@ -230,10 +284,12 @@ final class AIChatStore {
     }
 
     func reset() {
+        resetGeneration += 1
         validNoteIds = nil
         deletedInsightIds = []
         pinsEditedDuringLoad = false
         start()
+        deletedSessionIds = []
         draftsByKey = [:]
         draftContextKey = "new"
         draft = ""
@@ -258,13 +314,15 @@ final class AIChatStore {
     }
 
     func markInsightDeleted(_ id: String) {
+        let shouldCancelSend = sending && pendingRequiredInsightId == id
+            && (pendingDispatchGate?.cancelIfPending() ?? true)
         let wasActiveInsight = Self.boundInsightId(forContextKey: draftContextKey) == id || insight?.id == id
         let newlyDeleted = deletedInsightIds.insert(id).inserted
         if insight?.id == id { insight = nil }
-        if sending && pendingRequiredInsightId == id {
+        if shouldCancelSend {
             cancelDeletedInsightSend(id)
         } else if newlyDeleted, !sending, wasActiveInsight, Self.hasDraftText(draft) {
-            blockedDeletedInsightId = id
+            requiresDeletedInsightConfirmation = true
             error = Self.deletedInsightReportMessage
         }
         rescueOrphanedDrafts()
@@ -409,6 +467,10 @@ final class AIChatStore {
         key.hasPrefix("insight:") ? String(key.dropFirst(8)) : nil
     }
 
+    private static func boundSessionId(forContextKey key: String) -> String? {
+        key.hasPrefix("session:") ? String(key.dropFirst(8)) : nil
+    }
+
     private func isValidNoteDraftContext(_ key: String) -> Bool {
         guard let id = Self.boundNoteId(forContextKey: key) else { return false }
         return isValidNote(id)
@@ -419,7 +481,9 @@ final class AIChatStore {
     }
 
     private func isDeletedDraftContext(_ key: String) -> Bool {
-        isDeletedNoteDraftContext(key) || (Self.boundInsightId(forContextKey: key).map { !canReferenceInsight($0) } ?? false)
+        isDeletedNoteDraftContext(key)
+            || (Self.boundInsightId(forContextKey: key).map { !canReferenceInsight($0) } ?? false)
+            || (Self.boundSessionId(forContextKey: key).map { deletedSessionIds.contains($0) } ?? false)
     }
 
     private func isValidNote(_ id: String) -> Bool { validNoteIds?.contains(id) ?? true }
@@ -433,6 +497,8 @@ final class AIChatStore {
     }
 
     func stop(preserveInFlightWithDraft: Bool = false) {
+        _ = pendingDispatchGate?.cancelIfPending()
+        pendingDispatchGate = nil
         let wasSending = sending
         let unsent = inflightDraft
         inflightDraft = nil
@@ -467,6 +533,7 @@ final class AIChatStore {
 
     @discardableResult
     func select(_ id: String, api: WeijiAPIClient) -> Task<Void, Never> {
+        guard !deletedSessionIds.contains(id) else { return Task {} }
         switchDraftContext(to: "session:\(id)")
         let loadTask = load("/api/ai/sessions/\(id)", api: api, restoreSourcePin: true)
         return Task {
@@ -485,6 +552,7 @@ final class AIChatStore {
                 try Task.checkCancellation()
                 let response: ChatResponse = try await api.get(path)
                 guard stamp == generation, !Task.isCancelled else { return false }
+                if let loaded = response.session, deletedSessionIds.contains(loaded.id) { return false }
                 session = response.session
                 if let rawSource = response.session?.sourceNoteId {
                     let source = validSource(rawSource)
@@ -523,7 +591,8 @@ final class AIChatStore {
             do {
                 let page: ChatPage = try await api.get(path)
                 guard stamp == listGeneration else { return }
-                sessions = more ? sessions + page.sessions.filter { item in !sessions.contains { $0.id == item.id } } : page.sessions
+                let visible = page.sessions.filter { !deletedSessionIds.contains($0.id) }
+                sessions = more ? sessions + visible.filter { item in !sessions.contains { $0.id == item.id } } : visible
                 cursor = page.nextCursor
             } catch is CancellationError {
             } catch {
@@ -533,18 +602,27 @@ final class AIChatStore {
     }
 
     func remove(_ id: String, api: WeijiAPIClient) async {
-        let stamp = listGeneration
+        let accountStamp = resetGeneration
         do {
             let _: DeletedResponse = try await api.delete("/api/ai/sessions/\(id)")
-            guard stamp == listGeneration else { return }
-            let removedActive = session?.id == id
-            if removedActive { start() }
-            draftsByKey.removeValue(forKey: "session:\(id)")
+            guard accountStamp == resetGeneration, !Task.isCancelled else { return }
+            deletedSessionIds.insert(id)
+            let deletedKey = "session:\(id)"
+            let removedActive = session?.id == id || draftContextKey == deletedKey
+            if removedActive {
+                // Discard only the draft owned by the history the user deleted.
+                if draftContextKey == deletedKey {
+                    inflightDraft = nil
+                    draft = ""
+                }
+                start()
+            }
+            draftsByKey.removeValue(forKey: deletedKey)
             sessions.removeAll { $0.id == id }
             onSessionRemoved?(id, removedActive)
         } catch is CancellationError {
         } catch {
-            if stamp == listGeneration { self.error = error.localizedDescription }
+            if accountStamp == resetGeneration, !Task.isCancelled { self.error = error.localizedDescription }
         }
     }
 
@@ -593,8 +671,8 @@ final class AIChatStore {
         let styled = useWritingStyle
         guard !(styled && isRelayMode()) else { error = InsightsStore.writingStyleRelayMessage; return }
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if blockedDeletedInsightId != nil {
-            blockedDeletedInsightId = nil
+        if requiresDeletedInsightConfirmation {
+            requiresDeletedInsightConfirmation = false
             error = Self.deletedInsightReportMessage
             return
         }
@@ -619,31 +697,21 @@ final class AIChatStore {
                     sendingWithStyle = false
                     pendingRequiredSourceNoteId = nil
                     pendingRequiredInsightId = nil
+                    pendingDispatchGate = nil
                     pendingQuestion = ""
                     streamedText = ""
                     inflightDraft = nil
                 }
             }
             do {
-                // Either save can start while the chat is waiting for the other.
+                let response: ChatResponse
+                let saveBarrier = profile.saveBarrier
                 while true {
-                    try await profile.awaitProfileSave()
-                    if styled { try await profile.awaitWritingStyleSave() }
-                    if !(profile.hasPendingOrFailedProfileSave || (styled && profile.hasPendingOrFailedWritingStyleSave)) {
-                        break
-                    }
-                }
-                try Task.checkCancellation()
-                guard stamp == generation else { return }
-                guard validateRequiredSource(effectiveRequiredSource) else { return }
-                guard validateRequiredInsight(requiredInsightId) else { return }
-                if styled && isRelayMode() {
-                    reconcileRelayMode(true)
-                    return
-                }
-                if effectiveRequiredSource != nil || requiredInsightId != nil {
-                    // Wait for the API actor without releasing the source guards.
-                    _ = try await api.request("/api/ai/chat", method: "POST", stream: true)
+                    // Either save can start while the chat is waiting for the other.
+                    repeat {
+                        try await profile.awaitProfileSave()
+                        if styled { try await profile.awaitWritingStyleSave() }
+                    } while saveBarrier.hasPendingOrFailed(includeStyle: styled)
                     try Task.checkCancellation()
                     guard stamp == generation else { return }
                     guard validateRequiredSource(effectiveRequiredSource) else { return }
@@ -652,26 +720,34 @@ final class AIChatStore {
                         reconcileRelayMode(true)
                         return
                     }
-                }
-                let message = Self.message(typed, insight: session == nil ? insight : nil)
-                let signature = ChatSignature(sessionId: session?.id, expectedVersion: session?.version,
-                                              sourceNoteId: validSource(sourceNoteId), message: message,
-                                              referencedNoteIds: pins, model: options.model, provider: options.provider,
-                                              useProfile: useProfile, reasoningEffort: options.reasoningEffort,
-                                              useWritingStyle: styled)
-                var fields = options.fields
-                fields["message"] = .string(message)
-                fields["referencedNoteIds"] = .strings(signature.referencedNoteIds)
-                fields["useProfile"] = .bool(signature.useProfile)
-                if styled { fields["useWritingStyle"] = .bool(true) }
-                fields["clientRequestId"] = .string(requestID.resolve(signature))
-                if let id = signature.sessionId { fields["sessionId"] = .string(id) }
-                if let id = signature.sourceNoteId { fields["sourceNoteId"] = .string(id) }
-                if let version = signature.expectedVersion { fields["expectedVersion"] = .number(version) }
-                // Once handed to the API client, deleting the report does not interrupt this request.
-                pendingRequiredInsightId = nil
-                let response: ChatResponse = try await api.stream("/api/ai/chat", fields) { [weak self] frame in
-                    await self?.receive(frame, generation: stamp)
+                    let message = Self.message(typed, insight: session == nil ? insight : nil)
+                    let signature = ChatSignature(sessionId: session?.id, expectedVersion: session?.version,
+                                                  sourceNoteId: validSource(sourceNoteId), message: message,
+                                                  referencedNoteIds: pins, model: options.model, provider: options.provider,
+                                                  useProfile: useProfile, reasoningEffort: options.reasoningEffort,
+                                                  useWritingStyle: styled)
+                    var fields = options.fields
+                    fields["message"] = .string(message)
+                    fields["referencedNoteIds"] = .strings(signature.referencedNoteIds)
+                    fields["useProfile"] = .bool(signature.useProfile)
+                    if styled { fields["useWritingStyle"] = .bool(true) }
+                    fields["clientRequestId"] = .string(requestID.resolve(signature))
+                    if let id = signature.sessionId { fields["sessionId"] = .string(id) }
+                    if let id = signature.sourceNoteId { fields["sourceNoteId"] = .string(id) }
+                    if let version = signature.expectedVersion { fields["expectedVersion"] = .number(version) }
+
+                    let gate = SendDispatchGate()
+                    pendingDispatchGate = gate
+                    do {
+                        response = try await api.stream("/api/ai/chat", fields, beforeDispatch: {
+                            gate.commitIfReady(saveBarrier: saveBarrier, includeStyle: styled)
+                        }) { [weak self] frame in
+                            await self?.receive(frame, generation: stamp)
+                        }
+                        break
+                    } catch is CancellationError where stamp == generation && !Task.isCancelled && gate.wasDeferredForSave {
+                        pendingDispatchGate = nil
+                    }
                 }
                 guard stamp == generation, !Task.isCancelled else { return }
                 guard let latest = response.session else { throw WeijiAPIError.interrupted }
@@ -701,14 +777,22 @@ final class AIChatStore {
                     guard stamp == generation else { return }
                     if let updated = latest?.session { updateSession(updated) }
                 }
-                restoreInterruptedDraft(inflightDraft)
-                error = failure.message
+                restoreFailedSend(failure.message, requiredInsightId: requiredInsightId)
             } catch {
                 if stamp == generation {
-                    restoreInterruptedDraft(inflightDraft)
-                    self.error = error.localizedDescription
+                    restoreFailedSend(error.localizedDescription, requiredInsightId: requiredInsightId)
                 }
             }
+        }
+    }
+
+    private func restoreFailedSend(_ message: String, requiredInsightId: String?) {
+        restoreInterruptedDraft(inflightDraft)
+        if let requiredInsightId, !canReferenceInsight(requiredInsightId), Self.hasDraftText(draft) {
+            requiresDeletedInsightConfirmation = true
+            error = Self.deletedInsightReportMessage
+        } else {
+            error = message
         }
     }
 
