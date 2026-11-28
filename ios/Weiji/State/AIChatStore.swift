@@ -39,6 +39,7 @@ final class AIChatStore {
         let activeContextKey: String
         let activeDraft: String
         let savedDrafts: [String: String]
+        let suppressedAutomaticPrompt: Bool
         var isEmpty: Bool { activeDraft.isEmpty && savedDrafts.isEmpty }
     }
 
@@ -54,23 +55,19 @@ final class AIChatStore {
 
     var draft = ""
     var recoverableDraftSnapshot: RecoverableDraftSnapshot {
-        let activeDraft: String
-        if !draft.isEmpty {
-            activeDraft = isOwnedInDraft(draft) ? "" : draft
-        } else if let inflight = inflightDraft, !inflight.isEmpty {
-            activeDraft = isOwnedInFlight(inflight) ? "" : inflight
-        } else {
-            activeDraft = ""
-        }
+        let suppressed = (!draft.isEmpty && isOwnedInDraft(draft))
+            || (draft.isEmpty && inflightDraft.map(isOwnedInFlight) == true)
+        let activeDraft = suppressed ? "" : (draft.isEmpty ? inflightDraft ?? "" : draft)
         let savedDrafts = draftsByKey.filter { key, text in
             key != draftContextKey && key != Self.postDeleteDraftKey && !text.isEmpty
                 && (!key.hasPrefix("note:") || isValidNoteDraftContext(key))
         }
-        return RecoverableDraftSnapshot(activeContextKey: draftContextKey, activeDraft: activeDraft, savedDrafts: savedDrafts)
+        return RecoverableDraftSnapshot(activeContextKey: draftContextKey, activeDraft: activeDraft,
+                                        savedDrafts: savedDrafts, suppressedAutomaticPrompt: suppressed)
     }
     var recoverableDraft: String {
-        if isOwnedInDraft(draft) || (draft.isEmpty && inflightDraft.map(isOwnedInFlight) == true) { return "" }
         let snapshot = recoverableDraftSnapshot
+        if snapshot.suppressedAutomaticPrompt { return "" }
         return snapshot.activeDraft.isEmpty ? (snapshot.savedDrafts["new"] ?? "") : snapshot.activeDraft
     }
     private(set) var composerResetCount = 0
@@ -119,13 +116,18 @@ final class AIChatStore {
 
     func restoreRecoverableDrafts(_ snapshot: RecoverableDraftSnapshot) {
         draftsByKey = snapshot.savedDrafts
+        if snapshot.suppressedAutomaticPrompt {
+            draftContextKey = Self.postDeleteDraftKey
+            draft = ""
+            return
+        }
         let savedNew = draftsByKey.removeValue(forKey: "new") ?? ""
         draftContextKey = "new"
         let key = snapshot.activeContextKey
         let active = snapshot.activeDraft
-        if Self.hasDraftText(savedNew), Self.hasDraftText(active),
-           key.hasPrefix("session:") || isValidNoteDraftContext(key) {
-            // Keep an independent history or note draft available in its original context.
+        let isIndependentContext = key != "new" && key != Self.postDeleteDraftKey
+            && (!key.hasPrefix("note:") || isValidNoteDraftContext(key))
+        if Self.hasDraftText(savedNew), Self.hasDraftText(active), isIndependentContext {
             draftsByKey[key] = active
             draft = savedNew
         } else {
@@ -207,6 +209,16 @@ final class AIChatStore {
             cancelDeletedRewrite(intent)
         } else {
             _ = validateRequiredSource(pendingRequiredSourceNoteId)
+        }
+
+        let orphanedKeys = draftsByKey.keys.filter { $0.hasPrefix("note:") && !isValidNoteDraftContext($0) }
+        for key in orphanedKeys.sorted() {
+            guard let rescued = draftsByKey.removeValue(forKey: key), !rescued.isEmpty else { continue }
+            if draftContextKey == "new" {
+                draft = Self.appendDraft(draft, rescued)
+            } else {
+                draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", rescued)
+            }
         }
     }
 
