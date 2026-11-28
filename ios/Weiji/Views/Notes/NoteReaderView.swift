@@ -44,6 +44,7 @@ struct NoteReaderView: View {
     @State private var error: String?
     @State private var saving = false
     @State private var confirmingDelete = false
+    @State private var confirmingDiscard = false
     @FocusState private var editing: Bool
 
     private var current: Note { store.notesById[displayedNote.id] ?? displayedNote }
@@ -113,6 +114,9 @@ struct NoteReaderView: View {
         .confirmationDialog("删除这条笔记？", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("删除", role: .destructive, action: delete)
         }
+        .confirmationDialog("放弃尚未保存的修改？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+            Button("放弃修改", role: .destructive, action: discardEdit)
+        }
         .task(id: displayedNote.id) {
             if let api = store.api { store.walk.pivot(to: displayedNote.id, api: api, keepHistory: false) }
         }
@@ -172,6 +176,14 @@ struct NoteReaderView: View {
         }
     }
 
+    private func discardEdit() {
+        editing = false
+        draft = nil
+        selection = nil
+        error = nil
+        reconcileDeletedNotes()
+    }
+
     private func reconcileDeletedNotes() {
         backStack.prune(using: store.notesById)
         guard store.notesById[displayedNote.id] == nil, draft == nil, !saving else { return }
@@ -204,11 +216,11 @@ struct NoteReaderView: View {
         HStack(spacing: 4) {
             if let draft {
                 toolbarText("取消", color: Theme.ink2) {
-                    editing = false
-                    self.draft = nil
-                    selection = nil
-                    error = nil
-                    reconcileDeletedNotes()
+                    if draft.body != draft.base.body {
+                        confirmingDiscard = true
+                    } else {
+                        discardEdit()
+                    }
                 }
                 .disabled(saving)
                 Spacer()

@@ -2316,7 +2316,7 @@ function emptyAIState() {
     lifecycle: null, scrollY: 0, session: null, sessions: new Map(), sessionCache: new Map(), selectedSessionId: null, upgradedNoteIds: new Set(),
     visible: false, drafts: new Map(), draftKey: 'new', nextCursor: null, loadingSessions: false, sessionsLoaded: false,
     source: null, fromWalk: false, insightContext: null, pendingTurn: null, followBottom: true, pins: new Set(),
-    sending: null, loadingSession: false, sessionLoadSeq: 0, requestKey: null, atIndex: null, useWritingStyle: false,
+    sending: null, loadingSession: false, sessionLoadFailed: false, sessionLoadSeq: 0, requestKey: null, atIndex: null, useWritingStyle: false,
   };
 }
 let ai = emptyAIState();
@@ -3484,7 +3484,7 @@ function syncAIControls() {
   syncAIStyleToggle();
   const send = $('ai-chat-send');
   const stopping = Boolean(ai.sending || ins?.run);
-  send.disabled = Boolean(ai.loadingSession);
+  send.disabled = Boolean(ai.loadingSession || ai.sessionLoadFailed);
   aiButton('new-session').hidden = !(ai.session?.turns.length || ai.source || ai.pendingTurn || ins?.report || ins?.attempt);
   send.classList.toggle('ai-send-stopping', stopping);
   send.querySelector('span').textContent = stopping ? '停止' : '发送';
@@ -3497,6 +3497,7 @@ function newAISession(source = null, session = null, { extraPinIds = [], fromWal
   clearReport();
   ai.sessionLoadSeq++;
   ai.loadingSession = false;
+  ai.sessionLoadFailed = false;
   ai.session = session;
   ai.selectedSessionId = session?.id ?? source?.id ?? null;
   ai.source = source;
@@ -3544,6 +3545,7 @@ async function selectAISession(path, source = null, { preserveDraft = false, id 
   }
   view.selectedSessionId = id ?? source?.id ?? null;
   view.loadingSession = !cached;
+  view.sessionLoadFailed = false;
   setAISessionRail(false);
   if (!cached) {
     setError('ai-chat-error', '');
@@ -3557,6 +3559,7 @@ async function selectAISession(path, source = null, { preserveDraft = false, id 
     if (!isCurrent()) return false;
     if (session) storeAISession(view, session);
     view.loadingSession = false;
+    view.sessionLoadFailed = false;
     if (cached && (!session || session.version <= (view.session?.version ?? 0) || view.sending)) return true;
     const note = source ?? state.notes.get(session?.sourceNoteId);
     const resolvedKey = session?.id ?? note?.id ?? targetDraftKey;
@@ -3577,7 +3580,7 @@ async function selectAISession(path, source = null, { preserveDraft = false, id 
       view.selectedSessionId = session?.id ?? note?.id ?? null;
       view.source = note;
       view.pins = new Set([...view.pins, ...(note && state.notes.has(note.id) ? [note.id] : [])].slice(0, 10));
-      if (!typedWhileLoading) {
+      if (!typedWhileLoading && resolvedKey !== targetDraftKey) {
         $('ai-chat-input').value = '';
         restoreAIDraft(resolvedKey);
       } else {
@@ -3599,7 +3602,8 @@ async function selectAISession(path, source = null, { preserveDraft = false, id 
     }
     if (isCurrent() && error.name !== 'AbortError' && !cached) {
       view.loadingSession = false;
-      view.selectedSessionId = view.session?.id ?? view.source?.id ?? null;
+      view.sessionLoadFailed = true;
+      view.selectedSessionId = id ?? source?.id ?? null;
       renderAIThread();
       renderAISessions();
       setError('ai-chat-error', error.message);
@@ -3651,6 +3655,7 @@ async function sendAIChat(event) {
     view.sending.abort();
     return;
   }
+  if (view.loadingSession || view.sessionLoadFailed) return;
   const input = $('ai-chat-input');
   const draft = input.value;
   const message = draft.trim();

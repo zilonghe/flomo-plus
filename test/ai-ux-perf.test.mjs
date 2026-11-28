@@ -584,7 +584,9 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       if (req.url.startsWith('/api/ai/sessions?sourceNoteId=')) return json(res, { session: null });
       if (req.url === '/api/ai/sessions') return json(res, { sessions: sessionEntries.map(({ turns, ...summary }) => summary) });
       if (req.url.startsWith('/api/ai/sessions/')) {
-        return void history.push(() => json(res, { session: sessionEntries.find(x => req.url.endsWith(x.id)) }));
+        return void history.push((status = 200) => status === 200
+          ? json(res, { session: sessionEntries.find(x => req.url.endsWith(x.id)) })
+          : json(res, { error: '会话加载失败' }, status));
       }
       const serve = async () => {
         const response = await worker.fetch(new Request(origin + req.url, {
@@ -730,14 +732,25 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
       const state = await select(i);
       assert.deepEqual(state, [sessionEntries[i].id, true, '']);
       assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '', 'uncached switch clears previous session draft before GET completes');
-      if (i === 1) await page.evaluate(`document.getElementById('ai-chat-input').value = '加载中输入的新草稿'`);
+      if (i === 1) {
+        await page.evaluate(`document.getElementById('ai-chat-input').value = '加载中输入的新草稿'`);
+        (await receive(history, 'failed uncached history request'))(503);
+        await until(() => page.evaluate("document.getElementById('ai-chat-error').textContent.includes('会话加载失败')"), 'uncached session error shown');
+        assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '加载中输入的新草稿');
+        assert.equal(await page.evaluate("document.getElementById('ai-chat-send').disabled"), true, 'failed session load keeps send disabled');
+        await page.evaluate("document.getElementById('ai-chat-form').requestSubmit()");
+        assert.equal(chats.length, 0, 'failed session load must not send without sessionId');
+        // Switch back to cached session 0, then return to uncached session 1 and clear its draft before GET resolves.
+        assert.deepEqual(await select(0), [id, false, '测试答案 0']);
+        assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '会话草稿 0');
+        (await receive(history, 'cached session 0 background refresh'))();
+        assert.deepEqual(await select(1), [anotherId, true, '']);
+        assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '加载中输入的新草稿');
+        await page.evaluate("document.getElementById('ai-chat-input').value = ''");
+      }
       (await receive(history, 'history request'))();
       await until(() => found(page, '测试答案 ' + i), 'loaded history');
-      if (i === 1) {
-        assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '加载中输入的新草稿', 'draft typed while loading stays attached to target session');
-      } else {
-        assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '', 'draft does not cross sessions');
-      }
+      assert.equal(await page.evaluate("document.getElementById('ai-chat-input').value"), '', i === 1 ? 'cleared draft stays empty when GET resolves' : 'draft does not cross sessions');
       await page.evaluate(`document.getElementById('ai-chat-input').value = '会话草稿 ${i}'`);
     }
     assert.deepEqual(await select(0), [id, false, '测试答案 0']);

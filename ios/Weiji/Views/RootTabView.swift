@@ -120,14 +120,21 @@ struct SpaceSwitcher: View {
         }
     }
 
+    @ViewBuilder
     private func item(_ title: String, _ tab: AppStore.Tab) -> some View {
-        Button { store.tab = tab } label: {
-            Text(title).font(.subheadline.weight(store.tab == tab ? .semibold : .regular))
-                .foregroundStyle(store.tab == tab ? Theme.ink : Theme.ink2)
+        if store.tab == tab {
+            Text(title).font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.ink)
                 .fixedSize().minTouchTarget()
+                .accessibilityAddTraits(.isSelected)
+        } else {
+            Button { store.tab = tab } label: {
+                Text(title).font(.subheadline.weight(.regular))
+                    .foregroundStyle(Theme.ink2)
+                    .fixedSize().minTouchTarget()
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(store.tab == tab ? .isSelected : [])
     }
 }
 
