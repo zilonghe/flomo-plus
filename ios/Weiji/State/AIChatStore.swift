@@ -41,7 +41,10 @@ final class AIChatStore {
     }
 
     var draft = ""
-    var recoverableDraft: String { draft.isEmpty ? (inflightDraft ?? "") : draft }
+    var recoverableDraft: String {
+        let candidate = draft.isEmpty ? (inflightDraft ?? "") : draft
+        return isOwnedRewritePrompt(candidate) ? "" : candidate
+    }
     private(set) var composerResetCount = 0
     var useProfile = true
     var useWritingStyle = false
@@ -93,7 +96,7 @@ final class AIChatStore {
         self.pins = Array(candidates.filter { isValidNote($0) && seen.insert($0).inserted }.prefix(10))
         self.insight = insight
         self.useWritingStyle = useWritingStyle
-        if let id = rewriteSourceNoteId, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let id = rewriteSourceNoteId {
             rewriteIntent = RewriteIntent(sourceNoteId: id, introducedByRewrite: true, ownsAutomaticPrompt: false)
         }
     }
@@ -102,7 +105,7 @@ final class AIChatStore {
         stop()
         // An abandoned automatic prompt must not come back as an ordinary saved draft.
         if isOwnedRewritePrompt(draft) { draft = "" }
-        clearRewriteIntent()
+        rewriteIntent = nil
         // Stop can restore the interrupted question; save it under the context it came from.
         if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draftsByKey.removeValue(forKey: draftContextKey)
@@ -153,8 +156,6 @@ final class AIChatStore {
         }
     }
 
-    func clearRewriteIntent() { rewriteIntent = nil }
-
     private func isOwnedRewritePrompt(_ text: String) -> Bool {
         rewriteIntent?.ownsAutomaticPrompt == true && text == Self.rewriteNotePrompt
     }
@@ -162,7 +163,7 @@ final class AIChatStore {
     private func cancelDeletedRewrite(_ intent: RewriteIntent) {
         stop()
         if intent.ownsAutomaticPrompt, draft == Self.rewriteNotePrompt { draft = "" }
-        clearRewriteIntent()
+        rewriteIntent = nil
         if intent.introducedByRewrite {
             session = nil
             sourceNoteId = nil
@@ -403,7 +404,7 @@ final class AIChatStore {
                 guard stamp == generation, !Task.isCancelled else { return }
                 guard let latest = response.session else { throw WeijiAPIError.interrupted }
                 updateSession(latest)
-                clearRewriteIntent()
+                rewriteIntent = nil
                 if styled { useWritingStyle = false }
                 let previousKey = draftContextKey
                 let nextKey = "session:\(latest.id)"

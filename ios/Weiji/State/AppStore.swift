@@ -623,24 +623,14 @@ final class AppStore {
             let rewriteStamp = rewriteGeneration
             let hadNoteDraft = !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let loadTask = chat.loadSource(note.id, api: api)
-            if hadNoteDraft {
-                chat.clearRewriteIntent()
-                return
-            }
+            guard !hadNoteDraft else { return }
             rewriteTask = Task { [weak self] in
                 let loaded = await loadTask.value
                 if let hook = self?.onBeforeRewriteDecision { await hook(note.id) }
                 guard let self, loaded, !Task.isCancelled, rewriteStamp == rewriteGeneration,
-                      chat.sourceNoteId == note.id, workingNotes[note.id] != nil, !chat.sending, chat.useWritingStyle else { return }
-                if !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    chat.clearRewriteIntent()
-                    return
-                }
-                if chat.restorePendingSessionDraftIfPresent() {
-                    chat.clearRewriteIntent()
-                    return
-                }
-                guard !isRelayMode else { return }
+                      chat.sourceNoteId == note.id, workingNotes[note.id] != nil, !chat.sending, chat.useWritingStyle,
+                      chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                guard !chat.restorePendingSessionDraftIfPresent(), !isRelayMode else { return }
                 chat.beginAutomaticRewriteSend(sourceNoteId: note.id, api: api, options: options, profile: insights,
                                                isRelayMode: { [weak self] in self?.isRelayMode ?? false })
             }

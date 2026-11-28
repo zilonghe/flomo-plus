@@ -188,6 +188,7 @@ struct WritingStyleWorkspaceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("写作规则", text: $rules, axis: .vertical)
+                        .accessibilityIdentifier("style-rules-editor-field")
                         .lineLimit(5...)
                         .font(Theme.TypeScale.body)
                         .foregroundStyle(Theme.ink)
