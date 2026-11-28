@@ -10,7 +10,7 @@
       align-items: center; justify-content: center; gap: 14px;
       padding: 0 24px 20px;
     }
-    .spark-badge {
+    .chat-badge {
       width: 48px; height: 48px; border-radius: 24px;
       background: var(--color-accent-soft); color: var(--color-accent-text);
       display: grid; place-items: center;
@@ -56,14 +56,16 @@
       display: flex; flex-direction: column; gap: 8px;
     }
     .composer-row { display: flex; align-items: center; gap: 6px; }
+    .composer-tools { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: auto; white-space: nowrap; }
+    .pin-btn { min-width: 44px; height: 44px; display: grid; place-items: center; }
     .model-pill {
       display: inline-flex; align-items: center; gap: 5px;
-      height: 30px; padding: 0 10px; border-radius: 999px;
+      min-height: 44px; padding: 0 10px; border-radius: 999px;
       background: var(--color-fill); font: 500 12px/16px var(--font-body);
       color: var(--color-text);
     }
     .send-btn {
-      margin-left: auto; width: 32px; height: 32px; border-radius: 16px;
+      margin-left: auto; min-width: 44px; height: 44px; border-radius: 22px;
       background: var(--color-accent); color: #fff; display: grid; place-items: center;
     }
   </style>
@@ -90,7 +92,7 @@
         <div class="msg-user">帮我总结这周关于 HIG 和 M3 的三条核心实践原则。</div>
         <div class="steps-card">
           <div style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--color-text);">
-            <ryugi-icon symbol="sparkles" name="sparkles" size="13" style="color:var(--color-accent-text)"></ryugi-icon>
+            <ryugi-icon symbol="checkmark.circle" name="circle-check" size="13" style="color:var(--color-accent-text)"></ryugi-icon>
             <span>已检索 4 条相关笔记 · 耗时 1.2s</span>
           </div>
           <div>• 召回「Apple HIG 导航层重构」与「M3 Tonal Surface」</div>
@@ -104,7 +106,7 @@
       </div>
     ` : `
       <div class="empty-center">
-        <div class="spark-badge"><ryugi-icon symbol="sparkles" name="sparkles" size="22"></ryugi-icon></div>
+        <div class="chat-badge"><ryugi-icon symbol="bubble.left" name="message-circle" size="22"></ryugi-icon></div>
         <div style="font:600 18px/24px var(--font-body);">${isWalk ? "围绕引用笔记提问" : "和你的笔记聊聊"}</div>
         <div class="prompt-pill">${isWalk ? "梳理核心要点" : "最近我在关注什么？"}</div>
         <div class="prompt-pill">${isWalk ? "结合笔记追问一个问题" : "帮我回顾这周的读书摘录"}</div>
@@ -128,9 +130,12 @@
           ${(isThread || isWalk) ? "围绕引用笔记提问" : "问一问你的笔记"}
         </div>
         <div class="composer-row">
-          <ryugi-icon symbol="at" name="at-sign" size="17" style="color:var(--color-text-secondary);padding:0 4px;"></ryugi-icon>
-          <span class="model-pill"><ryugi-icon symbol="brain" name="brain" size="13" style="color:var(--color-accent-text)"></ryugi-icon>GPT-4.1 Mini ▾</span>
-          <span class="model-pill">思考：中</span>
+          <span class="pin-btn"><ryugi-icon symbol="at" name="at-sign" size="17"></ryugi-icon></span>
+          <div class="composer-tools">
+            <span class="model-pill"><ryugi-icon symbol="pencil.and.outline" name="pen" size="13"></ryugi-icon>写作风格</span>
+            <span class="model-pill">GPT-4.1 Mini ▾</span>
+            <span class="model-pill">思考：中</span>
+          </div>
           <span class="send-btn" style="opacity:0.4"><ryugi-icon symbol="arrow.up" name="arrow-up" size="16"></ryugi-icon></span>
         </div>
       </div>

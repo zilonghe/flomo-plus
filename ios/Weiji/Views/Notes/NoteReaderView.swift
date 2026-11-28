@@ -11,6 +11,7 @@ struct NoteReaderView: View {
 
     @ScaledMetric(relativeTo: .body) private var readerFontSize: CGFloat = 18
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicType
     @State private var draft: NoteDraft?
     @State private var selection: TextSelection?
     @State private var error: String?
@@ -54,7 +55,7 @@ struct NoteReaderView: View {
                         readingText
                     }
                 }
-                InlineError(message: error)
+                if error != InsightsStore.writingStyleRelayMessage { InlineError(message: error) }
             }
             .frame(maxWidth: 640, alignment: .leading)
             .padding(.horizontal, 24)
@@ -74,6 +75,10 @@ struct NoteReaderView: View {
                 NoteTagAccessoryBar(store: store, draft: draftBodyBinding, selection: $selection,
                                     refocus: { editing = true }) { EmptyView() }
                     .disabled(saving)
+            } else if error == InsightsStore.writingStyleRelayMessage {
+                InlineError(message: error)
+                    .padding(12)
+                    .background(Theme.paper)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
@@ -175,13 +180,17 @@ struct NoteReaderView: View {
                     error = nil
                     editing = true
                 } label: {
-                    Image(systemName: "pencil")
+                    Image(systemName: "pencil").minTouchTarget()
                 }
                 .disabled(!canModify)
                 .accessibilityLabel("编辑")
                 .accessibilityIdentifier("detail-edit-button")
-                Spacer()
-                primaryButton
+                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    primaryButton
+                    if source != .ai { rewriteButton }
+                }
+                .font(dynamicType.isAccessibilitySize ? .footnote : .subheadline)
             }
         }
     }
@@ -198,10 +207,28 @@ struct NoteReaderView: View {
                 Image(systemName: icon).accessibilityHidden(true)
                 Text(title)
             }
+            .minTouchTarget()
         }
+        .buttonStyle(.plain)
         .disabled(saving || !store.canPerformReaderPrimaryAction(for: current.id, source: source))
         .sensoryFeedback(.selection, trigger: store.chat.pins.contains(current.id)) { _, _ in source == .ai }
         .accessibilityIdentifier("detail-ask-ai-button")
+    }
+
+    private var rewriteButton: some View {
+        Button {
+            if store.isRelayMode { error = InsightsStore.writingStyleRelayMessage }
+            else { store.rewriteWithStyle(current) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "pencil.and.outline").accessibilityHidden(true)
+                Text("按风格改写")
+            }
+            .minTouchTarget()
+        }
+        .buttonStyle(.plain)
+        .disabled(!canModify || !store.chat.canReference(current.id))
+        .accessibilityIdentifier("detail-rewrite-style-button")
     }
 
     private func save(_ pending: NoteDraft) {

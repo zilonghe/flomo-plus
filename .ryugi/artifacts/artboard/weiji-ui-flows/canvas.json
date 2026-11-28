@@ -401,6 +401,15 @@
       "h": 874,
       "title": "07 个人画像工作区"
     },
+    "ins-writing-style": {
+      "file": "pages/ios/insights-writing-style.html",
+      "page": "ios-insights",
+      "x": 0,
+      "y": 2820,
+      "w": 402,
+      "h": 874,
+      "title": "09 写作风格 · 规则、原句与盲测"
+    },
     "ins-to-ai": {
       "file": "pages/ios/ai-chat.html",
       "page": "ios-insights",
@@ -697,6 +706,11 @@
       "from": "ins-board",
       "to": "ins-profile",
       "label": "切顶栏「画像」"
+    },
+    "e-ins-style": {
+      "from": "ins-profile",
+      "to": "ins-writing-style",
+      "label": "切「写作风格」"
     },
     "e-web-login": {
       "from": "web-login",

@@ -1,12 +1,29 @@
 import SwiftUI
 
 struct ProfileWorkspaceView: View {
+    private enum Pane { case bio, style }
+
     let store: AppStore
+    @State private var pane = Pane.bio
     @State private var draft = ""
     @State private var editing = false
     private var insights: InsightsStore { store.insights }
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("画像与风格", selection: $pane) {
+                Text("个人画像").tag(Pane.bio)
+                Text("写作风格").tag(Pane.style)
+            }
+            .pickerStyle(.segmented)
+            .frame(minHeight: 44)
+            .padding(.horizontal, 16)
+            if pane == .bio { biography }
+            else { WritingStyleWorkspaceView(store: store) }
+        }
+    }
+
+    private var biography: some View {
         let enabled = insights.profile?.enabled == true
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {

@@ -20,7 +20,14 @@ final class AppStore {
     }
 
     enum PendingChatSwitch {
-        case note(Note), walk(RelatedNotes), report(InsightReport), session(String), new
+        case note(Note), rewriteNote(Note), walk(RelatedNotes), report(InsightReport), session(String), new
+
+        var readerNoteId: String? {
+            switch self {
+            case .note(let note), .rewriteNote(let note): note.id
+            default: nil
+            }
+        }
     }
 
     struct Detail: Identifiable, Hashable {
@@ -63,6 +70,8 @@ final class AppStore {
     private(set) var gatewayModelMeta: [ModelMeta] = []
     private(set) var gatewayDefault: String?
 
+    var isRelayMode: Bool { options.provider == .codex && identity?.codexMode == "relay" }
+
     var selectedModelMeta: ModelMeta? {
         if let selectedGatewayModel { return selectedGatewayModel }
         return options.model.isEmpty ? nil : .inferred(from: options.model)
@@ -96,6 +105,7 @@ final class AppStore {
     @ObservationIgnored private var refreshGeneration = 0
     @ObservationIgnored private var searchGeneration = 0
     @ObservationIgnored private var dataGeneration = 0
+    @ObservationIgnored private var rewriteGeneration = 0
     @ObservationIgnored private var notesETag: String?
     @ObservationIgnored private var workingNotes: [String: Note] = [:]
     @ObservationIgnored private var started = false
@@ -185,6 +195,7 @@ final class AppStore {
                 identity = session
                 options.provider = session.defaultProvider
                 restoreModelPreferences()
+                chat.reconcileRelayMode(isRelayMode)
                 if !temporary && !key.userId.isEmpty {
                     options.apiKey = credentials.openAIKey(origin: key.origin, userId: key.userId) ?? ""
                 }
@@ -267,6 +278,7 @@ final class AppStore {
         searchTask?.cancel()
         searchGeneration += 1
         dataGeneration += 1
+        rewriteGeneration += 1
         detail = nil
         showComposer = false
         pendingChatSwitch = nil
@@ -355,6 +367,7 @@ final class AppStore {
         guard options.provider != provider else { return }
         options.provider = provider
         restoreModelPreferences()
+        chat.reconcileRelayMode(isRelayMode)
     }
 
     func setModel(_ model: String) {
@@ -440,6 +453,9 @@ final class AppStore {
         let stamp = dataGeneration
         let connection = connectionGeneration
         workingNotes = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        if let pendingId = pendingChatSwitch?.readerNoteId, workingNotes[pendingId] == nil {
+            pendingChatSwitch = nil
+        }
         let job = Task.detached(priority: .userInitiated) { NoteIndex(notes) }
         let updated = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
         guard connection == connectionGeneration, stamp == dataGeneration else { return }
@@ -447,9 +463,6 @@ final class AppStore {
         let validIds = Set(updated.byId.keys)
         walk.syncValidIds(validIds)
         chat.syncValidIds(validIds)
-        if case .note(let pending) = pendingChatSwitch, !validIds.contains(pending.id) {
-            pendingChatSwitch = nil
-        }
         if refresh == refreshGeneration { notesETag = etag }
         scheduleSearch()
         if persist, let key = accountKey {
@@ -558,6 +571,7 @@ final class AppStore {
     func openSettings(_ section: SettingsSection = .general) { settingsSection = section }
 
     func askAbout(_ note: Note) { requestChatSwitch(.note(note)) }
+    func rewriteWithStyle(_ note: Note) { requestChatSwitch(.rewriteNote(note)) }
     func askAbout(_ walk: RelatedNotes) { requestChatSwitch(.walk(walk)) }
     func askAbout(_ report: InsightReport) { requestChatSwitch(.report(report)) }
     func requestSelectChatSession(_ id: String) { requestChatSwitch(.session(id)) }
@@ -572,20 +586,43 @@ final class AppStore {
     }
 
     private func requestChatSwitch(_ target: PendingChatSwitch) {
-        if case .note(let note) = target {
-            guard chat.canReference(note.id) else { return }
+        if let noteId = target.readerNoteId, !chat.canReference(noteId) { return }
+        if case .rewriteNote(let note) = target {
+            guard workingNotes[note.id] != nil, api != nil else { return }
+            guard !isRelayMode else { error = InsightsStore.writingStyleRelayMessage; return }
         }
         if chat.sending { pendingChatSwitch = target }
         else { switchChat(to: target) }
     }
 
     private func switchChat(to target: PendingChatSwitch) {
+        rewriteGeneration += 1
         switch target {
         case .note(let note):
             guard chat.canReference(note.id) else { return }
             detail = nil
             chat.start(source: note.id)
             if let api { chat.loadSource(note.id, api: api) }
+        case .rewriteNote(let note):
+            guard chat.canReference(note.id), workingNotes[note.id] != nil, let api else { return }
+            guard !isRelayMode else { error = InsightsStore.writingStyleRelayMessage; return }
+            detail = nil
+            chat.start(source: note.id, useWritingStyle: true)
+            tab = .ai
+            let rewriteStamp = rewriteGeneration
+            let hadNoteDraft = !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let loadTask = chat.loadSource(note.id, api: api)
+            guard !hadNoteDraft else { return }
+            Task { [weak self] in
+                let loaded = await loadTask.value
+                guard let self, loaded, rewriteStamp == rewriteGeneration,
+                      chat.sourceNoteId == note.id, workingNotes[note.id] != nil, !chat.sending, chat.useWritingStyle,
+                      chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                if chat.restorePendingSessionDraftIfPresent() { return }
+                guard !isRelayMode else { return }
+                chat.draft = AIChatStore.rewriteNotePrompt
+                chat.send(api: api, options: options, profile: insights, isRelayMode: { [weak self] in self?.isRelayMode ?? false })
+            }
         case .walk(let walk):
             chat.start(pins: [walk.focus.id] + walk.related.map(\.id))
         case .report(let report):

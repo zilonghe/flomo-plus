@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../weiji-ios.css" />
+  <style>
+    .style-card { padding: 14px; border: 1px solid var(--color-hairline); border-radius: 18px; background: var(--color-surface); }
+    .style-card h2 { font: 600 16px/22px var(--font-body); margin: 0 0 8px; }
+    .style-card p { margin: 0; font: 400 14px/21px var(--font-body); }
+    .style-row { display: flex; align-items: center; gap: 8px; }
+    .style-row > * { flex: 1; }
+    .style-row button { min-width: 44px; min-height: 44px; border: 0; }
+    .style-card input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--color-separator); border-radius: 10px; background: var(--color-surface); font: inherit; color: var(--color-text); }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="17:48" appearance="light">
+    <div class="screen">
+      <div class="ios-nav"><span style="width:40px"></span><span class="ios-nav-title">画像</span><span style="width:40px"></span></div>
+      <div class="ios-scroll" style="padding-top:8px;">
+        <ryugi-ios-segmented value="style" style="width:100%;min-height:44px;">
+          <ryugi-ios-segment value="bio">个人画像</ryugi-ios-segment>
+          <ryugi-ios-segment value="style">写作风格</ryugi-ios-segment>
+        </ryugi-ios-segmented>
+        <div class="style-card style-row">
+          <button class="btn-primary">提炼风格</button>
+          <button class="btn-secondary">编辑规则</button>
+          <button class="btn-secondary">添加原句</button>
+        </div>
+        <div class="style-card">
+          <h2>写作规则</h2>
+          <p>先说结论，再给一句短例。</p>
+          <div style="margin-top:8px;"><span class="chip"><ryugi-icon symbol="calendar" name="calendar" size="14"></ryugi-icon>全部笔记</span></div>
+        </div>
+        <div class="style-card">
+          <h2>原句锚点 · 1/5</h2>
+          <p>先把最小的一步走通，再验证下一层假设。</p>
+        </div>
+        <div class="style-card">
+          <h2>盲测</h2>
+          <input aria-label="自定义主题" placeholder="自定义主题（可留空）" />
+          <div class="style-row" style="margin-top:8px;"><button class="btn-primary">开始盲测</button></div>
+        </div>
+      </div>
+      <nav class="ios-tabbar" aria-label="主导航">
+        <div class="ios-tab"><ryugi-icon symbol="text.alignleft" name="text-align-start" size="19"></ryugi-icon><span>笔记</span></div>
+        <div class="ios-tab"><ryugi-icon symbol="point.topleft.down.to.point.bottomright.curvepath" name="waypoints" size="19"></ryugi-icon><span>漫步</span></div>
+        <div class="ios-tab"><ryugi-icon symbol="bubble.left" name="message-circle" size="19"></ryugi-icon><span>AI</span></div>
+        <div class="ios-tab active"><ryugi-icon symbol="chart.bar.xaxis" name="chart-no-axes-column-increasing" size="19"></ryugi-icon><span>洞察</span></div>
+      </nav>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

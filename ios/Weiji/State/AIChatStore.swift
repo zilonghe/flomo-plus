@@ -11,6 +11,7 @@ struct ChatSignature: Equatable {
     var provider: AIProvider
     var useProfile: Bool
     var reasoningEffort = ""
+    var useWritingStyle = false
 }
 
 struct ChatRequestID {
@@ -30,10 +31,14 @@ struct ChatRequestID {
 
 @Observable @MainActor
 final class AIChatStore {
+    static let rewriteNotePrompt = "请基于这条笔记的真实内容，按我的写作风格改写成一段自然流畅的文字，保留原意和事实，不要编造经历。"
+
     var draft = ""
     var recoverableDraft: String { draft.isEmpty ? (inflightDraft ?? "") : draft }
     private(set) var composerResetCount = 0
     var useProfile = true
+    var useWritingStyle = false
+    @ObservationIgnored private var sendingWithStyle = false
     private(set) var pins: [String] = []
     private(set) var session: ChatSession?
     private(set) var insight: InsightReport?
@@ -63,10 +68,10 @@ final class AIChatStore {
     @ObservationIgnored private var reasoningLength = 0
     @ObservationIgnored private var streamingTask: Task<Void, Never>?
     @ObservationIgnored private var task: Task<Void, Never>?
-    @ObservationIgnored private var sessionTask: Task<Void, Never>?
+    @ObservationIgnored private var sessionTask: Task<Bool, Never>?
     @ObservationIgnored private var listTask: Task<Void, Never>?
 
-    func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil) {
+    func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil, useWritingStyle: Bool = false) {
         let source = source.flatMap { $0.isEmpty ? nil : $0 }
         let nextKey = source.map { "note:\($0)" }
             ?? insight.map { "insight:\($0.id)" }
@@ -77,6 +82,7 @@ final class AIChatStore {
         let candidates = (source.map { [$0] } ?? []) + pins
         self.pins = Array(candidates.filter { isValidNote($0) && seen.insert($0).inserted }.prefix(10))
         self.insight = insight
+        self.useWritingStyle = useWritingStyle
     }
 
     private func switchDraftContext(to nextKey: String, resetNew: Bool = false) {
@@ -95,6 +101,8 @@ final class AIChatStore {
             draftsByKey.removeValue(forKey: nextKey)
         }
         requestID.clear()
+        useWritingStyle = false
+        sendingWithStyle = false
         session = nil
         sourceNoteId = nil
         pins = []
@@ -145,24 +153,38 @@ final class AIChatStore {
         sessionTask?.cancel()
         loadingSession = false
         sending = false
+        sendingWithStyle = false
         finishStreaming()
         streamedText = ""
         pendingQuestion = ""
         if wasSending, draft.isEmpty, let unsent { draft = unsent }
     }
 
-    func loadSource(_ source: String, api: WeijiAPIClient) {
+    func restorePendingSessionDraftIfPresent() -> Bool {
+        guard let id = session?.id else { return false }
+        let key = "session:\(id)"
+        guard let pending = draftsByKey[key], !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        draftContextKey = key
+        draft = pending
+        return true
+    }
+
+    @discardableResult
+    func loadSource(_ source: String, api: WeijiAPIClient) -> Task<Bool, Never> {
         let path = WeijiAPIClient.withQuery("/api/ai/sessions", [URLQueryItem(name: "sourceNoteId", value: source)])
-        _ = load(path, api: api, restoreSourcePin: false)
+        return load(path, api: api, restoreSourcePin: false)
     }
 
     @discardableResult
     func select(_ id: String, api: WeijiAPIClient) -> Task<Void, Never> {
         switchDraftContext(to: "session:\(id)")
-        return load("/api/ai/sessions/\(id)", api: api, restoreSourcePin: true)
+        let loadTask = load("/api/ai/sessions/\(id)", api: api, restoreSourcePin: true)
+        return Task {
+            await withTaskCancellationHandler { _ = await loadTask.value } onCancel: { loadTask.cancel() }
+        }
     }
 
-    private func load(_ path: String, api: WeijiAPIClient, restoreSourcePin: Bool) -> Task<Void, Never> {
+    private func load(_ path: String, api: WeijiAPIClient, restoreSourcePin: Bool) -> Task<Bool, Never> {
         generation += 1
         let stamp = generation
         sessionTask?.cancel()
@@ -172,7 +194,7 @@ final class AIChatStore {
             do {
                 try Task.checkCancellation()
                 let response: ChatResponse = try await api.get(path)
-                guard stamp == generation, !Task.isCancelled else { return }
+                guard stamp == generation, !Task.isCancelled else { return false }
                 session = response.session
                 if let rawSource = response.session?.sourceNoteId {
                     let source = validSource(rawSource)
@@ -185,9 +207,12 @@ final class AIChatStore {
                         sourceNoteId = source
                     }
                 }
+                return true
             } catch is CancellationError {
+                return false
             } catch {
-                if stamp == generation { self.error = error.localizedDescription }
+                if stamp == generation, !Task.isCancelled { self.error = error.localizedDescription }
+                return false
             }
         }
         sessionTask = currentTask
@@ -231,7 +256,38 @@ final class AIChatStore {
         }
     }
 
-    func send(api: WeijiAPIClient, options: AIOptions, profile: InsightsStore) {
+    func toggleWritingStyle(isRelayMode: Bool) {
+        guard !sending else { return }
+        if useWritingStyle {
+            useWritingStyle = false
+            if error == InsightsStore.writingStyleRelayMessage { error = nil }
+        } else if isRelayMode {
+            error = InsightsStore.writingStyleRelayMessage
+        } else {
+            useWritingStyle = true
+        }
+    }
+
+    func reconcileRelayMode(_ isRelay: Bool) {
+        guard isRelay else {
+            if error == InsightsStore.writingStyleRelayMessage { error = nil }
+            return
+        }
+        guard useWritingStyle || sendingWithStyle else { return }
+        if sending && sendingWithStyle {
+            let unsent = inflightDraft
+            let next = draft
+            stop()
+            if let unsent, !next.isEmpty { draft = unsent + "\n\n" + next }
+        }
+        useWritingStyle = true
+        error = InsightsStore.writingStyleRelayMessage
+    }
+
+    func send(api: WeijiAPIClient, options: AIOptions, profile: InsightsStore,
+              isRelayMode: @escaping @MainActor () -> Bool = { false }) {
+        let styled = useWritingStyle
+        guard !(styled && isRelayMode()) else { error = InsightsStore.writingStyleRelayMessage; return }
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let typed = draft
         draft = ""
@@ -241,12 +297,14 @@ final class AIChatStore {
         generation += 1
         let stamp = generation
         sending = true
+        sendingWithStyle = styled
         error = nil
         task = Task {
             defer {
                 if stamp == generation {
                     finishStreaming()
                     sending = false
+                    sendingWithStyle = false
                     pendingQuestion = ""
                     streamedText = ""
                     inflightDraft = nil
@@ -254,17 +312,24 @@ final class AIChatStore {
             }
             do {
                 try await profile.awaitProfileSave()
+                if styled { try await profile.awaitWritingStyleSave() }
                 try Task.checkCancellation()
                 guard stamp == generation else { return }
+                if styled && isRelayMode() {
+                    reconcileRelayMode(true)
+                    return
+                }
                 let message = Self.message(typed, insight: session == nil ? insight : nil)
                 let signature = ChatSignature(sessionId: session?.id, expectedVersion: session?.version,
                                               sourceNoteId: validSource(sourceNoteId), message: message,
                                               referencedNoteIds: pins, model: options.model, provider: options.provider,
-                                              useProfile: useProfile, reasoningEffort: options.reasoningEffort)
+                                              useProfile: useProfile, reasoningEffort: options.reasoningEffort,
+                                              useWritingStyle: styled)
                 var fields = options.fields
                 fields["message"] = .string(message)
                 fields["referencedNoteIds"] = .strings(signature.referencedNoteIds)
                 fields["useProfile"] = .bool(signature.useProfile)
+                if styled { fields["useWritingStyle"] = .bool(true) }
                 fields["clientRequestId"] = .string(requestID.resolve(signature))
                 if let id = signature.sessionId { fields["sessionId"] = .string(id) }
                 if let id = signature.sourceNoteId { fields["sourceNoteId"] = .string(id) }
@@ -272,8 +337,10 @@ final class AIChatStore {
                 let response: ChatResponse = try await api.stream("/api/ai/chat", fields) { [weak self] frame in
                     await self?.receive(frame, generation: stamp)
                 }
-                guard stamp == generation, !Task.isCancelled, let latest = response.session else { return }
+                guard stamp == generation, !Task.isCancelled else { return }
+                guard let latest = response.session else { throw WeijiAPIError.interrupted }
                 updateSession(latest)
+                if styled { useWritingStyle = false }
                 let previousKey = draftContextKey
                 let nextKey = "session:\(latest.id)"
                 draftsByKey.removeValue(forKey: previousKey)
@@ -288,6 +355,7 @@ final class AIChatStore {
                 requestID.clear()
                 inflightDraft = nil
             } catch is CancellationError {
+                if stamp == generation, draft.isEmpty, let unsent = inflightDraft { draft = unsent }
             } catch let failure as WeijiAPIError where failure.status == 409 {
                 guard stamp == generation else { return }
                 if let current = failure.current(ChatSession.self) { updateSession(current) }

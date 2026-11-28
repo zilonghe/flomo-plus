@@ -16,6 +16,18 @@ struct Note: Codable, Identifiable, Sendable {
     var turns: [Turn] = []
     let revision: Int
 
+    static func extractOriginalWriting(from note: Note) -> String? {
+        let body: Substring
+        if note.reading == nil {
+            body = note.body[...]
+        } else {
+            guard let separator = note.body.range(of: "\n\n原文：") else { return nil }
+            body = note.body[..<separator.lowerBound]
+        }
+        let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     var writePayload: NotePayload {
         NotePayload(id: id, body: body, createdAt: createdAt, reading: reading, turns: turns)
     }
@@ -220,7 +232,13 @@ struct AIOptions: Sendable {
     var reasoningEffort = ""
 
     var fields: [String: JSONValue] {
-        var fields: [String: JSONValue] = ["provider": .string(provider.rawValue), "stream": .bool(true)]
+        var fields = nonStreamingFields
+        fields["stream"] = .bool(true)
+        return fields
+    }
+
+    var nonStreamingFields: [String: JSONValue] {
+        var fields: [String: JSONValue] = ["provider": .string(provider.rawValue)]
         if !model.isEmpty { fields["model"] = .string(model) }
         if !reasoningEffort.isEmpty { fields["reasoningEffort"] = .string(reasoningEffort) }
         if provider == .openai { fields["apiKey"] = .string(apiKey) }
@@ -258,6 +276,52 @@ struct DeletedResponse: Decodable, Sendable { let deleted: String }
 struct Profile: Decodable, Sendable { let content: String; let enabled: Bool; let noteCount: Int }
 struct ProfileResponse: Decodable, Sendable { let profile: Profile? }
 struct ProfileEdit: Encodable, Sendable { var content: String?; let enabled: Bool }
+
+struct WritingStyleAnchor: Codable, Identifiable, Sendable {
+    let id: String
+    let createdAt: String
+    let excerpt: String
+}
+
+struct WritingStyle: Codable, Sendable {
+    let rules: String
+    let anchorNoteIds: [String]
+    let anchors: [WritingStyleAnchor]
+    let missingAnchorCount: Int
+    let scope: InsightScope
+    let noteCount: Int
+    let updatedAt: String
+    let ready: Bool
+}
+
+struct WritingStyleResponse: Codable, Sendable { let style: WritingStyle? }
+struct WritingStyleGenerateResponse: Codable, Sendable {
+    let style: WritingStyle
+    let suggestedAnchors: [WritingStyleAnchor]
+}
+
+struct WritingStyleEdit: Codable, Sendable {
+    var rules: String? = nil
+    var anchorNoteIds: [String]? = nil
+    var scope: InsightScope? = nil
+}
+
+struct BlindTestSource: Codable, Sendable {
+    let kind: String
+    let noteId: String?
+    let text: String
+}
+
+struct BlindTestCandidate: Codable, Sendable {
+    let slot: String
+    let variant: String
+    let text: String
+}
+
+struct BlindTestResponse: Codable, Sendable {
+    let source: BlindTestSource
+    let candidates: [BlindTestCandidate]
+}
 
 struct InsightScope: Codable, Equatable, Sendable {
     var range = "all"

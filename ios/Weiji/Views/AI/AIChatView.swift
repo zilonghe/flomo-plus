@@ -8,6 +8,7 @@ struct AIChatView: View {
     @State private var showModels = false
     @State private var sendFeedback = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicType
     @FocusState private var writing: Bool
 
     static func pinChipTitle(for note: Note?) -> String {
@@ -61,7 +62,11 @@ struct AIChatView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if (turns?.isEmpty ?? true) && chat.pendingQuestion.isEmpty && !chat.sending && !chat.loadingSession {
-                    emptyState(chat)
+                    if dynamicType.isAccessibilitySize {
+                        ScrollView { emptyState(chat) }
+                    } else {
+                        emptyState(chat)
+                    }
                 } else {
                     messages(chat, turns: turns)
                 }
@@ -117,8 +122,13 @@ struct AIChatView: View {
                 IconAction(symbol: "at", label: "引用笔记", id: "ai-pin-picker-button") { showPins = true }
                     .foregroundStyle(Theme.ink2)
                     .disabled(chat.loadingSession)
-                modelControls
-                Spacer(minLength: 4)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 4) {
+                        writingStyleToggle(chat)
+                        modelControls
+                    }
+                }
+                .scrollIndicators(.hidden)
                 if chat.sending {
                     composerButton(symbol: "stop.fill", label: "停止", id: "ai-stop-button", enabled: true) {
                         sendFeedback += 1
@@ -128,7 +138,7 @@ struct AIChatView: View {
                     composerButton(symbol: "arrow.up", label: "发送", id: "ai-send-button", enabled: canSend) {
                         guard let api = store.api else { return }
                         sendFeedback += 1
-                        chat.send(api: api, options: store.options, profile: store.insights)
+                        chat.send(api: api, options: store.options, profile: store.insights, isRelayMode: { store.isRelayMode })
                         writing = false
                     }
                 }
@@ -150,12 +160,28 @@ struct AIChatView: View {
                 .frame(width: 34, height: 34)
                 .background(Theme.accent.opacity(enabled ? 1 : 0.3), in: Circle())
                 .frame(width: 44, height: 44)
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel(label)
         .accessibilityIdentifier(id)
+    }
+
+    private func writingStyleToggle(_ chat: AIChatStore) -> some View {
+        Button {
+            chat.toggleWritingStyle(isRelayMode: store.isRelayMode)
+        } label: {
+            Chip(text: "写作风格", symbol: "pencil.and.outline", selected: chat.useWritingStyle)
+                .fixedSize()
+                .minTouchTarget()
+        }
+        .buttonStyle(.plain)
+        .disabled(chat.sending)
+        .accessibilityLabel("写作风格")
+        .accessibilityValue(chat.useWritingStyle ? "开启" : "关闭")
+        .accessibilityAddTraits(chat.useWritingStyle ? .isSelected : [])
+        .accessibilityIdentifier("ai-style-toggle")
     }
 
     private var modelControls: some View {
@@ -285,7 +311,7 @@ struct AIChatView: View {
         let hasPins = !chat.pins.isEmpty
         return VStack(spacing: 18) {
             Spacer(minLength: 0)
-            Image(systemName: "sparkles")
+            Image(systemName: "bubble.left")
                 .font(.title2.weight(.medium)).foregroundStyle(Theme.active)
                 .frame(width: 56, height: 56)
                 .background(Theme.accentSoft, in: Circle())
@@ -298,7 +324,7 @@ struct AIChatView: View {
                         chat.draft = prompt
                         guard let api = store.api else { writing = true; return }
                         sendFeedback += 1
-                        chat.send(api: api, options: store.options, profile: store.insights)
+                        chat.send(api: api, options: store.options, profile: store.insights, isRelayMode: { store.isRelayMode })
                     } label: {
                         Text(prompt).font(.subheadline).foregroundStyle(Theme.ink2)
                             .padding(.horizontal, 14).frame(minHeight: 38)
@@ -441,7 +467,7 @@ private enum ModelVendor: String, CaseIterable, Identifiable {
         let symbol: String
         let color: Color
         switch self {
-        case .gemini: (symbol, color) = ("sparkles", .indigo)
+        case .gemini: (symbol, color) = ("diamond", .indigo)
         case .openai: (symbol, color) = ("cpu", Theme.active)
         case .claude: (symbol, color) = ("sun.max.fill", .orange)
         case .other: (symbol, color) = ("circle.hexagongrid.fill", Theme.ink2)

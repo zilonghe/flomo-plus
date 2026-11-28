@@ -79,7 +79,8 @@
          </div>`
       : `<div class="reader-bottom-bar">
            <span class="ios-glass-btn" aria-label="编辑"><ryugi-icon symbol="pencil" name="pen" size="17"></ryugi-icon></span>
-           <span class="ios-glass-btn" style="padding:0 16px;">${primaryIcon}<span>${primaryLabel}</span></span>
+           <span class="ios-glass-btn" style="min-height:44px;padding:0 12px;">${primaryIcon}<span>${primaryLabel}</span></span>
+           ${isAICite ? "" : `<span class="ios-glass-btn" style="min-height:44px;padding:0 12px;"><ryugi-icon symbol="pencil.and.outline" name="pen" size="16"></ryugi-icon><span>按风格改写</span></span>`}
          </div>`;
 
     root.innerHTML = `
