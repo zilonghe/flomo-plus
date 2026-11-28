@@ -156,7 +156,7 @@ function page(title, content, status = 200, legal = false) {
       ...privateHeaders,
       "Referrer-Policy": "same-origin",
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": "default-src 'none'; style-src 'self'; form-action 'self' weiji:; base-uri 'none'; frame-ancestors 'none'",
+      "Content-Security-Policy": "default-src 'none'; style-src 'self'; font-src 'self'; form-action 'self' weiji:; base-uri 'none'; frame-ancestors 'none'",
     },
   });
 }

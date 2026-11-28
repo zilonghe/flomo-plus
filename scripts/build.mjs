@@ -12,14 +12,20 @@ const paths = {
   "/joplin.js": ["joplin.js", "text/javascript; charset=utf-8"],
   "/weread.js": ["weread.js", "text/javascript; charset=utf-8"],
   "/styles.css": ["styles.css", "text/css; charset=utf-8"],
+  "/fonts/newsreader-latin.woff2": ["fonts/newsreader-latin.woff2", "font/woff2", true],
+  "/fonts/newsreader-latin-italic.woff2": ["fonts/newsreader-latin-italic.woff2", "font/woff2", true],
   "/relay/server.mjs": ["../relay/server.mjs", "application/octet-stream"],
   "/relay/README.md": ["../relay/README.md", "text/plain; charset=utf-8"],
 };
 
 const assets = Object.fromEntries(await Promise.all(
-  Object.entries(paths).map(async ([route, [file, type]]) => [
-    route, { type, body: await readFile(new URL(`public/${file}`, root), "utf8") }
-  ])
+  Object.entries(paths).map(async ([route, [file, type, binary]]) => {
+    const url = new URL(`public/${file}`, root);
+    const asset = binary
+      ? { type, encoding: "base64", body: (await readFile(url)).toString("base64") }
+      : { type, body: await readFile(url, "utf8") };
+    return [route, asset];
+  })
 ));
 
 const marker = /import\s*\{\s*assets\s*\}\s*from\s*["']\.\/assets\.generated\.js["'];?/;

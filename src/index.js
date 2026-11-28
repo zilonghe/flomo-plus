@@ -1493,6 +1493,15 @@ async function api(request, url, env) {
   return json({ error: "这个操作不可用。" }, 404);
 }
 
+const decodedAssets = new Map();
+
+function decodeAsset(path, base64) {
+  if (!decodedAssets.has(path)) {
+    decodedAssets.set(path, Uint8Array.from(atob(base64), char => char.charCodeAt(0)));
+  }
+  return decodedAssets.get(path);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -1516,7 +1525,10 @@ export default {
     if (url.pathname.startsWith("/relay/") && !currentUser(request)) return html("", 401);
     const asset = Object.hasOwn(assets, url.pathname) && assets[url.pathname];
     if (!asset) return html("<!doctype html><meta charset=utf-8><title>页面未找到</title><a href=/>返回微记</a>", 404);
-    let body = request.method === "HEAD" ? null : asset.body;
+    let body = null;
+    if (request.method !== "HEAD") {
+      body = asset.encoding === "base64" ? decodeAsset(url.pathname, asset.body) : asset.body;
+    }
     if (body && url.pathname === "/" && user) {
       const escapedUserId = escapeAttr(user.id);
       body = body.replace("<head>", () => `<head>\n  <meta name="weiji-user-id" content="${escapedUserId}">`);
@@ -1525,6 +1537,7 @@ export default {
       headers: {
         ...pageHeaders,
         "Content-Type": asset.type,
+        ...(url.pathname.startsWith("/fonts/") ? { "Cache-Control": "public, max-age=31536000, immutable" } : {}),
         ...(url.pathname === "/relay/server.mjs" ? { "Content-Disposition": 'attachment; filename="server.mjs"' } : {}),
       },
     });

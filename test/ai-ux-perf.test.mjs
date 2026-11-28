@@ -86,6 +86,28 @@ async function fixture(t) {
   return { db, call, put, env };
 }
 
+test('Newsreader assets serve immutable WOFF2 bytes under a same-origin font policy', async t => {
+  const { db, call } = await fixture(t);
+  const path = '/fonts/newsreader-latin.woff2';
+  const head = await call(path, { user: null, method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal((await head.arrayBuffer()).byteLength, 0);
+  for (const font of [path, '/fonts/newsreader-latin-italic.woff2']) {
+    const response = await call(font, { user: null });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), 'font/woff2');
+    assert.equal(response.headers.get('Cache-Control'), 'public, max-age=31536000, immutable');
+    assert.equal(response.headers.get('X-Content-Type-Options'), 'nosniff');
+    assert.equal(Buffer.from(await response.arrayBuffer()).subarray(0, 4).toString('ascii'), 'wOF2');
+  }
+  const auth = createAuth(db, { origin, providers: new Map() });
+  const login = new URL('/login', origin);
+  for (const page of [await call('/'), await auth.handle(new Request(login), login, '127.0.0.1')]) {
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('Content-Security-Policy'), /(?:^|; )font-src 'self'(?:;|$)/);
+  }
+});
+
 test('Notes validators bind the full ordered snapshot and authenticated page identity', async t => {
   const { db, call, put } = await fixture(t);
   put('A', note('cat'));
@@ -592,7 +614,7 @@ test('Chromium gates real IndexedDB snapshots, holds bfcache blank, and switches
         const response = await worker.fetch(new Request(origin + req.url, {
           headers: { 'oai-authenticated-user-id': pageAccount, 'oai-authenticated-auth-mode': 'oauth' },
         }), {});
-        res.writeHead(response.status, Object.fromEntries(response.headers)).end(await response.text());
+        res.writeHead(response.status, Object.fromEntries(response.headers)).end(Buffer.from(await response.arrayBuffer()));
       };
       if (req.url === '/ux-helpers.js' && holdConnectScript) connect.push(serve);
       else await serve();
@@ -1055,7 +1077,7 @@ test('Chromium verifies the shared AI space and the reader stack, tombstones and
       const response = await worker.fetch(new Request(origin + req.url, {
         headers: { 'oai-authenticated-user-id': 'A', 'oai-authenticated-auth-mode': 'oauth' },
       }), {});
-      res.writeHead(response.status, Object.fromEntries(response.headers)).end(await response.text());
+      res.writeHead(response.status, Object.fromEntries(response.headers)).end(Buffer.from(await response.arrayBuffer()));
     });
     web.listen(0, '127.0.0.1');
     await once(web, 'listening');
@@ -1339,11 +1361,11 @@ async function paperFixture(t) {
   const monday = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - today.getUTCDay() - 6, 12);
   for (const [i, noteID] of [id, anotherId].entries()) {
     const date = new Date(monday + i * 86400_000).toISOString();
-    put('A', { ...note('主题验收正文 #设计/规范', noteID), createdAt: date, updatedAt: date });
+    put('A', { ...note('主题验收正文 Editorial sample #设计/规范', noteID), createdAt: date, updatedAt: date });
   }
   const session = { id, title: '设计规范对话', version: 1, origin: 'global', createdAt, turns: [
     { role: 'user', text: '看看设计笔记' },
-    { role: 'assistant', text: '原笔记 `[N1]`', citations: [{ ref: 'N1', noteId: id, excerpt: '主题验收正文', createdAt }],
+    { role: 'assistant', text: '原笔记 `[N1]` Editorial sample', citations: [{ ref: 'N1', noteId: id, excerpt: '主题验收正文', createdAt }],
       steps: [{ id: 'retrieve', kind: 'retrieve', status: 'done', label: '检索相关笔记', durationMs: 20 }] },
   ] };
   const { turns, ...summary } = session;
@@ -1364,7 +1386,7 @@ async function paperFixture(t) {
       : api.has(url.pathname) ? Response.json(api.get(url.pathname))
         : await call(req.url, { headers: req.headers['if-none-match']
           ? { 'if-none-match': req.headers['if-none-match'] } : {} });
-    res.writeHead(response.status, Object.fromEntries(response.headers)).end(await response.text());
+    res.writeHead(response.status, Object.fromEntries(response.headers)).end(Buffer.from(await response.arrayBuffer()));
   });
   web.listen(0, '127.0.0.1');
   await once(web, 'listening');
@@ -1382,6 +1404,32 @@ async function paperFixture(t) {
     return { ...page, login: () => page.navigate(base + '/login') };
   };
 }
+
+test('Chromium loads both Newsreader faces for editorial prose, not UI chrome',
+  { timeout: 30_000 }, async t => {
+    const open = await paperFixture(t);
+    const page = await open();
+    const click = selector => page.evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    const family = selector => page.evaluate(`getComputedStyle(document.querySelector(${JSON.stringify(selector)})).fontFamily`);
+
+    assert.match(await family('.card-body'), /Newsreader/);
+    assert.doesNotMatch(await family('.top-nav'), /Newsreader/);
+    await click('.card-open');
+    await until(() => page.evaluate("document.querySelector('.detail-body').getClientRects().length > 0"), 'reader visible');
+    assert.match(await family('.detail-body'), /Newsreader/);
+    await click('[data-action=reader-back]');
+    await click('[data-action=open-ai-chat]');
+    await until(() => page.evaluate("!!document.querySelector('[data-action=ai-select-session]')"), 'AI history loaded');
+    await click('[data-action=ai-toggle-sessions]');
+    await click('[data-action=ai-select-session]');
+    await until(() => page.evaluate("!!document.querySelector('#ai-turns .ai-msg-assistant p')"), 'AI transcript rendered');
+    assert.match(await family('#ai-turns .ai-msg-assistant'), /Newsreader/);
+    assert.doesNotMatch(await family('.ai-msg-user'), /Newsreader/);
+    assert.ok(await page.evaluate(`document.fonts.ready.then(fonts => [...fonts].some(font =>
+      font.family.includes('Newsreader') && font.style === 'normal' && font.status === 'loaded'))`));
+    assert.ok(await page.evaluate(`document.fonts.load('italic 17px Newsreader', 'Editorial sample').then(fonts =>
+      fonts.some(font => font.style === 'italic' && font.status === 'loaded'))`));
+  });
 
 async function measurePaper(page, targets) {
   return page.evaluate(`(() => {
