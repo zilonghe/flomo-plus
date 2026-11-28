@@ -335,7 +335,12 @@ final class InsightsStore {
         profileError = nil
         profileSaveError = nil
         let task = Task {
-            defer { if stamp == profileGeneration { savingProfile = false } }
+            defer {
+                if stamp == profileGeneration {
+                    savingProfile = false
+                    profileSaveTask = nil
+                }
+            }
             do {
                 let response: ProfileResponse = try await api.post("/api/ai/profile", input)
                 guard stamp == profileGeneration, !Task.isCancelled else { return false }
@@ -355,6 +360,8 @@ final class InsightsStore {
         profileSaveTask = task
         return task
     }
+
+    var hasPendingOrFailedProfileSave: Bool { profileSaveTask != nil || profileSaveError != nil }
 
     func awaitProfileSave() async throws {
         if let task = profileSaveTask { _ = await task.value }
@@ -494,6 +501,8 @@ final class InsightsStore {
         guard ids.count < Self.writingStyleMaxAnchors, !ids.contains(id) else { return nil }
         return saveWritingStyle(.init(anchorNoteIds: ids + [id]), api: api)
     }
+
+    var hasPendingOrFailedWritingStyleSave: Bool { styleSaveTask != nil || styleSaveError != nil }
 
     func awaitWritingStyleSave() async throws {
         let stamp = contextGeneration

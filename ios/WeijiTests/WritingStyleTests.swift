@@ -202,6 +202,58 @@ final class WritingStyleTests: XCTestCase {
         XCTAssertEqual(wire.requests(stylePath, method: "GET").count, 3)
     }
 
+    func testProfileSaveFailureWhileWaitingForStyleBlocksChatSend() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let api = wire.api()
+        let insights = InsightsStore()
+        let chat = AIChatStore()
+        let profilePath = "/api/ai/profile"
+        let draft = "待发草稿"
+        wire.reply(stylePath, body: Self.styleEnvelope)
+        wire.reply(chatPath, body: Self.sse("done", Self.history), stream: true)
+        await insights.loadWritingStyle(api: api)
+        wire.hold(stylePath, method: "POST")
+        let styleSave = try XCTUnwrap(insights.saveWritingStyle(.init(rules: "正在保存"), api: api))
+        try await eventually("风格保存已挂起") { wire.waiting(self.stylePath, method: "POST") == 1 }
+
+        chat.draft = draft
+        chat.useWritingStyle = true
+        chat.send(api: api, options: .init(), profile: insights)
+        // Let the send task reach the held style save before starting the profile save.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume(returning: ()) }
+        }
+        XCTAssertTrue(chat.sending)
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+
+        wire.reply(profilePath, method: "POST", status: 503, body: #"{"error":"画像保存出错"}"#)
+        let profileSave = try XCTUnwrap(insights.saveProfile(.init(enabled: false), api: api))
+        let profileSaved = await profileSave.value
+        XCTAssertFalse(profileSaved)
+        XCTAssertEqual(insights.profileError, "画像保存出错")
+        XCTAssertEqual(wire.requests(profilePath, method: "POST").first?["enabled"] as? Bool, false)
+        XCTAssertTrue(chat.sending)
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+
+        try XCTUnwrap(wire.take(stylePath, method: "POST")).complete(body: Self.styleEnvelope)
+        let styleSaved = await styleSave.value
+        XCTAssertTrue(styleSaved)
+        try await eventually("画像保存失败阻断聊天") { !chat.sending }
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+        XCTAssertEqual(chat.draft, draft)
+        XCTAssertEqual(chat.error, "个人画像保存失败。请重新保存画像后再发送。")
+
+        wire.reply(profilePath, method: "POST", body: #"{"profile":{"content":"个人画像","enabled":false,"noteCount":1}}"#)
+        let retry = try XCTUnwrap(insights.saveProfile(.init(enabled: false), api: api))
+        let retrySaved = await retry.value
+        XCTAssertTrue(retrySaved)
+        chat.send(api: api, options: .init(), profile: insights)
+        try await eventually("重新保存画像后允许发送") { !chat.sending }
+        XCTAssertEqual(wire.requests(chatPath).count, 1)
+        XCTAssertNil(chat.error)
+    }
+
     func testWritingStyleAnchorAddRequiresSuccessfulLoadAndPreservesExistingAnchors() async throws {
         let wire = try StyleHTTP()
         defer { wire.close() }
@@ -618,6 +670,45 @@ final class WritingStyleTests: XCTestCase {
             assertDeletedRewrite(store.chat)
             XCTAssertTrue(wire.requests(chatPath).isEmpty)
         }
+    }
+
+    func testDeletingRewriteSourcePreservesBothUnsentDrafts() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let (store, api, note) = try await connected(wire, mode: "gateway")
+        let chat = store.chat
+        let first = "第一段用户原文"
+        let next = "第二段补充"
+        wire.hold(sourcePath)
+        wire.reply(chatPath, body: Self.sse("done", Self.rewriteHistoryA), stream: true)
+        store.rewriteWithStyle(note)
+        try await eventually("源会话读取已挂起") { wire.waiting(self.sourcePath) == 1 }
+        chat.draft = first
+        try XCTUnwrap(wire.take(sourcePath)).complete(body: Self.rewriteHistoryA)
+        await store.awaitPendingRewrite()
+        XCTAssertEqual(chat.session?.id, "history-a")
+        XCTAssertEqual(chat.session?.turns?.first?.text, "之前的问题")
+        XCTAssertEqual(chat.draft, first)
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+
+        wire.reply(stylePath, body: Self.styleEnvelope)
+        await store.insights.loadWritingStyle(api: api)
+        wire.hold(stylePath, method: "POST")
+        let save = try XCTUnwrap(store.insights.saveWritingStyle(.init(rules: "正在保存"), api: api))
+        chat.send(api: api, options: store.options, profile: store.insights)
+        try await eventually("手动发送等待风格保存") { wire.waiting(self.stylePath, method: "POST") == 1 }
+        XCTAssertTrue(chat.sending)
+        XCTAssertEqual(chat.pendingQuestion, first)
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+        chat.draft = next
+
+        await store.replace(with: [], persist: false)
+        try XCTUnwrap(wire.take(stylePath, method: "POST")).complete(body: Self.styleEnvelope)
+        let saved = await save.value
+        XCTAssertTrue(saved)
+        await chat.waitForIdle()
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+        assertDeletedRewrite(chat, draft: first + "\n\n" + next)
     }
 
     func testRewriteRestoredByRelayCannotSendWithoutItsDeletedSource() async throws {

@@ -161,8 +161,16 @@ final class AIChatStore {
     }
 
     private func cancelDeletedRewrite(_ intent: RewriteIntent) {
+        let unsent = sending ? inflightDraft : nil
+        let next = draft
         stop()
-        if intent.ownsAutomaticPrompt, draft == Self.rewriteNotePrompt { draft = "" }
+        let keepUnsent = unsent.flatMap { intent.ownsAutomaticPrompt && $0 == Self.rewriteNotePrompt ? nil : $0 }
+        let keepNext = intent.ownsAutomaticPrompt && next == Self.rewriteNotePrompt ? "" : next
+        if let keepUnsent, !keepUnsent.isEmpty {
+            draft = keepNext.isEmpty ? keepUnsent : keepUnsent + "\n\n" + keepNext
+        } else {
+            draft = keepNext
+        }
         rewriteIntent = nil
         if intent.introducedByRewrite {
             session = nil
@@ -374,8 +382,14 @@ final class AIChatStore {
                 }
             }
             do {
-                try await profile.awaitProfileSave()
-                if styled { try await profile.awaitWritingStyleSave() }
+                // Either save can start while the chat is waiting for the other.
+                while true {
+                    try await profile.awaitProfileSave()
+                    if styled { try await profile.awaitWritingStyleSave() }
+                    if !(profile.hasPendingOrFailedProfileSave || (styled && profile.hasPendingOrFailedWritingStyleSave)) {
+                        break
+                    }
+                }
                 try Task.checkCancellation()
                 guard stamp == generation else { return }
                 guard validateRequiredSource(effectiveRequiredSource) else { return }
