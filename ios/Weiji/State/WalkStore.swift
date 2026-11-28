@@ -41,6 +41,7 @@ final class WalkStore {
     var previousFocus: RelatedNoteSummary? { history.last?.focus }
     @ObservationIgnored private var validNoteIds: Set<String>?
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var requestedNoteID: String?
     @ObservationIgnored private var task: Task<Void, Never>?
 
     func reset() {
@@ -75,6 +76,10 @@ final class WalkStore {
                             related: value.related.filter { validNoteIds.contains($0.id) })
     }
 
+    func randomNote(in index: NoteIndex, excluding id: String? = nil) -> Note? {
+        index.entries.lazy.filter { $0.note.id != id }.randomElement()?.note
+    }
+
     @discardableResult
     func shuffle(notes: [Note], api: WeijiAPIClient) -> Task<Void, Never>? {
         let current = result?.focus.id
@@ -83,8 +88,16 @@ final class WalkStore {
     }
 
     @discardableResult
-    func pivot(to noteId: String, api: WeijiAPIClient) -> Task<Void, Never>? {
-        guard noteId != result?.focus.id else { return nil }
+    func pivot(to noteId: String, api: WeijiAPIClient, keepHistory: Bool = true) -> Task<Void, Never>? {
+        if noteId == result?.focus.id {
+            generation += 1
+            task?.cancel()
+            loading = false
+            error = nil
+            return nil
+        }
+        if loading && requestedNoteID == noteId { return task }
+        requestedNoteID = noteId
         generation += 1
         let stamp = generation
         task?.cancel()
@@ -94,7 +107,7 @@ final class WalkStore {
             defer { if stamp == generation { loading = false } }
             do {
                 let next: RelatedNotes = try await api.get("/api/notes/\(noteId)/related?limit=10")
-                commitResponse(next, generation: stamp)
+                commitResponse(next, generation: stamp, keepHistory: keepHistory)
             } catch is CancellationError {
             } catch {
                 if stamp == generation, !Task.isCancelled { self.error = error.localizedDescription }
@@ -104,9 +117,9 @@ final class WalkStore {
         return currentTask
     }
 
-    private func commitResponse(_ next: RelatedNotes, generation stamp: Int) {
+    private func commitResponse(_ next: RelatedNotes, generation stamp: Int, keepHistory: Bool) {
         guard stamp == generation, !Task.isCancelled, let sanitized = validResult(next) else { return }
-        if let result, let previous = validResult(result) { history.append(previous) }
+        if keepHistory, let result, let previous = validResult(result) { history.append(previous) }
         result = sanitized
     }
 }

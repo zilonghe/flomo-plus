@@ -41,7 +41,21 @@ struct ConnectionSettingsView: View {
     @State private var obsidian: ObsidianSyncStatus?
     @State private var obsidianBusy = false
     @State private var obsidianError: String?
-    @Bindable private var theme = ThemeManager.shared
+    @State private var showModelPicker = false
+    @State private var path: [Page]
+    @State private var focusKeyAfterPicker = false
+    @FocusState private var keyFocused: Bool
+
+    private enum Page: Hashable { case account, ai, data, profile }
+
+    private var modelTitle: String {
+        store.selectedModelMeta?.label ?? store.options.provider.label
+    }
+
+    private var accountTitle: String {
+        let host = store.configuration.flatMap { URL(string: $0.origin)?.host }
+        return [store.identity?.user.name, host].compactMap { $0 }.joined(separator: " · ")
+    }
 
     private var origin: String? {
         try? ServerConfiguration(address: draft.address, token: "").origin
@@ -51,167 +65,205 @@ struct ConnectionSettingsView: View {
         self.store = store
         self.section = section
         _apiKey = State(initialValue: store.options.apiKey)
+        _path = State(initialValue: section == .ai ? [.ai] : [])
         var draft = ConnectionSettingsDraft(configuration: store.configuration)
         draft.setAddress(draft.address, savedToken: store.savedConnectionToken(for:))
         _draft = State(initialValue: draft)
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                if section == .ai { aiSettings }
-                appearanceSettings
-                if section == .general { aiSettings }
-                Section("自托管服务") {
-                    TextField("服务器地址", text: Binding(get: { draft.address }, set: {
-                        draft.setAddress($0, savedToken: store.savedConnectionToken(for:))
-                    }), prompt: Text("https://weiji.example.com"))
-                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .disabled(loginBusy || store.signingOut)
-                    if let providers, providers.authMode == "oauth", providers.publicOrigin == origin {
-                        ForEach(providers.providers) { provider in
-                            Button("用 \(provider.name) 登录") { login(provider.id) }
-                                .disabled(loginBusy || store.syncing || store.signingOut)
-                        }
-                    }
-                    SecureField("手动访问令牌", text: $draft.token).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .disabled(loginBusy || store.signingOut)
-                    Button("测试并连接", action: connect).disabled(store.syncing || loginBusy || store.signingOut)
-                    if store.syncing || loginBusy || store.signingOut { ProgressView() }
-                    if let user = store.identity?.user { LabeledContent("账户", value: user.name) }
-                    if store.identity != nil || store.isOffline {
-                        Button("退出登录", role: .destructive) {
-                            error = nil
-                            draft.token = ""
-                            Task { await store.logout() }
-                        }.disabled(loginBusy || store.signingOut)
-                    }
-                    InlineError(message: error ?? store.error)
+        NavigationStack(path: $path) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    settingLink("账号", summary: accountTitle, destination: .account)
+                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                    settingLink("AI", summary: "\(modelTitle) · \(store.insights.profile?.enabled == true ? "画像已开启" : "画像未开启")", destination: .ai)
+                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                    settingLink("数据", summary: "Obsidian 同步 · 语义索引", destination: .data)
                 }
-                if store.api != nil {
-                    Section("语义索引") {
-                        if let total = semantic?.total, let indexed = semantic?.indexed {
-                            LabeledContent("已索引", value: "\(indexed) / \(total)")
-                        }
-                        Button("查询状态") { updateIndex(rebuild: false) }.disabled(indexing)
-                        Button("重建索引") { updateIndex(rebuild: true) }.disabled(indexing)
-                        if indexing { ProgressView() }
-                    }
-                }
-                if store.identity?.user.role == "admin", let obsidian, obsidian.configured {
-                    Section("Obsidian 同步") {
-                        if let run = obsidian.lastRun {
-                            if let at = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(run.at) {
-                                LabeledContent("上次同步", value: at.formatted(date: .abbreviated, time: .shortened))
-                            } else {
-                                LabeledContent("上次同步", value: run.at)
-                            }
-                            if let stats = run.stats {
-                                Text("新增 \(stats.created) · 更新 \(stats.updated) · 冲突 \(stats.conflicts)")
-                                    .font(.subheadline).foregroundStyle(Theme.ink2)
-                            }
-                            InlineError(message: run.ok ? run.indexWarning : (run.error ?? "同步失败"))
-                        }
-                        Button("立即同步 Obsidian", action: syncObsidian).disabled(obsidianBusy)
-                        if obsidianBusy || obsidian.running == true { ProgressView().accessibilityLabel("正在同步 Obsidian") }
-                        InlineError(message: obsidianError)
-                    }
-                }
+                .padding(.horizontal, 24)
             }
-            .weijiSheetBackground()
+            .background(Theme.canvas)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("完成", action: finish) }
+                ToolbarItem(placement: .cancellationAction) {
+                    IconAction(symbol: "xmark", label: "关闭设置", id: "settings-close", action: finish)
+                }
             }
-            .tint(Theme.active)
-            .task(id: origin) { await discoverProviders() }
-            .task(id: store.api.map(ObjectIdentifier.init)) {
-                obsidian = nil
-                obsidianError = nil
-                guard store.identity?.user.role == "admin", let api = store.api else { return }
-                let status = try? await api.obsidianStatus()
-                if !Task.isCancelled, store.api === api { obsidian = status }
+            .navigationDestination(for: Page.self) { page in
+                switch page {
+                case .account: account
+                case .ai: ai
+                case .data: data
+                case .profile: ProfileWorkspaceView(store: store).navigationTitle("个人画像")
+                }
             }
-            .onAppear {
-                if store.api != nil { updateIndex(rebuild: false) }
-            }
+        }
+        .tint(Theme.ink)
+        .presentationBackground(Theme.canvas)
+        .task(id: store.api.map(ObjectIdentifier.init)) {
+            if let api = store.api { await store.insights.loadProfile(api: api) }
         }
     }
 
-    private var appearanceSettings: some View {
-        Section("外观") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("主题色").font(Theme.TypeScale.body).foregroundStyle(Theme.ink)
-                HStack(spacing: 0) {
-                    ForEach(ThemeAccent.allCases) { option in
-                        let selected = theme.accent == option
-                        Button {
-                            theme.accent = option
-                        } label: {
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    Circle()
-                                        .fill(option.accent)
-                                        .frame(width: 32, height: 32)
-                                    if selected {
-                                        Circle()
-                                            .strokeBorder(option.accent, lineWidth: 2)
-                                            .frame(width: 40, height: 40)
-                                        Image(systemName: "checkmark")
-                                            .font(.footnote.weight(.bold))
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                .frame(width: 42, height: 42)
-                                Text(option.label)
-                                    .font(Theme.TypeScale.meta.weight(selected ? .semibold : .regular))
-                                    .foregroundStyle(selected ? Theme.ink : Theme.ink2)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(selected ? .isSelected : [])
-                        .accessibilityLabel("主题色：\(option.label)")
-                        .accessibilityIdentifier("theme-accent-\(option.rawValue)")
+    private func settingLink(_ title: String, summary: String, destination: Page) -> some View {
+        NavigationLink(value: destination) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.body.weight(.medium)).foregroundStyle(Theme.ink)
+                    if !summary.isEmpty { Text(summary).font(.footnote).foregroundStyle(Theme.ink2) }
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote).foregroundStyle(Theme.ink2).accessibilityHidden(true)
+            }
+            .padding(.vertical, 8).frame(minHeight: 56).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var account: some View {
+        List {
+            Section("自托管服务") {
+                TextField("服务器地址", text: Binding(get: { draft.address }, set: {
+                    draft.setAddress($0, savedToken: store.savedConnectionToken(for:))
+                }), prompt: Text("https://weiji.example.com"))
+                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .disabled(loginBusy || store.signingOut)
+                if let providers, providers.authMode == "oauth", providers.publicOrigin == origin {
+                    ForEach(providers.providers) { provider in
+                        Button("用 \(provider.name) 登录") { login(provider.id) }
+                            .disabled(loginBusy || store.syncing || store.signingOut)
                     }
                 }
+                SecureField("手动访问令牌", text: $draft.token).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .disabled(loginBusy || store.signingOut)
+                Button("测试并连接", action: connect).disabled(store.syncing || loginBusy || store.signingOut)
+                if store.syncing || loginBusy || store.signingOut { ProgressView() }
+                if let user = store.identity?.user { LabeledContent("账户", value: user.name) }
+                if store.identity != nil || store.isOffline {
+                    Button("退出登录", role: .destructive) {
+                        error = nil
+                        draft.token = ""
+                        Task { await store.logout() }
+                    }.disabled(loginBusy || store.signingOut)
+                }
+                InlineError(message: error ?? store.error)
             }
-            .padding(.vertical, 4)
-            .sensoryFeedback(.selection, trigger: theme.accent)
+            .listRowBackground(Theme.canvas)
+        }
+        .listStyle(.plain)
+        .weijiSheetBackground()
+        .navigationTitle("账号")
+        .task(id: origin) { await discoverProviders() }
+    }
+
+    private var ai: some View {
+        List {
+            Section {
+                if store.identity?.codexAvailable == true {
+                    Picker("模型来源", selection: Binding(get: { store.options.provider }, set: store.setProvider)) {
+                        Text(AIProvider.codex.label).tag(AIProvider.codex)
+                        Text(AIProvider.openai.label).tag(AIProvider.openai)
+                    }.minTapHeight()
+                }
+                Button { showModelPicker = true } label: {
+                    LabeledContent("默认模型与思考深度", value: modelTitle).minTapHeight()
+                }
+                if store.options.provider == .openai {
+                    SecureField("OpenAI API Key", text: $apiKey)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .focused($keyFocused).minTapHeight()
+                }
+                NavigationLink("个人画像", value: Page.profile).minTapHeight()
+                InlineError(message: aiError)
+            }
+            .listRowBackground(Theme.canvas)
+        }
+        .listStyle(.plain)
+        .weijiSheetBackground()
+        .navigationTitle("AI")
+        .toolbar {
+            if store.options.provider == .openai && apiKey != store.options.apiKey {
+                ToolbarItem(placement: .confirmationAction) { Button("保存 Key") { saveKey() } }
+            }
+        }
+        .sheet(isPresented: $showModelPicker, onDismiss: {
+            if focusKeyAfterPicker { focusKeyAfterPicker = false; keyFocused = true }
+        }) {
+            ModelPickerSheet(store: store, choice: .init(model: store.options.model, effort: store.options.reasoningEffort),
+                             onSelect: { choice in
+                store.setModel(choice.model)
+                store.setReasoningEffort(choice.effort)
+            }, openSettings: {
+                focusKeyAfterPicker = true
+                showModelPicker = false
+            })
+            .presentationDetents([.medium, .large])
         }
     }
 
-    private var aiSettings: some View {
-        @Bindable var chat = store.chat
-        return Section("AI 模型与偏好") {
-            if store.identity?.codexAvailable == true {
-                Picker("模型来源", selection: Binding(get: { store.options.provider }, set: store.setProvider)) {
-                    Text(AIProvider.codex.label).tag(AIProvider.codex)
-                    Text(AIProvider.openai.label).tag(AIProvider.openai)
+    private var data: some View {
+        List {
+            if store.api != nil {
+                Section("语义索引") {
+                    if let total = semantic?.total, let indexed = semantic?.indexed {
+                        LabeledContent("已索引", value: "\(indexed) / \(total)")
+                    }
+                    Button("查询状态") { updateIndex(rebuild: false) }.disabled(indexing)
+                    Button("重建索引") { updateIndex(rebuild: true) }.disabled(indexing)
+                    if indexing { ProgressView() }
                 }
-                .pickerStyle(.segmented)
-                .frame(minHeight: 44)
             }
-            if store.options.provider == .openai {
-                SecureField("API Key", text: $apiKey)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("模型名称", text: Binding(get: { store.options.model }, set: store.setModel))
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+            if store.identity?.user.role == "admin", let obsidian, obsidian.configured {
+                Section("Obsidian 同步") {
+                    if let run = obsidian.lastRun {
+                        if let at = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(run.at) {
+                            LabeledContent("上次同步", value: at.formatted(date: .abbreviated, time: .shortened))
+                        } else {
+                            LabeledContent("上次同步", value: run.at)
+                        }
+                        if let stats = run.stats {
+                            Text("新增 \(stats.created) · 更新 \(stats.updated) · 冲突 \(stats.conflicts)")
+                                .font(.subheadline).foregroundStyle(Theme.ink2)
+                        }
+                        InlineError(message: run.ok ? run.indexWarning : (run.error ?? "同步失败"))
+                    }
+                    Button("立即同步 Obsidian", action: syncObsidian).disabled(obsidianBusy)
+                    if obsidianBusy || obsidian.running == true { ProgressView().accessibilityLabel("正在同步 Obsidian") }
+                    InlineError(message: obsidianError)
+                }
             }
-            Toggle("结合个人画像回答", isOn: $chat.useProfile).tint(Theme.accent)
-            InlineError(message: aiError)
         }
-        .listRowBackground(Theme.paper)
+        .listStyle(.plain)
+        .weijiSheetBackground()
+        .navigationTitle("数据")
+        .safeAreaInset(edge: .bottom) { InlineError(message: error).padding(.horizontal, 24) }
+        .task(id: store.api.map(ObjectIdentifier.init)) {
+            obsidian = nil
+            obsidianError = nil
+            guard store.identity?.user.role == "admin", let api = store.api else { return }
+            let status = try? await api.obsidianStatus()
+            if !Task.isCancelled, store.api === api { obsidian = status }
+        }
     }
 
     private func finish() {
+        if saveKey() { dismiss() }
+    }
+
+    @discardableResult
+    private func saveKey() -> Bool {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             if key != store.options.apiKey { try store.setAPIKey(key) }
-            dismiss()
-        } catch { aiError = error.localizedDescription }
+            aiError = nil
+            return true
+        } catch {
+            aiError = error.localizedDescription
+            path = [.ai]
+            return false
+        }
     }
 
     private func discoverProviders() async {

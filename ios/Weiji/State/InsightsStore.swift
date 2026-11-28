@@ -3,6 +3,25 @@ import Observation
 
 @Observable @MainActor
 final class InsightsStore {
+    struct ReportRecipe: Decodable, Sendable {
+        let lensId: String
+        let scope: InsightScope
+        let useProfile: Bool?
+    }
+
+    private struct RoutedReportResponse: Decodable, Sendable {
+        let report: InsightReport
+        let recipe: ReportRecipe?
+
+        private enum CodingKeys: String, CodingKey { case report }
+
+        init(from decoder: Decoder) throws {
+            let payload = try decoder.container(keyedBy: CodingKeys.self).superDecoder(forKey: .report)
+            report = try InsightReport(from: payload)
+            recipe = try? ReportRecipe(from: payload)
+        }
+    }
+
     var scope = InsightScope()
     private(set) var lenses: [InsightLens] = []
     var lensId = "builtin:default"
@@ -16,6 +35,7 @@ final class InsightsStore {
     private(set) var liveReportError: String?
     private(set) var loadingReport = false
     private(set) var viewedReport: InsightReport?
+    private(set) var viewedReportRecipe: ReportRecipe?
     private(set) var viewedReportText = ""
     private(set) var viewedReportError: String?
     private(set) var deletingReport = false
@@ -211,6 +231,7 @@ final class InsightsStore {
         viewedReportID = nil
         loadingReport = false
         viewedReport = nil
+        viewedReportRecipe = nil
         viewedReportText = ""
         viewedReportError = nil
     }
@@ -223,9 +244,10 @@ final class InsightsStore {
         viewReportTask = Task {
             defer { if stamp == viewReportGeneration { loadingReport = false } }
             do {
-                let response: ReportResponse = try await api.get("/api/insights/reports/\(summary.id)")
+                let response: RoutedReportResponse = try await api.get("/api/insights/reports/\(summary.id)")
                 guard stamp == viewReportGeneration, !Task.isCancelled else { return }
                 viewedReport = response.report
+                viewedReportRecipe = response.recipe
                 viewedReportText = response.report.content ?? ""
             } catch is CancellationError {
             } catch {

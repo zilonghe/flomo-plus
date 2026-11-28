@@ -49,7 +49,6 @@ struct LoginView: View {
                 }
                 .disabled(loginBusy || store.signingOut)
                 .padding(24)
-                .noteCard(padding: 0, cornerRadius: 28)
                 .frame(maxWidth: 396)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 18)
@@ -58,7 +57,7 @@ struct LoginView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .background(Theme.canvas.ignoresSafeArea())
-        .tint(Theme.active)
+        .tint(Theme.ink)
         .task(id: "\(origin ?? "")|\(retry)") { await discoverProviders() }
     }
 
@@ -139,11 +138,11 @@ struct WeijiLoginMark: View {
         VStack(spacing: 12) {
             Image(systemName: "text.alignleft")
                 .font(.title2.weight(.semibold))
-                .foregroundStyle(Theme.active)
+                .foregroundStyle(Theme.inverseText)
                 .frame(width: 58, height: 58)
-                .background(Theme.accentSoft, in: .rect(cornerRadius: 18))
+                .background(Theme.inverseBg, in: .rect(cornerRadius: 18))
                 .accessibilityHidden(true)
-            Text("微记").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+            Text("微记").font(.largeTitle.bold()).foregroundStyle(Theme.ink).accessibilityAddTraits(.isHeader)
         }
     }
 }

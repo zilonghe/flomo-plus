@@ -6,10 +6,11 @@ struct SidebarSheetView: View {
     let onPickDate: () -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+    @State private var statsExpanded = false
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("微记").font(.title3.bold())
                 Spacer()
                 IconAction(symbol: "xmark", label: "关闭菜单", id: "notes-menu-close", action: onClose)
                     .foregroundStyle(Theme.ink2)
@@ -18,27 +19,9 @@ struct SidebarSheetView: View {
             .padding(.horizontal, 16).frame(minHeight: 52)
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    HStack(spacing: 10) {
-                        metric("全部笔记", store.index.entries.count)
-                        metric("读书笔记", store.index.readingCount)
-                    }
-                    heatmap
+                    statistics
+                    kinds
                     dateFilter
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            SectionLabel("筛选")
-                            Spacer()
-                            if store.filter != NoteFilter() {
-                                Button("清除") { store.filter = NoteFilter(); onClose() }
-                                    .font(.footnote.weight(.medium))
-                                    .minTouchTarget()
-                            }
-                        }
-                        Picker("类型", selection: $store.filter.kind) {
-                            ForEach(NoteFilter.Kind.allCases) { kind in Text(kind.rawValue).tag(kind) }
-                        }
-                        .pickerStyle(.segmented)
-                    }
                     if !store.index.tags.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             SectionLabel("标签").padding(.bottom, 6)
@@ -50,41 +33,80 @@ struct SidebarSheetView: View {
                 .padding(.bottom, 20)
             }
             .scrollIndicators(.hidden)
+            Rectangle().fill(Theme.hairline).frame(height: 1).accessibilityHidden(true)
+            Button {
+                onClose()
+                store.openSettings()
+            } label: {
+                HStack {
+                    Text("设置")
+                    Spacer()
+                    Image(systemName: "chevron.right").accessibilityHidden(true)
+                }
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, 20).minTapHeight()
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("notes-settings-button")
         }
     }
 
-    private func metric(_ title: String, _ value: Int) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value.formatted()).font(.system(.title2, design: .rounded).weight(.semibold)).monospacedDigit()
-            Text(title).font(.caption).foregroundStyle(Theme.ink2)
-        }
-        .noteCard(padding: 12, cornerRadius: 14)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var heatmap: some View {
+    private var statistics: some View {
         let days = store.index.heatmap
-        let columns = stride(from: 0, to: days.count, by: 7).map { Array(days[$0..<min($0 + 7, days.count)]) }
+        let activeDays = Set(store.index.entries.lazy.map(\.day).filter { !$0.isEmpty }).count
         let peak = max(1, days.map(\.count).max() ?? 1)
-        return HStack(alignment: .top, spacing: 3) {
-            ForEach(columns.indices, id: \.self) { column in
-                VStack(spacing: 3) {
-                    ForEach(columns[column]) { day in
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(day.count == 0 ? Theme.subtle : Theme.green.opacity(0.28 + 0.72 * Double(day.count) / Double(peak)))
-                            .overlay {
-                                if store.filter.day == day.id {
-                                    RoundedRectangle(cornerRadius: 3).strokeBorder(Theme.ink, lineWidth: 1.5)
-                                }
+        return VStack(alignment: .leading, spacing: 8) {
+            Button { statsExpanded.toggle() } label: {
+                HStack {
+                    Text("\(store.index.entries.count) 笔记 · \(store.index.readingCount) 读书 · \(activeDays) 天")
+                        .monospacedDigit().fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    if !statsExpanded && !dynamicTypeSize.isAccessibilitySize {
+                        HStack(spacing: 3) {
+                            ForEach(days.suffix(7)) { day in
+                                Circle().fill(Theme.heat(level: level(day.count, peak: peak))).frame(width: 5, height: 5)
                             }
-                            .aspectRatio(1, contentMode: .fit)
+                        }.accessibilityHidden(true)
+                    }
+                    Image(systemName: statsExpanded ? "chevron.up" : "chevron.down").accessibilityHidden(true)
+                }
+                .font(.footnote).foregroundStyle(Theme.ink2).minTapHeight()
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("sidebar-stats-toggle")
+            .accessibilityValue(statsExpanded ? "已展开" : "已收起")
+            if statsExpanded {
+                LazyHGrid(rows: Array(repeating: GridItem(.fixed(10), spacing: 3), count: 7), spacing: 3) {
+                    ForEach(days) { day in
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Theme.heat(level: level(day.count, peak: peak)))
+                            .frame(width: 10, height: 10)
                     }
                 }
+                .accessibilityLabel("近 12 周有 \(days.filter { $0.count > 0 }.count) 天记录")
+                Text("近 12 周").font(.footnote).tracking(0.5).foregroundStyle(Theme.ink2)
             }
         }
-        .noteCard(padding: 12, cornerRadius: 14)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("最近 \(days.count) 天有 \(days.filter { $0.count > 0 }.count) 天记录，共 \(days.reduce(0) { $0 + $1.count }) 条笔记")
+    }
+
+    private func level(_ count: Int, peak: Int) -> Int {
+        count == 0 ? 0 : (count * 4 + peak - 1) / peak
+    }
+
+    private var kinds: some View {
+        HStack(spacing: 8) {
+            ForEach(NoteFilter.Kind.allCases) { kind in
+                Button { store.filter.kind = kind } label: {
+                    Text(kind.rawValue)
+                        .font(.subheadline)
+                        .underline(store.filter.kind == kind)
+                        .foregroundStyle(store.filter.kind == kind ? Theme.ink : Theme.ink2)
+                        .frame(maxWidth: .infinity).minTouchTarget()
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(store.filter.kind == kind ? .isSelected : [])
+            }
+        }
     }
 
     private var dateFilter: some View {
@@ -96,13 +118,13 @@ struct SidebarSheetView: View {
                 Group {
                     if dynamicTypeSize.isAccessibilitySize {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("按日期筛选")
+                            Text("按日期")
                             dateFilterValue
                         }
                         .fixedSize(horizontal: false, vertical: true)
                     } else {
                         HStack {
-                            Text("按日期筛选")
+                            Text("按日期")
                             Spacer(minLength: 8)
                             dateFilterValue
                         }
@@ -112,7 +134,7 @@ struct SidebarSheetView: View {
                 .foregroundStyle(Theme.ink)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .noteCard(padding: 10, cornerRadius: 14)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("notes-filter-date")
@@ -130,7 +152,7 @@ struct SidebarSheetView: View {
 
     private var dateFilterValue: some View {
         HStack(spacing: 6) {
-            Text(store.filter.day ?? "选择日期")
+            if let day = store.filter.day { Text(day) }
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .accessibilityHidden(true)
@@ -155,7 +177,7 @@ private struct TagBranch: View {
             HStack(spacing: 0) {
                 Button { filter(node.path) } label: {
                     HStack {
-                        Text("#" + node.name).font(.subheadline).foregroundStyle(Theme.ink).lineLimit(1)
+                        Text("#" + node.name).font(.subheadline).foregroundStyle(Theme.ink)
                         Spacer(minLength: 8)
                         Text(node.count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(Theme.ink3)
                     }

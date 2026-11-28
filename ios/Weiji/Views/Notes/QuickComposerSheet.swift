@@ -30,7 +30,7 @@ struct QuickComposerSheet: View {
                         .accessibilityIdentifier("composer-text-editor")
 
                     if draft.isEmpty {
-                        Text("记下此刻的想法… 输入 # 联想标签")
+                        Text("记下此刻的想法…")
                             .font(.body)
                             .foregroundStyle(Theme.ink3)
                             .padding(.horizontal, 19)
@@ -48,30 +48,35 @@ struct QuickComposerSheet: View {
             }
             .background(Theme.canvas)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                NoteTagAccessoryBar(store: store, draft: $draft, selection: $selection, refocus: { focused = true }) {
-                    Button(action: save) {
-                        Label("保存", systemImage: "arrow.up")
-                    }
-                    .buttonStyle(.weijiPrimary)
-                    .disabled(!canSave)
-                }
+                NoteTagAccessoryBar(store: store, draft: $draft, selection: $selection, refocus: { focused = true })
             }
-            .navigationTitle("记一条")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }.disabled(saving)
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack {
+                    Button { dismiss() } label: {
+                        Text("取消").font(.subheadline).foregroundStyle(Theme.ink2).minTouchTarget()
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(saving)
+                    Spacer()
+                    Button(action: save) {
+                        Image(systemName: "arrow.up").font(.body.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Theme.accent.opacity(canSave ? 1 : 0.35), in: Circle())
+                            .minTouchTarget()
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSave)
+                    .accessibilityLabel("发送")
+                    .accessibilityIdentifier("composer-save-button")
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存", action: save)
-                        .fontWeight(.semibold)
-                        .disabled(!canSave)
-                        .accessibilityIdentifier("composer-save-button")
-                }
+                .padding(.horizontal, 14)
+                .background(Theme.canvas)
             }
             .task { focused = true }
         }
-        .tint(Theme.active)
+        .tint(Theme.ink)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled(saving)
@@ -88,12 +93,11 @@ struct QuickComposerSheet: View {
     }
 }
 
-struct NoteTagAccessoryBar<Trailing: View>: View {
+struct NoteTagAccessoryBar: View {
     let store: AppStore
     @Binding var draft: String
     @Binding var selection: TextSelection?
     let refocus: () -> Void
-    @ViewBuilder let trailing: () -> Trailing
     @State private var tagFeedback = 0
 
     private var tagCounts: [String: Int] {
@@ -144,10 +148,7 @@ struct NoteTagAccessoryBar<Trailing: View>: View {
                                     Text(tag).foregroundStyle(Theme.ink)
                                 }
                                 .font(Theme.TypeScale.meta.weight(.medium))
-                                .padding(.horizontal, 11).frame(minHeight: 32)
-                                .background(Theme.paper, in: Capsule())
-                                .overlay { Capsule().strokeBorder(Theme.hairline).allowsHitTesting(false) }
-                                .minTapHeight()
+                                .padding(.horizontal, 8).minTouchTarget()
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("composer-tag-suggestion-\(tag)")
@@ -157,53 +158,14 @@ struct NoteTagAccessoryBar<Trailing: View>: View {
                     .padding(.vertical, 8)
                 }
                 .scrollIndicators(.hidden)
-                .background(Theme.canvas)
+                .background(Theme.paper)
                 .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            HStack(spacing: 12) {
-                Button(action: insertHash) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "number").font(.subheadline.weight(.semibold))
-                        Text("标签").font(Theme.TypeScale.meta.weight(.medium))
-                    }
-                    .foregroundStyle(activeTag != nil ? Theme.active : Theme.ink2)
-                    .padding(.horizontal, 12).frame(minHeight: 34)
-                    .background(activeTag != nil ? Theme.accentSoft : Theme.subtle, in: Capsule())
-                    .minTapHeight()
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("插入标签")
-                .accessibilityIdentifier("composer-insert-hash")
-
-                if !draft.isEmpty {
-                    Text("\(draft.count) 字")
-                        .font(Theme.TypeScale.meta.monospacedDigit())
-                        .foregroundStyle(Theme.ink3)
-                }
-
-                Spacer(minLength: 8)
-                trailing()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Theme.paper)
-            .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
         }
         .animation(.easeOut(duration: 0.16), value: suggestions)
         .sensoryFeedback(.selection, trigger: tagFeedback)
-    }
-
-    private func insertHash() {
-        let idx = cursorIndex ?? draft.endIndex
-        let needsLeadingSpace = idx > draft.startIndex && !draft[draft.index(before: idx)].isWhitespace
-        let insert = needsLeadingSpace ? " #" : "#"
-        draft.insert(contentsOf: insert, at: idx)
-        let newCursor = draft.index(idx, offsetBy: insert.count)
-        selection = TextSelection(insertionPoint: newCursor)
-        refocus()
-        tagFeedback += 1
     }
 
     private func applySuggestion(_ tag: String) {

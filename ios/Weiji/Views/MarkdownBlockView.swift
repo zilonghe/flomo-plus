@@ -41,7 +41,7 @@ struct MarkdownBlockView: View {
                     Divider().padding(.vertical, 6)
                 case .quote:
                     HStack(alignment: .top, spacing: 10) {
-                        RoundedRectangle(cornerRadius: 1).fill(Theme.green.opacity(0.6)).frame(width: 3)
+                        Rectangle().fill(Theme.quoteBar).frame(width: 1.5)
                         Text(content).foregroundStyle(Theme.ink2)
                     }.fixedSize(horizontal: false, vertical: true)
                 case .bullet(let level):
@@ -62,10 +62,8 @@ struct MarkdownBlockView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 5) {
                                     HStack(spacing: 6) {
-                                        Text(citation.ref).font(.caption2.weight(.semibold)).monospacedDigit()
-                                            .foregroundStyle(Theme.active)
-                                            .padding(.horizontal, 5).padding(.vertical, 2)
-                                            .background(Theme.accentSoft, in: .rect(cornerRadius: 5))
+                                        Text("[\(citation.ref)]").font(.caption.weight(.medium)).monospacedDigit()
+                                            .underline().foregroundStyle(Theme.active)
                                         Text(citation.bookTitle ?? citation.createdAt.map { String($0.prefix(10)) } ?? "笔记")
                                             .font(.caption.weight(.medium)).foregroundStyle(Theme.ink).lineLimit(1)
                                         Spacer(minLength: 0)
@@ -73,9 +71,7 @@ struct MarkdownBlockView: View {
                                     Text(citation.excerpt).font(.caption).foregroundStyle(Theme.ink2).lineLimit(2)
                                         .frame(maxWidth: .infinity, alignment: .topLeading)
                                 }
-                                .padding(10).frame(width: 210, height: 72, alignment: .topLeading)
-                                .background(Theme.paper, in: .rect(cornerRadius: 12))
-                                .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.hairline) }
+                                .padding(.vertical, 6).frame(width: 210, alignment: .topLeading).minTapHeight()
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("citation-pill-" + citation.ref)
@@ -145,7 +141,7 @@ struct MarkdownBlockView: View {
         for (range, url) in links {
             rich[range].link = url
             rich[range].foregroundColor = Theme.active
-            rich[range].backgroundColor = Theme.accentSoft
+            rich[range].underlineStyle = .single
             rich[range].font = .footnote.weight(.semibold)
         }
         return rich

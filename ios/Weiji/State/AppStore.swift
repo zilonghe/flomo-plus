@@ -13,14 +13,17 @@ enum DetailSource: Hashable, Sendable {
 
 @Observable @MainActor
 final class AppStore {
-    enum Tab: String, CaseIterable { case notes, walk, ai, insights }
+    enum Tab: String, CaseIterable { case notes, ai }
     enum SettingsSection: String, Identifiable {
         case general, ai
         var id: String { rawValue }
     }
 
+    enum ReportRoute: Equatable { case live, history(String) }
+
     enum PendingChatSwitch {
         case note(Note), walk(RelatedNotes), report(InsightReport), session(String), new
+        case viewReport(InsightReport), runReport(InsightsStore.ReportRecipe, AIOptions)
     }
 
     struct Detail: Identifiable, Hashable {
@@ -44,8 +47,29 @@ final class AppStore {
 
     var tab: Tab = .notes
     var detail: Detail?
+    private(set) var deletedUndoNote: Note?
+    private var undoID: String?
     var settingsSection: SettingsSection?
     var showComposer = false
+    private(set) var reportRoute: ReportRoute?
+    private(set) var chatRouteVersion = 0
+    private var liveReportRecipe: InsightsStore.ReportRecipe?
+
+    var presentedReport: InsightReport? {
+        switch reportRoute {
+        case .live: insights.liveReport
+        case .history(let id): insights.viewedReport?.id == id ? insights.viewedReport : nil
+        case nil: nil
+        }
+    }
+    var presentedReportRecipe: InsightsStore.ReportRecipe? {
+        switch reportRoute {
+        case .live: liveReportRecipe
+        case .history: insights.viewedReportRecipe
+        case nil: nil
+        }
+    }
+
     private(set) var pendingChatSwitch: PendingChatSwitch?
     var error: String?
     var query = "" { didSet { if query != oldValue { scheduleSearch() } } }
@@ -276,6 +300,10 @@ final class AppStore {
         index = NoteIndex()
         results = []
         pageSize = 50
+        deletedUndoNote = nil
+        undoID = nil
+        reportRoute = nil
+        liveReportRecipe = nil
         walk.reset()
         chat.reset()
         insights.reset()
@@ -404,6 +432,8 @@ final class AppStore {
     }
 
     func refresh() {
+        deletedUndoNote = nil
+        undoID = nil
         if isOffline, !syncing, let configuration {
             connect(configuration, save: false)
             return
@@ -490,6 +520,12 @@ final class AppStore {
         if let note = await resolveNote(id) { detail = Detail(note: note, source: source) }
     }
 
+    func openRandomRead() {
+        guard let api, let note = walk.randomNote(in: index) else { return }
+        detail = Detail(note: note, source: .walk)
+        walk.pivot(to: note.id, api: api, keepHistory: false)
+    }
+
     func openTag(_ tag: String) {
         detail = nil
         query = ""
@@ -533,7 +569,28 @@ final class AppStore {
     }
 
     func delete(_ note: Note) async throws {
+        let stamp = connectionGeneration
         try await mutate(NoteMutation(id: note.id, expectedRevision: note.revision, delete: true))
+        guard stamp == connectionGeneration else { throw CancellationError() }
+        deletedUndoNote = note
+        undoID = UUID().uuidString.lowercased()
+    }
+
+    func undoDelete() async {
+        guard let note = deletedUndoNote, let id = undoID else { return }
+        let stamp = connectionGeneration
+        // The server retains the deleted ID as a tombstone.
+        let payload = NotePayload(id: id, body: note.body, createdAt: note.createdAt, reading: note.reading, turns: note.turns)
+        do {
+            try await mutate(NoteMutation(id: id, expectedRevision: 0, note: payload))
+            if undoID == id {
+                deletedUndoNote = nil
+                undoID = nil
+            }
+        } catch is CancellationError {
+        } catch {
+            if stamp == connectionGeneration && undoID == id { self.error = error.localizedDescription }
+        }
     }
 
     private func mutate(_ input: NoteMutation) async throws {
@@ -563,6 +620,37 @@ final class AppStore {
     func requestSelectChatSession(_ id: String) { requestChatSwitch(.session(id)) }
     func requestNewChat() { requestChatSwitch(.new) }
 
+    func requestViewReport(_ report: InsightReport) {
+        requestChatSwitch(.viewReport(report))
+    }
+
+    func requestRunReport(_ lens: InsightLens, range: String, options: AIOptions) {
+        var scope = InsightScope()
+        scope.range = range
+        requestChatSwitch(.runReport(.init(lensId: lens.id, scope: scope, useProfile: chat.useProfile), options))
+    }
+
+    var canRerunReport: Bool {
+        guard let recipe = presentedReportRecipe else { return false }
+        return insights.lenses.contains { $0.id == recipe.lensId }
+    }
+
+    func requestRerunReport(options: AIOptions) {
+        guard canRerunReport, let recipe = presentedReportRecipe else { return }
+        requestChatSwitch(.runReport(recipe, options))
+    }
+
+    func resumeLiveReport() {
+        guard insights.running && !chat.sending else { return }
+        reportRoute = .live
+    }
+
+    func prepareReportFollowUp() {
+        guard let report = presentedReport, !chat.sending, chat.insight?.id != report.id,
+              chat.session == nil else { return }
+        chat.start(pins: report.citations?.map(\.noteId) ?? [], insight: report)
+    }
+
     func cancelChatSwitch() { pendingChatSwitch = nil }
 
     func confirmChatSwitch() {
@@ -580,6 +668,9 @@ final class AppStore {
     }
 
     private func switchChat(to target: PendingChatSwitch) {
+        if case .runReport = target, insights.running { return }
+        reportRoute = nil
+        chatRouteVersion += 1
         switch target {
         case .note(let note):
             guard chat.canReference(note.id) else { return }
@@ -593,6 +684,20 @@ final class AppStore {
         case .session(let id):
             guard let api else { return }
             chat.select(id, api: api)
+        case .viewReport(let report):
+            guard let api else { return }
+            chat.start(resetNewDraft: false)
+            insights.openReport(report, api: api)
+            reportRoute = .history(report.id)
+        case .runReport(let recipe, let options):
+            guard let api else { return }
+            chat.start(resetNewDraft: false)
+            insights.lensId = recipe.lensId
+            insights.scope = recipe.scope
+            insights.useProfile = recipe.useProfile ?? chat.useProfile
+            liveReportRecipe = recipe
+            insights.run(api: api, options: options)
+            reportRoute = .live
         case .new:
             chat.start()
         }

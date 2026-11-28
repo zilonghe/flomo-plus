@@ -126,45 +126,30 @@ final class TagAndCitationTests: XCTestCase {
     }
 
     func testThemeContrastMeetsWCAGInLightAndDarkMode() {
-        func luminance(_ color: UIColor) -> Double {
-            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-            XCTAssertTrue(color.getRed(&r, green: &g, blue: &b, alpha: &a))
-            func linear(_ c: CGFloat) -> Double {
-                let v = Double(c)
-                return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
-            }
-            return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
-        }
-        func contrast(_ a: Color, _ b: Color, style: UIUserInterfaceStyle) -> Double {
-            let traits = UITraitCollection(userInterfaceStyle: style)
-            let la = luminance(UIColor(a).resolvedColor(with: traits))
-            let lb = luminance(UIColor(b).resolvedColor(with: traits))
-            return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
-        }
-        for style: UIUserInterfaceStyle in [.light, .dark] {
-            let mode = style == .light ? "light" : "dark"
-            XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.canvas, style: style), 7.0, "body-on-canvas contrast (\(mode))")
-            XCTAssertGreaterThanOrEqual(contrast(Theme.ink, Theme.paper, style: style), 7.0, "body-on-paper contrast (\(mode))")
-            XCTAssertGreaterThanOrEqual(contrast(Theme.ink2, Theme.canvas, style: style), 4.5, "ink2-on-canvas contrast (\(mode))")
-            XCTAssertGreaterThanOrEqual(contrast(Theme.ink2, Theme.paper, style: style), 4.5, "ink2-on-paper contrast (\(mode))")
-            XCTAssertGreaterThanOrEqual(contrast(Theme.ink3, Theme.canvas, style: style), 4.5, "ink3-on-canvas contrast (\(mode))")
-            XCTAssertGreaterThanOrEqual(contrast(Theme.ink3, Theme.paper, style: style), 4.5, "ink3-on-paper contrast (\(mode))")
-            for accent in ThemeAccent.allCases {
-                let tag = "\(accent.rawValue)/\(mode)"
-                XCTAssertGreaterThanOrEqual(contrast(.white, accent.accent, style: style), 4.5, "white-on-accent (\(tag))")
-                XCTAssertGreaterThanOrEqual(contrast(accent.active, accent.accentSoft, style: style), 4.5, "active-on-soft (\(tag))")
-                XCTAssertGreaterThanOrEqual(contrast(accent.active, Theme.paper, style: style), 4.5, "active-on-paper (\(tag))")
-                XCTAssertGreaterThanOrEqual(contrast(accent.active, Theme.canvas, style: style), 4.5, "active-on-canvas (\(tag))")
-            }
-        }
+        assertThemeContrast(.normal)
     }
 
     func testThemeContrastMeetsWCAGInHighContrastMode() {
+        assertThemeContrast(.high)
+    }
+
+    private func assertThemeContrast(_ contrast: UIAccessibilityContrast) {
+        let pairs: [(String, Color, Color)] = [
+            ("ink on canvas", Theme.ink, Theme.canvas), ("ink on paper", Theme.ink, Theme.paper),
+            ("ink on subtle", Theme.ink, Theme.subtle),
+            ("ink2 on canvas", Theme.ink2, Theme.canvas), ("ink2 on paper", Theme.ink2, Theme.paper),
+            ("ink3 on canvas", Theme.ink3, Theme.canvas), ("ink3 on paper", Theme.ink3, Theme.paper),
+            ("active on canvas", Theme.active, Theme.canvas), ("active on paper", Theme.active, Theme.paper),
+            ("active on subtle", Theme.active, Theme.subtle),
+            ("white on accent", .white, Theme.accent),
+            ("inverse text on inverse fill", Theme.inverseText, Theme.inverseBg),
+            ("danger on canvas", Theme.danger, Theme.canvas),
+        ]
         for style: UIUserInterfaceStyle in [.light, .dark] {
-            let traits = UITraitCollection(traitsFrom: [
-                UITraitCollection(userInterfaceStyle: style),
-                UITraitCollection(accessibilityContrast: .high)
-            ])
+            let traits = UITraitCollection {
+                $0.userInterfaceStyle = style
+                $0.accessibilityContrast = contrast
+            }
             func luminance(_ color: Color) -> Double {
                 let resolved = UIColor(color).resolvedColor(with: traits)
                 var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -176,40 +161,25 @@ final class TagAndCitationTests: XCTestCase {
                 }
                 return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
             }
-            func assertContrast(_ foreground: Color, _ background: Color, _ role: String, line: UInt = #line) {
-                let fg = luminance(foreground), bg = luminance(background)
-                let ratio = (max(fg, bg) + 0.05) / (min(fg, bg) + 0.05)
-                XCTAssertGreaterThanOrEqual(ratio, 7, "\(role), \(style == .dark ? "dark" : "light")", line: line)
-            }
-            for (ink, name) in [(Theme.ink, "ink"), (Theme.ink2, "ink2"), (Theme.ink3, "ink3")] {
-                assertContrast(ink, Theme.canvas, "\(name)-on-canvas")
-                assertContrast(ink, Theme.paper, "\(name)-on-paper")
-            }
-            for accent in ThemeAccent.allCases {
-                assertContrast(.white, accent.accent, "\(accent.rawValue) white-on-accent")
-                assertContrast(accent.active, accent.accentSoft, "\(accent.rawValue) active-on-soft")
-                assertContrast(accent.active, Theme.paper, "\(accent.rawValue) active-on-paper")
-                assertContrast(accent.active, Theme.canvas, "\(accent.rawValue) active-on-canvas")
+            for (role, fg, bg) in pairs {
+                let a = luminance(fg), b = luminance(bg)
+                XCTAssertGreaterThanOrEqual((max(a, b) + 0.05) / (min(a, b) + 0.05), 7,
+                                            "\(role), \(style), \(contrast)")
             }
         }
     }
 
-    func testThemeManagerPersistsSelectedAccent() throws {
+    func testThemeManagerSilentlyUsesOnePaletteForLegacyPreferences() throws {
         let suiteName = "weiji.tests.theme.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let manager = ThemeManager(defaults: defaults)
-        XCTAssertEqual(manager.accent, .pine)
-
-        manager.accent = .plum
-        XCTAssertEqual(defaults.string(forKey: ThemeManager.storageKey), ThemeAccent.plum.rawValue)
-
-        let reloaded = ThemeManager(defaults: defaults)
-        XCTAssertEqual(reloaded.accent, .plum)
-
-        defaults.set("unknown-accent", forKey: ThemeManager.storageKey)
         XCTAssertEqual(ThemeManager(defaults: defaults).accent, .pine)
+        for legacy in ThemeAccent.allCases.map(\.rawValue) + ["unknown-accent"] {
+            defaults.set(legacy, forKey: ThemeManager.storageKey)
+            XCTAssertEqual(ThemeManager(defaults: defaults).accent, .pine)
+            XCTAssertEqual(defaults.string(forKey: ThemeManager.storageKey), legacy)
+        }
     }
 
     func testActiveTagQueryDetectsValidTriggersAndIgnoresInvalidBoundaries() throws {

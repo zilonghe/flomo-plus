@@ -1,4 +1,3 @@
-import Observation
 import SwiftUI
 import UIKit
 
@@ -6,78 +5,14 @@ enum ThemeAccent: String, CaseIterable, Identifiable, Sendable {
     case pine, indigo, clay, plum, graphite
     var id: String { rawValue }
 
-    var label: String {
-        switch self {
-        case .pine: "松针"
-        case .indigo: "靛青"
-        case .clay: "陶土"
-        case .plum: "暮紫"
-        case .graphite: "石墨"
-        }
-    }
-
-    /// Text, icons, and links (WCAG AA >= 4.5:1 on canvas, paper, and accentSoft).
-    var active: Color {
-        switch self {
-        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x7AD4AA, highLight: 0x1F4836, highDark: 0xB6E7D0)
-        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x85B0FF, highLight: 0x193871, highDark: 0xBCD4FF)
-        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xF0A07B, highLight: 0x6B331B, highDark: 0xF7CBB6)
-        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0xC7ADF2, highLight: 0x483266, highDark: 0xE0D2F8)
-        case .graphite: Theme.adaptive(light: 0x363430, dark: 0xDCD9D0, highLight: 0x252321, highDark: 0xECEAE5)
-        }
-    }
-
-    /// Solid primary CTA fill behind pure white text/icons (WCAG AA >= 4.5:1 in light & dark).
-    var accent: Color {
-        switch self {
-        case .pine: Theme.adaptive(light: 0x2D6A4F, dark: 0x276E50, highLight: 0x1F4836, highDark: 0x1B4B36)
-        case .indigo: Theme.adaptive(light: 0x2553A6, dark: 0x2F62BF, highLight: 0x193871, highDark: 0x204382)
-        case .clay: Theme.adaptive(light: 0x9E4B28, dark: 0xA6502C, highLight: 0x6B331B, highDark: 0x71361E)
-        case .plum: Theme.adaptive(light: 0x6A4A96, dark: 0x7755A8, highLight: 0x483266, highDark: 0x513A72)
-        case .graphite: Theme.adaptive(light: 0x363430, dark: 0x57544D, highLight: 0x252321, highDark: 0x3B3934)
-        }
-    }
-
-    var accentSoft: Color {
-        switch self {
-        case .pine: Theme.adaptive(light: 0xE7F1EC, dark: 0x1C3127, highLight: 0xECF4F0, highDark: 0x172820)
-        case .indigo: Theme.adaptive(light: 0xE9EFFB, dark: 0x1A2844, highLight: 0xEDF2FC, highDark: 0x152138)
-        case .clay: Theme.adaptive(light: 0xF6EAE4, dark: 0x352119, highLight: 0xF8EEE9, highDark: 0x2B1B14)
-        case .plum: Theme.adaptive(light: 0xEFEAF7, dark: 0x292038, highLight: 0xF2EEF9, highDark: 0x221A2E)
-        case .graphite: Theme.adaptive(light: 0xEAE8E1, dark: 0x2E2D29, highLight: 0xEEEDE7, highDark: 0x262522)
-        }
-    }
-
-    /// Mid-tone accent used for activity heatmap cells and quote edge bars.
-    var tone: Color {
-        switch self {
-        case .pine: Theme.adaptive(light: 0x3A8363, dark: 0x5CC295)
-        case .indigo: Theme.adaptive(light: 0x3669C4, dark: 0x6E9EF5)
-        case .clay: Theme.adaptive(light: 0xBA5F38, dark: 0xE08A64)
-        case .plum: Theme.adaptive(light: 0x7F5CAE, dark: 0xB394E6)
-        case .graphite: Theme.adaptive(light: 0x52504A, dark: 0xB5B1A6)
-        }
-    }
 }
 
-@Observable
 final class ThemeManager {
     static let storageKey = "weiji.accent"
-    static let shared = ThemeManager()
+    let accent: ThemeAccent = .pine
 
-    @ObservationIgnored private let defaults: UserDefaults
-
-    var accent: ThemeAccent {
-        didSet {
-            guard accent != oldValue else { return }
-            defaults.set(accent.rawValue, forKey: Self.storageKey)
-        }
-    }
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        accent = defaults.string(forKey: Self.storageKey).flatMap(ThemeAccent.init(rawValue:)) ?? .pine
-    }
+    // A legacy preference must never change the paper-and-ink palette.
+    init(defaults: UserDefaults = .standard) {}
 }
 
 enum Theme {
@@ -90,24 +25,36 @@ enum Theme {
         static let meta = Font.system(.footnote)
     }
 
-    static var active: Color { ThemeManager.shared.accent.active }
-    static var accent: Color { ThemeManager.shared.accent.accent }
-    static var accentSoft: Color { ThemeManager.shared.accent.accentSoft }
-    static var green: Color { ThemeManager.shared.accent.tone }
+    static let canvas = adaptive(light: 0xFAF8F4, dark: 0x151514)
+    static let paper = adaptive(light: 0xF2EFE8, dark: 0x1F1E1C)
+    static let subtle = adaptive(light: 0xEAE6DC, dark: 0x272623)
+    static let ink = adaptive(light: 0x1C1B19, dark: 0xE8E5DE, highLight: 0x11100E, highDark: 0xF5F3EE)
+    static let ink2 = adaptive(light: 0x4E4B45, dark: 0xB0ACA3, highLight: 0x3A3833, highDark: 0xCFCBC3)
+    static let ink3 = ink2
+    static let inverseBg = adaptive(light: 0x1C1B19, dark: 0xE8E5DE)
+    static let inverseText = canvas
+    static let active = adaptive(light: 0x1D4D3A, dark: 0x9AC4AE, highLight: 0x14382A, highDark: 0xB8DEC9)
+    static let accent = adaptive(light: 0x1D4D3A, dark: 0x1F5640, highLight: 0x14382A, highDark: 0x174432)
+    static let danger = adaptive(light: 0x9A2620, dark: 0xF59C95, highLight: 0x7A1A15, highDark: 0xFFB8B2)
+    static let line = hairline
+    static let hairline = inkAlpha(light: 0.10, dark: 0.12, highLight: 0.24, highDark: 0.28)
+    static let quoteBar = inkAlpha(light: 0.24, dark: 0.28)
 
-    static let canvas = adaptive(light: 0xF6F5F0, dark: 0x171614)
-    static let paper = adaptive(light: 0xFFFFFF, dark: 0x22211E)
-    static let subtle = adaptive(light: 0xEEECE5, dark: 0x2B2A26)
-    static let ink = adaptive(light: 0x1C1B18, dark: 0xEDEBE5, highLight: 0x131210, highDark: 0xF8F6F0)
-    static let ink2 = adaptive(light: 0x55524A, dark: 0xB5B0A6, highLight: 0x403E37, highDark: 0xDAD6CE)
-    static let ink3 = adaptive(light: 0x6F6B63, dark: 0x8F8A80, highLight: 0x4C4841, highDark: 0xC0BCB3)
-    static let line = adaptive(light: 0xE6E3DA, dark: 0x3A3833, highLight: 0xBBB6A9, highDark: 0x655F54)
-    static let hairline = Color(uiColor: UIColor { traits in
-        let high = traits.accessibilityContrast == .high
-        return traits.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: high ? 0.26 : 0.08)
-            : UIColor(white: 0, alpha: high ? 0.22 : 0.06)
-    })
+    static func heat(level: Int) -> Color {
+        let level = min(4, max(0, level))
+        return inkAlpha(light: [0.06, 0.20, 0.38, 0.62, 0.88][level],
+                        dark: [0.08, 0.22, 0.42, 0.66, 0.90][level])
+    }
+
+    private static func inkAlpha(light: CGFloat, dark: CGFloat, highLight: CGFloat? = nil, highDark: CGFloat? = nil) -> Color {
+        Color(uiColor: UIColor { traits in
+            let isDark = traits.userInterfaceStyle == .dark
+            let high = traits.accessibilityContrast == .high
+            return isDark
+                ? UIColor(red: 232/255, green: 229/255, blue: 222/255, alpha: high ? highDark ?? dark : dark)
+                : UIColor(red: 28/255, green: 27/255, blue: 25/255, alpha: high ? highLight ?? light : light)
+        })
+    }
 
     static func adaptive(light: Int, dark: Int, highLight: Int? = nil, highDark: Int? = nil) -> Color {
         Color(uiColor: UIColor { traits in
@@ -121,18 +68,6 @@ enum Theme {
 }
 
 extension View {
-    func noteCard(padding: CGFloat = 14, cornerRadius: CGFloat = 16) -> some View {
-        self.padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(Theme.paper)
-                    .shadow(color: .black.opacity(0.04), radius: 10, y: 3)
-            }
-            .overlay { RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(Theme.hairline).allowsHitTesting(false) }
-            .contentShape(Rectangle())
-    }
-
     func minTapHeight() -> some View {
         frame(minHeight: 44).contentShape(Rectangle())
     }
@@ -154,13 +89,12 @@ struct WeijiPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.inverseText)
             .padding(.horizontal, 18)
-            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 36)
+            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 44)
             .background {
                 RoundedRectangle(cornerRadius: wide ? 14 : 18)
-                    .fill(Theme.accent.opacity(isEnabled ? 1 : 0.35))
-                    .shadow(color: Theme.accent.opacity(isEnabled ? 0.22 : 0), radius: 8, y: 3)
+                    .fill(Theme.inverseBg.opacity(isEnabled ? 1 : 0.35))
             }
             .minTouchTarget()
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
@@ -178,7 +112,7 @@ struct WeijiSecondaryButtonStyle: ButtonStyle {
             .font(.subheadline.weight(.medium))
             .foregroundStyle(Theme.ink.opacity(isEnabled ? 1 : 0.35))
             .padding(.horizontal, 16)
-            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 36)
+            .frame(maxWidth: wide ? .infinity : nil, minHeight: wide ? 48 : 44)
             .background(Theme.subtle, in: .rect(cornerRadius: wide ? 14 : 18))
             .minTouchTarget()
             .opacity(configuration.isPressed ? 0.7 : 1)
@@ -192,24 +126,6 @@ extension ButtonStyle where Self == WeijiPrimaryButtonStyle {
 
 extension ButtonStyle where Self == WeijiSecondaryButtonStyle {
     static var weijiSecondary: Self { .init() }
-}
-
-/// Small rounded chip used for tags, pins and filters.
-struct Chip: View {
-    let text: String
-    var symbol: String? = nil
-    var selected = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if let symbol { Image(systemName: symbol).font(.caption2.weight(.semibold)).accessibilityHidden(true) }
-            Text(text).lineLimit(1)
-        }
-        .font(Theme.TypeScale.meta.weight(.medium))
-        .foregroundStyle(selected ? Theme.active : Theme.ink2)
-        .padding(.horizontal, 10).frame(minHeight: 30)
-        .background(selected ? Theme.accentSoft : Theme.subtle, in: Capsule())
-    }
 }
 
 struct SectionLabel: View {
@@ -230,7 +146,7 @@ struct IconAction: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.body.weight(.medium)).frame(width: 44, height: 44)
+            Image(systemName: symbol).font(.body.weight(.medium)).minTouchTarget()
                 .foregroundStyle(Theme.ink)
                 .contentShape(Rectangle())
         }
@@ -243,6 +159,6 @@ struct IconAction: View {
 struct InlineError: View {
     let message: String?
     var body: some View {
-        if let message { Text(message).font(Theme.TypeScale.meta).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading) }
+        if let message { Text(message).font(Theme.TypeScale.meta).foregroundStyle(Theme.danger).frame(maxWidth: .infinity, alignment: .leading) }
     }
 }

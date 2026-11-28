@@ -19,13 +19,13 @@ struct PinPickerSheet: View {
                             Text(note.body).font(.subheadline).foregroundStyle(Theme.ink).lineLimit(2).lineSpacing(2)
                             Spacer(minLength: 8)
                             Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                                .font(.title3).foregroundStyle(selected ? Theme.active : Theme.ink3.opacity(0.6))
+                                .font(.title3).foregroundStyle(selected ? Theme.ink : Theme.ink2)
                         }
                         .padding(.vertical, 2)
-                        .contentShape(Rectangle())
+                        .minTapHeight()
                     }
                     .buttonStyle(.plain)
-                    .listRowBackground(Theme.paper)
+                    .listRowBackground(Theme.canvas)
                     .disabled(!selected && store.chat.pins.count >= 10)
                     .onAppear {
                         if displayCount < results.count && results[displayCount - 1].id == note.id { displayCount += 50 }
@@ -46,6 +46,6 @@ struct PinPickerSheet: View {
                 displayCount = 50
             }
         }
-        .tint(Theme.active)
+        .tint(Theme.ink)
     }
 }

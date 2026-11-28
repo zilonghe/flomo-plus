@@ -66,12 +66,12 @@ final class AIChatStore {
     @ObservationIgnored private var sessionTask: Task<Void, Never>?
     @ObservationIgnored private var listTask: Task<Void, Never>?
 
-    func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil) {
+    func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil, resetNewDraft: Bool = true) {
         let source = source.flatMap { $0.isEmpty ? nil : $0 }
         let nextKey = source.map { "note:\($0)" }
             ?? insight.map { "insight:\($0.id)" }
             ?? (pins.isEmpty ? "new" : "pins:" + pins.joined(separator: ","))
-        switchDraftContext(to: nextKey, resetNew: true)
+        switchDraftContext(to: nextKey, resetNew: resetNewDraft)
         sourceNoteId = validSource(source)
         var seen = Set<String>()
         let candidates = (source.map { [$0] } ?? []) + pins

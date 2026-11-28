@@ -8,9 +8,11 @@ struct CustomLensSheet: View {
     @State private var error: String?
     @Environment(\.dismiss) private var dismiss
 
-    init(store: AppStore, lens: InsightLens?) {
+    init(store: AppStore, lens: InsightLens?, prompt: String? = nil) {
         self.store = store
-        _input = State(initialValue: LensEdit(lens: lens))
+        var input = LensEdit(lens: lens)
+        if let prompt { input.prompt = prompt }
+        _input = State(initialValue: input)
     }
 
     var body: some View {
@@ -38,7 +40,7 @@ struct CustomLensSheet: View {
                 Button("删除", role: .destructive) { perform(remove: true) }
             }
         }
-        .tint(Theme.active)
+        .tint(Theme.ink)
         .interactiveDismissDisabled(saving)
     }
 

@@ -1,15 +1,20 @@
 import SwiftUI
 
 struct NoteReaderView: View {
-    enum Presentation { case fullScreen, pushed }
-
     let store: AppStore
-    let note: Note
     let source: DetailSource
-    let presentation: Presentation
-    var isEditing: Binding<Bool>? = nil
 
-    @ScaledMetric(relativeTo: .body) private var readerFontSize: CGFloat = 18
+    @State private var displayedNote: Note
+    @State private var backStack: [Note] = []
+    private var isRandomMode: Bool { source == .walk }
+    @ScaledMetric(relativeTo: .body) private var readerFontSize: CGFloat = 20
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(store: AppStore, note: Note, source: DetailSource) {
+        self.store = store
+        self.source = source
+        _displayedNote = State(initialValue: note)
+    }
     @Environment(\.dismiss) private var dismiss
     @State private var draft: NoteDraft?
     @State private var selection: TextSelection?
@@ -18,9 +23,9 @@ struct NoteReaderView: View {
     @State private var confirmingDelete = false
     @FocusState private var editing: Bool
 
-    private var current: Note { store.notesById[note.id] ?? note }
+    private var current: Note { store.notesById[displayedNote.id] ?? displayedNote }
     private var isEditingOrSaving: Bool { draft != nil || saving }
-    private var canModify: Bool { !saving && store.api != nil && store.notesById[note.id] != nil }
+    private var canModify: Bool { !saving && store.api != nil && store.notesById[displayedNote.id] != nil }
     private var draftBodyBinding: Binding<String> {
         Binding(get: { draft?.body ?? "" }, set: { draft?.body = $0 })
     }
@@ -43,16 +48,15 @@ struct NoteReaderView: View {
                         .accessibilityLabel("笔记正文")
                         .accessibilityIdentifier("detail-body-editor")
                 } else {
-                    if let reading = current.reading {
-                        HStack(alignment: .top, spacing: 14) {
-                            Capsule().fill(Theme.green).frame(width: 2).accessibilityHidden(true)
-                            readingText
+                    readingText
+                        .padding(.leading, current.reading == nil ? 0 : 17)
+                        .overlay(alignment: .leading) {
+                            if current.reading != nil {
+                                Rectangle().fill(Theme.quoteBar).frame(width: 1.5).accessibilityHidden(true)
+                            }
                         }
-                        .fixedSize(horizontal: false, vertical: true)
-                        attribution(for: reading)
-                    } else {
-                        readingText
-                    }
+                    if let reading = current.reading { attribution(for: reading).padding(.leading, 17) }
+                    relatedNotes
                 }
                 InlineError(message: error)
             }
@@ -62,8 +66,10 @@ struct NoteReaderView: View {
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity)
         }
+        .id(displayedNote.id)
+        .transition(.opacity)
         .background(Theme.canvas.ignoresSafeArea())
-        .tint(Theme.active)
+        .tint(Theme.ink)
         .environment(\.openURL, OpenURLAction { url in
             guard let tag = TagParser.tagPath(from: url) else { return .systemAction }
             store.openTag(tag)
@@ -72,20 +78,21 @@ struct NoteReaderView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if draft != nil {
                 NoteTagAccessoryBar(store: store, draft: draftBodyBinding, selection: $selection,
-                                    refocus: { editing = true }) { EmptyView() }
+                                    refocus: { editing = true })
                     .disabled(saving)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(isEditingOrSaving)
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) { readerToolbar.background(Theme.canvas) }
         .interactiveDismissDisabled(isEditingOrSaving)
-        .toolbar(draft == nil ? .visible : .hidden, for: .bottomBar)
-        .toolbar { readerToolbar }
         .confirmationDialog("删除这条笔记？", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("删除", role: .destructive, action: delete)
         }
-        .onChange(of: isEditingOrSaving, initial: true) { _, value in isEditing?.wrappedValue = value }
-        .onDisappear { isEditing?.wrappedValue = false }
+        .task(id: displayedNote.id) {
+            if let api = store.api { store.walk.pivot(to: displayedNote.id, api: api, keepHistory: false) }
+        }
     }
 
     private var readingText: some View {
@@ -100,22 +107,50 @@ struct NoteReaderView: View {
     @ViewBuilder
     private func attribution(for reading: Reading) -> some View {
         let title = reading.bookTitle.flatMap { $0.isEmpty ? nil : "《\($0)》" }
-        let book = [title, reading.author].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
-        let source = [reading.chapter, reading.sourceDate].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-        if !book.isEmpty || !source.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Rectangle().fill(Theme.line).frame(width: 32, height: 1).accessibilityHidden(true)
-                if !book.isEmpty { Text(book).font(.subheadline).foregroundStyle(Theme.ink2) }
-                if !source.isEmpty { Text(source).font(.footnote).foregroundStyle(Theme.ink3) }
+        let source = [title, reading.chapter].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        if !source.isEmpty {
+            Text(source).font(.footnote).tracking(0.5).foregroundStyle(Theme.ink2)
+        }
+    }
+
+    @ViewBuilder
+    private var relatedNotes: some View {
+        if let result = store.walk.result, result.focus.id == displayedNote.id, !result.related.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                Text("相关笔记").font(.footnote).tracking(0.5).foregroundStyle(Theme.ink2)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(result.related.prefix(3)) { item in
+                    Button {
+                        if let note = store.notesById[item.id] { navigate(to: note) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.note.body).font(.callout).foregroundStyle(Theme.ink).lineLimit(2)
+                            Text(item.note.reading?.bookTitle.map { "《\($0)》" } ?? String(item.note.createdAt.prefix(10)))
+                                .font(.footnote).foregroundStyle(Theme.ink2)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).minTapHeight()
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .padding(.top, 20)
+        }
+    }
+
+    private func navigate(to note: Note, push: Bool = true) {
+        if push { backStack.append(displayedNote) }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            displayedNote = note
+            error = nil
         }
     }
 
     @ViewBuilder
     private var conflictCard: some View {
-        if let latest = store.notesById[note.id] {
+        if let latest = store.notesById[displayedNote.id] {
             VStack(alignment: .leading, spacing: 8) {
-                Text("云端版本已更新").font(.footnote.weight(.semibold)).foregroundStyle(.red)
+                Text("云端版本已更新").font(.footnote.weight(.semibold)).foregroundStyle(Theme.danger)
                 Text(latest.body).font(.subheadline)
                     .accessibilityIdentifier("detail-conflict-server-body")
                 Button("保留草稿，使用云端版本继续编辑") {
@@ -123,67 +158,85 @@ struct NoteReaderView: View {
                     error = nil
                 }
                 .buttonStyle(.weijiPrimary)
-            }.noteCard()
+            }
         } else {
             Text("这条笔记已在云端删除。").foregroundStyle(Theme.ink2)
         }
     }
 
-    @ToolbarContentBuilder
-    private var readerToolbar: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            if draft != nil {
-                Button("取消") {
+    private var readerToolbar: some View {
+        HStack(spacing: 4) {
+            if let draft {
+                toolbarText("取消", color: Theme.ink2) {
                     editing = false
-                    draft = nil
+                    self.draft = nil
                     selection = nil
                     error = nil
                 }
                 .disabled(saving)
-            } else if presentation == .fullScreen {
-                Button { dismiss() } label: { Image(systemName: "xmark") }
-                    .accessibilityLabel("关闭")
-                    .accessibilityIdentifier("detail-close-button")
-                    .disabled(saving)
-            }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-            if let draft {
-                Button("保存") { save(draft) }
-                    .fontWeight(.semibold)
+                Spacer()
+                toolbarText("保存", bold: true) { save(draft) }
                     .disabled(saving || draft.conflict || draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("detail-save-button")
             } else {
-                Menu {
-                    Button("复制全文", systemImage: "doc.on.doc") { UIPasteboard.general.string = current.body }
-                    ShareLink(item: current.body) { Label("分享", systemImage: "square.and.arrow.up") }
-                    Divider()
-                    Button("删除笔记", systemImage: "trash", role: .destructive) { confirmingDelete = true }
-                        .disabled(!canModify)
-                        .accessibilityIdentifier("detail-delete-button")
-                } label: {
-                    Image(systemName: "ellipsis")
+                if backStack.isEmpty {
+                    IconAction(symbol: "xmark", label: "关闭", id: "detail-close-button") { dismiss() }
+                        .disabled(saving)
+                } else {
+                    Button {
+                        if let note = backStack.popLast() { navigate(to: note, push: false) }
+                    } label: {
+                        ViewThatFits(in: .horizontal) {
+                            Label("返回", systemImage: "chevron.left").fixedSize()
+                            Image(systemName: "chevron.left")
+                        }
+                        .foregroundStyle(Theme.ink).minTouchTarget()
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("返回")
+                    .disabled(saving)
                 }
-                .accessibilityLabel("更多操作")
-            }
-        }
-        if draft == nil {
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button {
+                Spacer(minLength: 0)
+                if isRandomMode {
+                    toolbarText("换一条") {
+                        if let note = store.walk.randomNote(in: store.index, excluding: displayedNote.id) {
+                            navigate(to: note)
+                        }
+                    }
+                    .disabled(saving || store.api == nil || store.index.entries.count < 2)
+                }
+                toolbarText("编辑") {
                     draft = NoteDraft(note: current)
                     selection = nil
                     error = nil
                     editing = true
-                } label: {
-                    Image(systemName: "pencil")
                 }
                 .disabled(!canModify)
-                .accessibilityLabel("编辑")
                 .accessibilityIdentifier("detail-edit-button")
-                Spacer()
-                primaryButton
+                Menu {
+                    primaryButton
+                    Button("复制全文", systemImage: "doc.on.doc") { UIPasteboard.general.string = current.body }
+                    ShareLink(item: current.body) { Label("分享", systemImage: "square.and.arrow.up") }
+                    Button("删除笔记", systemImage: "trash", role: .destructive) { confirmingDelete = true }
+                        .disabled(!canModify)
+                        .accessibilityIdentifier("detail-delete-button")
+                } label: {
+                    Image(systemName: "ellipsis").foregroundStyle(Theme.ink).minTouchTarget()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("更多操作")
             }
         }
+        .padding(.horizontal, 14)
+    }
+
+    private func toolbarText(_ title: String, color: Color = Theme.ink, bold: Bool = false,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.subheadline.weight(bold ? .semibold : .regular))
+                .foregroundStyle(color).fixedSize(horizontal: false, vertical: true).minTouchTarget()
+        }
+        .buttonStyle(.plain)
     }
 
     private var primaryButton: some View {

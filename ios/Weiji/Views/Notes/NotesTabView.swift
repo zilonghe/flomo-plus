@@ -6,36 +6,40 @@ struct NotesTabView: View {
     @Binding var sidebar: Bool
     @Binding var showDatePicker: Bool
     @State private var draftDate = Date()
+    @State private var searchPresented = false
 
     var body: some View {
         NavigationStack {
-            NotesList(store: store, noteZoom: noteZoom, sidebar: sidebar)
-                .background(Theme.canvas.ignoresSafeArea())
-                .navigationTitle(store.filter.navigationTitle)
-                .navigationBarTitleDisplayMode(.large)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") {
-                            sidebar = true
-                        }
-                    }
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        if store.syncing {
-                            ProgressView().controlSize(.small).accessibilityLabel("正在同步")
-                        }
-                        IconAction(symbol: "arrow.clockwise", label: "同步", id: "notes-sync-button") { store.refresh() }
-                            .disabled(store.syncing)
-                        IconAction(symbol: "gearshape", label: "设置", id: "notes-settings-button") {
-                            store.openSettings(.general)
-                        }
-                    }
-                }
+            VStack(spacing: 0) {
+                if !searchPresented { header }
+                NotesList(store: store, noteZoom: noteZoom, sidebar: sidebar, activateSearch: { searchPresented = true })
+            }
+            .background(Theme.canvas.ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Theme.canvas, for: .navigationBar)
+            .toolbarVisibility(searchPresented ? .visible : .hidden, for: .navigationBar)
+            .searchable(text: $store.query, isPresented: $searchPresented,
+                        placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索")
         }
-        .searchable(text: $store.query, prompt: "搜索笔记、书名、作者")
+        .onChange(of: store.tab) { _, tab in if tab != .notes { searchPresented = false } }
         .sheet(isPresented: $showDatePicker) { datePickerSheet }
         .onChange(of: showDatePicker) { _, open in
             if open { draftDate = store.filter.day.flatMap { Self.dayFormatter.date(from: $0) } ?? .now }
         }
+    }
+
+    private var header: some View {
+        HStack(spacing: 4) {
+            IconAction(symbol: "line.3.horizontal", label: "笔记菜单", id: "notes-menu-button") { sidebar = true }
+            Spacer(minLength: 0)
+            SpaceSwitcher(store: store)
+            Spacer(minLength: 0)
+            IconAction(symbol: "shuffle", label: "随机读", id: "notes-random-walk-button") { store.openRandomRead() }
+                .disabled(store.api == nil || store.index.entries.isEmpty)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 48)
+        .accessibilityAction(named: Text("搜索")) { searchPresented = true }
     }
 
     private var datePickerSheet: some View {
@@ -62,10 +66,10 @@ struct NotesTabView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .tint(Theme.active)
+        .tint(Theme.ink)
     }
 
-    private static var dayFormatter: DateFormatter {
+    static var dayFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -107,94 +111,126 @@ private struct NotesList: View {
     let store: AppStore
     let noteZoom: Namespace.ID
     let sidebar: Bool
+    let activateSearch: () -> Void
     @Environment(\.isSearching) private var isSearching
     @Environment(\.dismissSearch) private var dismissSearch
+    @State private var atTop = true
 
     var body: some View {
         VStack(spacing: 0) {
             if store.isOffline {
-                Label("离线 · 仅可浏览已同步笔记", systemImage: "wifi.slash")
+                Text("离线 · 仅可浏览已同步笔记")
                     .font(.footnote).foregroundStyle(Theme.ink2)
-                    .padding(.horizontal, 12).padding(.vertical, 9).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.subtle, in: .rect(cornerRadius: 10))
-                    .padding(.horizontal, 16).padding(.bottom, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24)
             }
-            if store.filter != NoteFilter() {
-                filterChips
-            }
-            InlineError(message: store.error).padding(.horizontal, 16)
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    if store.results.isEmpty && !store.syncing {
-                        Text("暂无笔记").foregroundStyle(Theme.ink3).padding(.top, 48)
-                    }
-                    ForEach(store.results.prefix(store.pageSize)) { note in
-                        Button {
-                            Task { await store.openNote(note.id, from: .notes) }
-                        } label: {
-                            NoteCardContent(note: note).noteCard(padding: 16)
-                        }
-                        .buttonStyle(.plain)
-                        .matchedTransitionSource(id: NoteZoomID(source: .notes, id: note.id), in: noteZoom)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("note-card-" + note.id)
-                        .onAppear { store.loadMore(after: note.id) }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .padding(.bottom, 96)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .refreshable { store.refresh() }
-            .overlay(alignment: .bottomTrailing) {
-                if store.api != nil {
-                    Button {
-                        store.showComposer = true
-                    } label: {
-                        Image(systemName: "plus").font(.title2.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 56, height: 56)
-                            .background {
-                                Circle().fill(Theme.accent)
-                                    .shadow(color: Theme.accent.opacity(0.32), radius: 12, y: 5)
-                            }
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("快速记")
-                    .accessibilityIdentifier("notes-fab-new")
-                    .padding(.trailing, 20).padding(.bottom, 12)
-                }
-            }
+            if store.filter != NoteFilter() { filterLine }
+            InlineError(message: store.error).padding(.horizontal, 24)
+            stream
         }
         .onChange(of: sidebar) { _, open in if open && isSearching { dismissSearch() } }
     }
 
-    private var filterChips: some View {
-        let active = NoteFilter.Dimension.allCases.filter { $0.label(in: store.filter) != nil }
-        return ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(active, id: \.self) { dimension in
-                    if let title = dimension.label(in: store.filter) {
-                        Button { store.filter.clear(dimension) } label: {
-                            Chip(text: title, symbol: "xmark", selected: true).minTouchTarget()
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("清除 \(title)")
-                    }
+    private var stream: some View {
+        let calendar = Calendar.current
+        let formatter = NotesTabView.dayFormatter
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let seconds = ISO8601DateFormatter()
+        let notes = store.results.prefix(store.pageSize)
+        let grouped = Dictionary(grouping: notes) { note in
+            (iso.date(from: note.createdAt) ?? seconds.date(from: note.createdAt))
+                .map { formatter.string(from: $0) } ?? String(note.createdAt.prefix(10))
+        }
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 44) {
+                if notes.isEmpty && !store.syncing {
+                    Text("暂无笔记").foregroundStyle(Theme.ink2)
+                        .frame(maxWidth: .infinity).padding(.top, 48)
                 }
-                if active.count > 1 {
-                    Button { store.filter = NoteFilter() } label: {
-                        Chip(text: "清除全部").minTouchTarget()
+                ForEach(grouped.keys.sorted(by: >), id: \.self) { day in
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(dayTitle(day, formatter: formatter, calendar: calendar))
+                            .font(.footnote).tracking(0.5).foregroundStyle(Theme.ink2)
+                            .accessibilityAddTraits(.isHeader)
+                        LazyVStack(alignment: .leading, spacing: 30) {
+                            ForEach(grouped[day] ?? []) { note in
+                                Button {
+                                    Task { await store.openNote(note.id, from: .notes) }
+                                } label: {
+                                    NoteCardContent(note: note)
+                                        .frame(maxWidth: .infinity, alignment: .leading).minTapHeight()
+                                }
+                                .buttonStyle(.plain)
+                                .environment(\.openURL, OpenURLAction { url in
+                                    guard let tag = TagParser.tagPath(from: url) else { return .systemAction }
+                                    store.openTag(tag)
+                                    return .handled
+                                })
+                                .matchedTransitionSource(id: NoteZoomID(source: .notes, id: note.id), in: noteZoom)
+                                .accessibilityIdentifier("note-card-" + note.id)
+                                .onAppear { store.loadMore(after: note.id) }
+                            }
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 16)
+            .frame(maxWidth: 640).padding(.horizontal, 24)
+            .padding(.top, 16).padding(.bottom, 96)
+            .frame(maxWidth: .infinity)
         }
-        .scrollIndicators(.hidden)
-        .padding(.bottom, 6)
+        .scrollDismissesKeyboard(.interactively)
+        .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top < 1
+        } action: { _, isTop in atTop = isTop }
+        .simultaneousGesture(DragGesture().onEnded { value in
+            let y = value.translation.height
+            guard atTop, !sidebar, !isSearching, y > abs(value.translation.width) else { return }
+            if y >= 100 { refresh() }
+            else if y >= 24 { activateSearch() }
+        })
+        .accessibilityAction(named: Text("搜索"), activateSearch)
+        .refreshable { refresh() }
+        .overlay(alignment: .bottomTrailing) {
+            if store.api != nil && store.deletedUndoNote == nil {
+                Button { store.showComposer = true } label: {
+                    Image(systemName: "plus").font(.title2.weight(.medium))
+                        .foregroundStyle(Theme.inverseText)
+                        .frame(width: 54, height: 54)
+                        .background { Circle().fill(Theme.inverseBg).shadow(color: .black.opacity(0.14), radius: 8, y: 4) }
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("记一条")
+                .accessibilityIdentifier("notes-fab-new")
+                .padding(.trailing, 24).padding(.bottom, 16)
+            }
+        }
+    }
+
+    private func refresh() {
+        if !store.syncing { store.refresh() }
+    }
+
+    private func dayTitle(_ day: String, formatter: DateFormatter, calendar: Calendar) -> String {
+        guard let date = formatter.date(from: day) else { return day }
+        if calendar.isDateInToday(date) { return "今天" }
+        if calendar.isDateInYesterday(date) { return "昨天" }
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = parts.year, let month = parts.month, let day = parts.day else { return day }
+        let prefix = year == calendar.component(.year, from: .now) ? "" : "\(year)年"
+        return "\(prefix)\(month)月\(day)日"
+    }
+
+    private var filterLine: some View {
+        let titles = NoteFilter.Dimension.allCases.compactMap { $0.label(in: store.filter) }
+        return HStack {
+            Text("筛选：" + titles.joined(separator: " · "))
+                .font(.footnote).foregroundStyle(Theme.ink2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button { store.filter = NoteFilter() } label: {
+                Text("清除").font(.subheadline).foregroundStyle(Theme.ink).fixedSize().minTouchTarget()
+            }.buttonStyle(.plain)
+        }
+        .padding(.horizontal, 24)
     }
 
 }
@@ -204,20 +240,20 @@ struct NoteCardContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                if let book = note.reading?.bookTitle, !book.isEmpty {
-                    Image(systemName: "book.closed.fill").font(.caption2).foregroundStyle(Theme.active)
-                        .accessibilityHidden(true)
-                    Text(book).font(.caption.weight(.medium)).foregroundStyle(Theme.ink2).lineLimit(1)
-                    Spacer(minLength: 8)
-                }
-                Text(String(note.createdAt.prefix(10))).font(.caption.monospacedDigit()).foregroundStyle(Theme.ink3)
-            }
-            Text(Self.highlightingTags(note.body))
+            Text(Self.highlightingTags(note.body, linkTags: true))
                 .font(.callout).foregroundStyle(Theme.ink)
-                .lineSpacing(4).lineLimit(4)
-                .multilineTextAlignment(.leading)
+                .lineSpacing(6).lineLimit(4).multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, note.reading == nil ? 0 : 13)
+                .overlay(alignment: .leading) {
+                    if note.reading != nil {
+                        Rectangle().fill(Theme.quoteBar).frame(width: 1.5).accessibilityHidden(true)
+                    }
+                }
+            if let book = note.reading?.bookTitle, !book.isEmpty {
+                Text("《\(book)》").font(.footnote).tracking(0.5).foregroundStyle(Theme.ink2)
+                    .padding(.leading, 13)
+            }
         }
     }
 

@@ -7,6 +7,7 @@ struct NoteZoomID: Hashable {
 
 struct RootTabView: View {
     @Bindable var store: AppStore
+    @State private var restoring = false
     @State private var notesSidebar = false
     @State private var showDatePicker = false
     @State private var aiSessionsDrawer = false
@@ -23,19 +24,14 @@ struct RootTabView: View {
                     ProgressView().accessibilityLabel("正在恢复连接")
                 }
             case .online, .offline:
-                TabView(selection: $store.tab) {
-                    Tab("笔记", systemImage: "text.alignleft", value: AppStore.Tab.notes) {
-                        NotesTabView(store: store, noteZoom: noteZoom, sidebar: $notesSidebar, showDatePicker: $showDatePicker)
-                    }
-                    Tab("漫步", systemImage: "point.topleft.down.to.point.bottomright.curvepath", value: AppStore.Tab.walk) {
-                        RandomWalkView(store: store, noteZoom: noteZoom)
-                    }
-                    Tab("AI", systemImage: "bubble.left", value: AppStore.Tab.ai) {
-                        AIChatView(store: store, showSessions: $aiSessionsDrawer)
-                    }
-                    Tab("洞察", systemImage: "chart.bar.xaxis", value: AppStore.Tab.insights) {
-                        InsightsTabView(store: store)
-                    }
+                ZStack {
+                    NotesTabView(store: store, noteZoom: noteZoom, sidebar: $notesSidebar, showDatePicker: $showDatePicker)
+                        .workspaceVisible(store.tab == .notes)
+                    AIChatView(store: store, showSessions: $aiSessionsDrawer)
+                        .workspaceVisible(store.tab == .ai)
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if store.deletedUndoNote != nil { undoBar }
                 }
                 .modifier(SideDrawer(isOpen: $notesSidebar, edgeSwipeEnabled: store.tab == .notes && !aiSessionsDrawer) {
                     SidebarSheetView(store: store, onClose: { notesSidebar = false },
@@ -48,7 +44,7 @@ struct RootTabView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas.ignoresSafeArea())
-        .tint(Theme.active)
+        .tint(Theme.ink)
         .onChange(of: store.authScreenState) { _, state in
             if state == .needsLogin || state == .restoring {
                 notesSidebar = false
@@ -70,20 +66,69 @@ struct RootTabView: View {
         .task { store.start() }
     }
 
+    private var undoBar: some View {
+        HStack {
+            Text("已删除一条笔记").frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                restoring = true
+                Task { await store.undoDelete(); restoring = false }
+            } label: {
+                Text("撤销").fontWeight(.semibold).fixedSize().minTouchTarget()
+            }
+            .buttonStyle(.plain)
+            .disabled(restoring)
+        }
+        .font(.subheadline).foregroundStyle(Theme.inverseText)
+        .padding(.horizontal, 16).background(Theme.inverseBg, in: .rect(cornerRadius: 12))
+        .padding(.horizontal, 24).padding(.bottom, 12)
+    }
+
     private func closeSessions() { aiSessionsDrawer = false }
 
     @ViewBuilder
     private func noteReader(for detail: AppStore.Detail) -> some View {
         let reader = NavigationStack {
-            NoteReaderView(store: store, note: detail.note, source: detail.source, presentation: .fullScreen)
+            NoteReaderView(store: store, note: detail.note, source: detail.source)
         }
-        if detail.source.supportsZoom {
+        if detail.source == .notes {
             reader.navigationTransition(.zoom(sourceID: NoteZoomID(source: detail.source, id: detail.id), in: noteZoom))
         } else {
             reader
         }
     }
 
+}
+
+private extension View {
+    func workspaceVisible(_ visible: Bool) -> some View {
+        opacity(visible ? 1 : 0)
+            .offset(x: visible ? 0 : -10_000)
+            .zIndex(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
+    }
+}
+
+struct SpaceSwitcher: View {
+    let store: AppStore
+
+    var body: some View {
+        HStack(spacing: 2) {
+            item("笔记", .notes)
+            Text("·").foregroundStyle(Theme.ink2).accessibilityHidden(true)
+            item("AI", .ai)
+        }
+    }
+
+    private func item(_ title: String, _ tab: AppStore.Tab) -> some View {
+        Button { store.tab = tab } label: {
+            Text(title).font(.subheadline.weight(store.tab == tab ? .semibold : .regular))
+                .foregroundStyle(store.tab == tab ? Theme.ink : Theme.ink2)
+                .fixedSize().minTouchTarget()
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(store.tab == tab ? .isSelected : [])
+    }
 }
 
 private struct ChatSwitchAlert: ViewModifier {

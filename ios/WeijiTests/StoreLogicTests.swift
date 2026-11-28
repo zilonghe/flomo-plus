@@ -4,6 +4,123 @@ import os
 
 @MainActor
 final class StoreLogicTests: XCTestCase {
+    func testRandomReadOpensUnifiedReaderAndLoadsRelatedNotes() async throws {
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes": return .init(status: 200, body: notesFixture)
+            case "/api/notes/note/related":
+                return .init(status: 200, body: #"{"focus":{"id":"note","body":"原始版本","createdAt":"2025-02-01"},"mode":"lexical","indexed":0,"total":1,"related":[]}"#)
+            default:
+                XCTFail("Unexpected random-read endpoint: \(request.url?.path ?? "")")
+                return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let app = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        app.openRandomRead()
+        XCTAssertNil(app.detail)
+        app.start()
+        try await waitUntil("已加载随机读候选笔记") { !app.syncing && app.notesById["note"] != nil }
+        app.openRandomRead()
+        XCTAssertEqual(app.detail?.id, "note")
+        XCTAssertEqual(app.detail?.source, .walk)
+        XCTAssertEqual(app.tab, .notes)
+        try await waitUntil("相关笔记已加载") { !app.walk.loading }
+        XCTAssertEqual(app.walk.result?.focus.id, app.detail?.id)
+        XCTAssertNil(app.walk.randomNote(in: app.index, excluding: app.detail?.id))
+    }
+
+    func testUndoDeleteRecreatesOriginalPayloadWithoutTombstonedID() async throws {
+        let fixture = #"{"notes":[{"id":"note","body":"原始版本","createdAt":"2025-02-01T00:00:00.000Z","reading":{"bookTitle":"书名","chapter":"第一章"},"turns":[{"role":"user","text":"问题"}],"revision":2}],"deleted":[]}"#
+        let restoredID = OSAllocatedUnfairLock(initialState: Optional<String>.none)
+        let (config, transport) = try StubProtocol.make { request in
+            switch (request.httpMethod, request.url?.path) {
+            case (_, "/api/session"): return .init(status: 200, body: sessionFixture)
+            case ("GET", "/api/notes"): return .init(status: 200, body: fixture)
+            case ("POST", "/api/notes"):
+                guard let input = jsonBody(request), let id = input["id"] as? String else {
+                    return .init(status: 400, body: "missing payload")
+                }
+                if input["delete"] as? Bool == true {
+                    XCTAssertEqual(id, "note")
+                    XCTAssertEqual(input["expectedRevision"] as? Int, 2)
+                    return .init(status: 200, body: #"{"deleted":{"id":"note","revision":3}}"#)
+                }
+                XCTAssertNotEqual(id, "note")
+                XCTAssertNotNil(UUID(uuidString: id))
+                XCTAssertEqual(input["expectedRevision"] as? Int, 0)
+                guard var note = input["note"] as? [String: Any] else {
+                    return .init(status: 400, body: "missing note")
+                }
+                XCTAssertEqual(note["id"] as? String, id)
+                XCTAssertEqual(note["body"] as? String, "原始版本")
+                XCTAssertEqual(note["createdAt"] as? String, "2025-02-01T00:00:00.000Z")
+                XCTAssertEqual((note["reading"] as? [String: String])?["chapter"], "第一章")
+                XCTAssertEqual((note["turns"] as? [[String: String]])?.first?["text"], "问题")
+                restoredID.withLock { $0 = id }
+                note["revision"] = 1
+                let data = try! JSONSerialization.data(withJSONObject: ["note": note])
+                return .init(status: 200, body: String(decoding: data, as: UTF8.self))
+            default: return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let app = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        app.start()
+        try await waitUntil("初始笔记已加载") { !app.syncing && app.notesById["note"] != nil }
+        try await app.delete(XCTUnwrap(app.notesById["note"]))
+        XCTAssertNil(app.notesById["note"])
+        XCTAssertEqual(app.deletedUndoNote?.id, "note")
+        await app.undoDelete()
+        XCTAssertNil(app.deletedUndoNote)
+        let newID = try XCTUnwrap(restoredID.withLock { $0 })
+        XCTAssertEqual(app.notesById[newID]?.reading?.bookTitle, "书名")
+        XCTAssertNil(app.notesById["note"])
+    }
+
+    func testReportHistoryRoutesFollowUpsAndRetainsOriginalRecipe() async throws {
+        let summary = InsightReport(id: "report-1", title: "回顾", lensName: "同名视角", content: nil,
+                                    excerpt: nil, citations: nil, createdAt: "2025-02-01")
+        let (config, transport) = try StubProtocol.make { request in
+            switch request.url?.path {
+            case "/api/session": return .init(status: 200, body: sessionFixture)
+            case "/api/notes": return .init(status: 200, body: notesFixture)
+            case "/api/insights/reports/report-1":
+                return .init(status: 200, body: #"{"report":{"id":"report-1","title":"回顾","lensId":"exact-lens","lensName":"同名视角","scope":{"range":"custom","tzOffsetMinutes":-480,"tags":["work"],"tagMode":"all","startDate":"2025-02-01","endDate":"2025-02-03"},"useProfile":false,"content":"报告正文","createdAt":"2025-02-01","citations":[]}}"#)
+            default: return .init(status: 404, body: "{}")
+            }
+        }
+        defer { transport.invalidateAndCancel(); StubProtocol.remove(config) }
+        let app = AppStore(initial: config, temporary: true, reset: true, makeTransport: StubProtocol.transport)
+        app.start()
+        try await waitUntil("连接完成") { !app.syncing && app.api != nil }
+        app.chat.draft = "新会话草稿"
+        app.requestViewReport(summary)
+        XCTAssertEqual(app.tab, .ai)
+        XCTAssertEqual(app.reportRoute, .history(summary.id))
+        try await waitUntil("报告详情加载完成") { !app.insights.loadingReport }
+        XCTAssertEqual(app.presentedReport?.content, "报告正文")
+        let recipe = try XCTUnwrap(app.presentedReportRecipe)
+        XCTAssertEqual(recipe.lensId, "exact-lens")
+        XCTAssertEqual(recipe.scope.range, "custom")
+        XCTAssertEqual(recipe.scope.tags, ["work"])
+        XCTAssertEqual(recipe.scope.endDate, "2025-02-03")
+        XCTAssertEqual(recipe.useProfile, false)
+
+        app.prepareReportFollowUp()
+        XCTAssertEqual(app.chat.insight?.id, summary.id)
+        XCTAssertTrue(app.chat.draft.isEmpty)
+        app.chat.draft = "报告追问草稿"
+        app.requestNewChat()
+        XCTAssertNil(app.reportRoute)
+        XCTAssertEqual(app.chat.draft, "新会话草稿")
+        app.requestViewReport(summary)
+        try await waitUntil("重新载入报告") { !app.insights.loadingReport }
+        app.prepareReportFollowUp()
+        XCTAssertEqual(app.chat.draft, "报告追问草稿")
+    }
+
     func testOpenNoteCapturesSourceBeforeAsyncFetch() async throws {
         let fetches = OSAllocatedUnfairLock(initialState: 0)
         let (config, transport) = try StubProtocol.make { request in
@@ -447,16 +564,16 @@ final class StoreLogicTests: XCTestCase {
                 XCTAssertEqual(store.chat.sourceNoteId, note.id)
                 XCTAssertEqual(store.chat.session?.id, "reader-session")
             }),
-            ("walk", .walk, false, { store.askAbout(walk) }, {
+            ("walk", .notes, false, { store.askAbout(walk) }, {
                 XCTAssertEqual(store.tab, .ai)
                 XCTAssertEqual(store.chat.pins, [note.id])
             }),
-            ("report", .insights, false, { store.askAbout(report) }, {
+            ("report", .notes, false, { store.askAbout(report) }, {
                 XCTAssertEqual(store.tab, .ai)
                 XCTAssertEqual(store.chat.insight?.id, report.id)
                 XCTAssertEqual(store.chat.pins, [note.id])
             }),
-            ("session", .walk, false, { store.requestSelectChatSession("reader-session") }, {
+            ("session", .notes, false, { store.requestSelectChatSession("reader-session") }, {
                 XCTAssertEqual(store.tab, .ai)
                 XCTAssertEqual(store.chat.session?.id, "reader-session")
             }),
