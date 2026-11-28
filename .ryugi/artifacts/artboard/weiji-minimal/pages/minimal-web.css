@@ -1,0 +1,276 @@
+/* Weiji Extreme Minimalism — Web Styles (Zero Sidebar, Single Warm Paper Sheet, 640px Column) */
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.web-sheet {
+  width: 1280px;
+  height: 800px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Quiet single-line top bar — no heavy sidebar, no grey strips */
+.web-top {
+  height: 60px;
+  padding: 0 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.web-top.bordered {
+  border-bottom: 1px solid var(--color-separator);
+}
+.web-spaces {
+  display: inline-flex;
+  align-items: center;
+  gap: 20px;
+  font: 400 15px/20px var(--font-body);
+}
+.web-spaces .active {
+  color: var(--color-text);
+  font-weight: 600;
+}
+.web-spaces .inactive {
+  color: var(--color-text-secondary);
+}
+.web-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 22px;
+  font: 400 14px/20px var(--font-body);
+  color: var(--color-text-secondary);
+}
+.web-actions .strong {
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+/* Centered 640px reading & writing measure */
+.web-column {
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 24px 0 40px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Borderless inline composer — expands on focus, zero format buttons */
+.web-compose {
+  padding: 4px 0 18px;
+  border-bottom: 1px solid var(--color-separator);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 36px;
+  flex-shrink: 0;
+}
+.web-compose-input {
+  flex: 1;
+  font: var(--type-body);
+  color: var(--color-text-secondary);
+}
+.web-send {
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+/* Day-grouped stream — proximity replaces hairlines */
+.day-group + .day-group {
+  margin-top: 44px;
+}
+.day-head {
+  font: 500 13px/18px var(--font-body);
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.note-entry + .note-entry {
+  margin-top: 30px;
+}
+.note-text {
+  font: var(--type-body);
+  color: var(--color-text);
+  margin: 0;
+}
+.note-quote {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+.note-quote-bar {
+  width: 1.5px;
+  background: var(--color-quote-bar);
+  border-radius: 1px;
+  flex-shrink: 0;
+  margin: 5px 0;
+}
+.note-source {
+  margin-top: 8px;
+  font: var(--type-meta);
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+}
+.inline-tag { color: var(--color-accent); }
+.inline-cite {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  font-weight: 500;
+  padding: 0 2px;
+}
+
+/* Web Reader (20px sans, 1.75 line height, 640px measure) */
+.web-reader-prose {
+  font: var(--type-reader-web);
+  color: var(--color-text);
+  margin: 0;
+}
+.related-block {
+  margin-top: auto;
+  padding-top: 24px;
+  border-top: 1px solid var(--color-separator);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.related-heading {
+  font: 500 13px/18px var(--font-body);
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+.related-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+.related-snippet {
+  font: 400 14px/22px var(--font-body);
+  color: var(--color-text);
+  margin-bottom: 6px;
+}
+.related-meta {
+  font: var(--type-meta);
+  color: var(--color-text-secondary);
+}
+
+/* Web AI — single column, quiet history popover on demand */
+.ai-user {
+  align-self: flex-end;
+  max-width: 72%;
+  padding: 11px 16px;
+  border-radius: 14px;
+  background: var(--color-surface);
+  font: 400 15px/24px var(--font-body);
+}
+.ai-ref {
+  font: var(--type-meta);
+  color: var(--color-text-secondary);
+}
+.ai-answer {
+  font: var(--type-body);
+  color: var(--color-text);
+}
+.ai-answer p { margin: 0 0 14px; }
+.ai-answer p:last-child { margin-bottom: 0; }
+.web-ai-input {
+  margin-top: auto;
+  padding: 12px 12px 12px 18px;
+  border-radius: 14px;
+  background: var(--color-surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.web-lens-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 14px 0 0;
+  font: var(--type-meta);
+  color: var(--color-text-secondary);
+}
+
+/* Web Mobile 375x812 — strict >=48px touch targets */
+.mobile-sheet {
+  width: 375px;
+  height: 812px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.mob-top {
+  height: 56px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.mob-hit {
+  min-width: 48px;
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text);
+}
+.mob-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font: 400 16px/22px var(--font-body);
+}
+.mob-switch .active { font-weight: 600; color: var(--color-text); }
+.mob-switch .inactive { color: var(--color-text-secondary); }
+.mob-body {
+  flex: 1;
+  overflow: hidden;
+  padding: 12px 20px 88px;
+  display: flex;
+  flex-direction: column;
+}
+.mob-fab {
+  position: absolute;
+  right: 20px;
+  bottom: 24px;
+  width: 52px;
+  height: 52px;
+  border-radius: 26px;
+  background: var(--color-inverse-bg);
+  color: var(--color-inverse-text);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+}

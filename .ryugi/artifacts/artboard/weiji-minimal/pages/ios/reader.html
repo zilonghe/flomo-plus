@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../minimal-ios.css" />
+  <style>
+    .edit-cursor {
+      display: inline-block;
+      width: 2px;
+      height: 22px;
+      background: var(--color-accent);
+      vertical-align: text-bottom;
+      margin-left: 2px;
+    }
+    .tag-popover {
+      margin-top: 16px;
+      display: inline-flex;
+      flex-direction: column;
+      background: var(--color-surface);
+      border: 1px solid var(--color-separator);
+      border-radius: 10px;
+      padding: 4px 12px;
+      width: 210px;
+    }
+    .tag-pop-item {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      font: 400 14px/20px var(--font-body);
+      color: var(--color-text);
+    }
+    .tag-pop-item + .tag-pop-item {
+      border-top: 1px solid var(--color-separator);
+      color: var(--color-text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="09:41" appearance="light">
+    <div class="screen" id="root"></div>
+  </ryugi-ios-shell>
+  <script>
+    const mode = (window.ryugiProps || {}).mode || "read";
+    const root = document.getElementById("root");
+
+    if (mode === "edit") {
+      root.innerHTML = `
+        <header class="min-nav">
+          <span class="nav-text-btn muted">取消</span>
+          <span class="nav-text-btn" style="font-weight:600;">保存</span>
+        </header>
+        <main class="reader-body-area">
+          <div class="day-head" style="margin-bottom:20px;">2026年11月26日 · 14:20</div>
+          <p class="reader-prose">真正的简洁不是删掉必要功能，而是删掉让人分心的解释与装饰。<span class="inline-tag">#设计/</span><span class="edit-cursor"></span></p>
+          <div class="tag-popover" aria-label="行内标签补全">
+            <div class="tag-pop-item"><span class="inline-tag">#设计/极简</span></div>
+            <div class="tag-pop-item">#设计/产品</div>
+            <div class="tag-pop-item">#设计/排版</div>
+          </div>
+        </main>
+      `;
+    } else if (mode === "walk") {
+      root.innerHTML = `
+        <header class="min-nav">
+          <span class="nav-text-btn">
+            <ryugi-icon symbol="chevron.left" name="chevron-left" size="16"></ryugi-icon>
+            <span>返回</span>
+          </span>
+          <div class="nav-group">
+            <span class="nav-text-btn">换一条</span>
+            <span class="nav-text-btn">编辑</span>
+            <span class="nav-icon-btn" aria-label="更多操作">
+              <ryugi-icon symbol="ellipsis" name="ellipsis" size="18"></ryugi-icon>
+            </span>
+          </div>
+        </header>
+        <main class="reader-body-area">
+          <div class="day-head" style="margin-bottom:20px;">2026年10月18日 · 21:05</div>
+          <p class="reader-prose">长期主义并不是把系统做得很大，而是在每次想加按钮之前，先问这个决定一年后会不会成为噪音。<span class="inline-tag">#思考/克制</span></p>
+
+          <section class="related-block" aria-label="相关笔记">
+            <div class="related-heading">相关笔记</div>
+            <div class="related-item">
+              <div class="related-snippet">好的设计是尽可能少的设计。少，但更好——因为它回到纯粹、回到简单。</div>
+              <div class="related-meta">《少，但是更好》</div>
+            </div>
+            <div class="related-item">
+              <div class="related-snippet">去掉每条笔记外层的白卡片和分隔线后，留白本身就成了结构。</div>
+              <div class="related-meta">今天</div>
+            </div>
+            <div class="related-item">
+              <div class="related-snippet">把同步图标和「已同步」绿点拿掉后，列表突然安静下来。</div>
+              <div class="related-meta">11月26日</div>
+            </div>
+          </section>
+        </main>
+      `;
+    } else {
+      root.innerHTML = `
+        <header class="min-nav">
+          <span class="nav-icon-btn" aria-label="关闭">
+            <ryugi-icon symbol="xmark" name="x" size="18"></ryugi-icon>
+          </span>
+          <div class="nav-group">
+            <span class="nav-text-btn">编辑</span>
+            <span class="nav-icon-btn" aria-label="更多操作">
+              <ryugi-icon symbol="ellipsis" name="ellipsis" size="18"></ryugi-icon>
+            </span>
+          </div>
+        </header>
+        <main class="reader-body-area">
+          <div class="day-head" style="margin-bottom:20px;">2026年11月26日 · 14:20</div>
+          <div class="note-quote" style="gap:16px;">
+            <span class="note-quote-bar"></span>
+            <p class="reader-prose">真正的简洁不是删掉必要功能，而是删掉让人分心的解释与装饰。<span class="inline-tag">#设计/产品</span></p>
+          </div>
+          <div class="note-source" style="margin-top:16px;padding-left:18px;">《设计心理学》 · 第 4 章</div>
+
+          <section class="related-block" aria-label="相关笔记">
+            <div class="related-heading">相关笔记</div>
+            <div class="related-item">
+              <div class="related-snippet">好的设计是尽可能少的设计。少，但更好——因为它回到纯粹、回到简单。</div>
+              <div class="related-meta">《少，但是更好》</div>
+            </div>
+            <div class="related-item">
+              <div class="related-snippet">长期主义并不是把系统做得很大，而是在每次想加按钮之前先问一年后是不是噪音。</div>
+              <div class="related-meta">10月18日</div>
+            </div>
+            <div class="related-item">
+              <div class="related-snippet">去掉每条笔记外层的白卡片和分隔线后，留白本身就成了结构。</div>
+              <div class="related-meta">今天</div>
+            </div>
+          </section>
+        </main>
+      `;
+    }
+  </script>
+</body>
+</html>

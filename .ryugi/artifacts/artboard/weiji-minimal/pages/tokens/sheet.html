@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 20px;
+      background: var(--color-bg);
+      color: var(--color-text);
+      font-family: var(--font-body);
+    }
+  </style>
+</head>
+<body>
+  <ryugi-token-sheet>
+    <script type="application/json">
+      {
+        "groups": [
+          {
+            "name": "Surfaces",
+            "kind": "color",
+            "tokens": [
+              { "name": "--color-bg", "use": "主素纸画布（浅暖纸 / 深炭纸）" },
+              { "name": "--color-surface", "use": "极轻次表面（输入框 / 用户气泡 / 搜索条）" },
+              { "name": "--color-separator", "use": "结构边界发丝线（笔记之间不画线）" }
+            ]
+          },
+          {
+            "name": "Ink & Narrow Accent (All >= 7:1 AAA)",
+            "kind": "color",
+            "tokens": [
+              { "name": "--color-text", "use": "主墨（正文与当前空间）", "on": "--color-bg" },
+              { "name": "--color-text-secondary", "use": "次墨（日头 / 出处 / 非激活项）", "on": "--color-bg" },
+              { "name": "--color-text-secondary", "use": "次墨于输入框次表面", "on": "--color-surface" },
+              { "name": "--color-accent", "use": "深墨绿（仅正文内 #标签 / [1] 引文 / 可用发送键）", "on": "--color-bg" },
+              { "name": "--color-on-accent", "use": "发送键图标（反色）", "on": "--color-accent" },
+              { "name": "--color-inverse-text", "use": "纯墨反色 FAB / 撤销条文字", "on": "--color-inverse-bg" },
+              { "name": "--color-danger", "use": "冲突 / 破坏性操作", "on": "--color-bg" }
+            ]
+          },
+          {
+            "name": "Type Scale (4 Steps)",
+            "kind": "type",
+            "tokens": [
+              { "name": "--type-reader-ios", "use": "iOS 全文阅读（系统衬线）", "sample": "少，但更好——它把注意力还给文字本身。" },
+              { "name": "--type-reader-web", "use": "Web 全文阅读（20px 无衬线）", "sample": "少，但更好——它把注意力还给文字本身。" },
+              { "name": "--type-body", "use": "笔记流正文（17px / 1.7 行高）", "sample": "去掉每条笔记外层的白卡片和分隔线后，留白本身就成了结构。" },
+              { "name": "--type-meta", "use": "日头与出处（13px + 字距拉层级）", "sample": "2026年11月26日 · 《设计心理学》" }
+            ]
+          },
+          {
+            "name": "Spacing Rhythm",
+            "kind": "space",
+            "tokens": [
+              { "name": "--space-inner", "use": "条目内正文与出处间距" },
+              { "name": "--space-page-x", "use": "移动端左右留白边距" },
+              { "name": "--space-note-gap", "use": "相邻两条笔记留白（替代分隔线）" },
+              { "name": "--space-day-gap", "use": "相邻日组呼吸留白" }
+            ]
+          },
+          {
+            "name": "Motion",
+            "kind": "motion",
+            "tokens": [
+              { "name": "--motion-walk", "use": "随机读「换一条」交叉淡入（无滑动无弹簧）" }
+            ]
+          }
+        ]
+      }
+    </script>
+  </ryugi-token-sheet>
+</body>
+</html>

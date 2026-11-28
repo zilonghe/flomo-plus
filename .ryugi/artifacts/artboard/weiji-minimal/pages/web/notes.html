@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../minimal-web.css" />
+</head>
+<body>
+  <div class="web-sheet">
+    <header class="web-top">
+      <nav class="web-spaces" aria-label="主空间">
+        <span class="active">笔记</span>
+        <span class="inactive">AI</span>
+      </nav>
+      <div class="web-actions">
+        <span>随机读</span>
+        <span>筛选</span>
+        <span>搜索</span>
+        <span>设置</span>
+      </div>
+    </header>
+
+    <main class="web-column">
+      <section class="web-compose" aria-label="写笔记">
+        <div class="web-compose-input">此刻在想…</div>
+        <span class="web-send" style="opacity:0.35;" aria-label="保存笔记">
+          <ryugi-icon name="arrow-up" size="16"></ryugi-icon>
+        </span>
+      </section>
+
+      <section class="day-group">
+        <div class="day-head">今天</div>
+        <article class="note-entry">
+          <p class="note-text">去掉每条笔记外层的白卡片和分隔线后，留白本身就成了结构。整个桌面窗口只剩一张暖纸，没有侧栏、没有热力图、没有工具栏，注意力自然回到文字。<span class="inline-tag">#设计/极简</span></p>
+        </article>
+        <article class="note-entry">
+          <div class="note-quote">
+            <span class="note-quote-bar"></span>
+            <p class="note-text">好的设计是尽可能少的设计。少，但更好——因为它回到纯粹、回到简单。<span class="inline-tag">#阅读/设计</span></p>
+          </div>
+          <div class="note-source">《少，但是更好》</div>
+        </article>
+        <article class="note-entry">
+          <p class="note-text">漫步不该是第二个空间。每篇正文底部静默列出三条相关旧记忆，随机读只是挑一页翻开。</p>
+        </article>
+      </section>
+
+      <section class="day-group">
+        <div class="day-head">11月26日</div>
+        <article class="note-entry">
+          <div class="note-quote">
+            <span class="note-quote-bar"></span>
+            <p class="note-text">真正的简洁不是删掉必要功能，而是删掉让人分心的解释与装饰。<span class="inline-tag">#设计/产品</span></p>
+          </div>
+          <div class="note-source">《设计心理学》</div>
+        </article>
+        <article class="note-entry">
+          <p class="note-text">把同步图标和「已同步」状态灯全部拿掉后，页面彻底安静下来。只有离线或冲突时，才在受影响的笔记旁给一行清晰提示。</p>
+        </article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

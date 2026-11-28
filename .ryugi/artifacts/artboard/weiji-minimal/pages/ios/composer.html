@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../minimal-ios.css" />
+  <style>
+    .sheet-bg {
+      position: absolute;
+      inset: 0;
+      background: var(--color-scrim);
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+    .composer-sheet {
+      height: 92%;
+      background: var(--color-bg);
+      border-radius: 24px 24px 0 0;
+      display: flex;
+      flex-direction: column;
+      padding: 8px 0 28px;
+    }
+    .grab {
+      width: 36px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--color-separator);
+      margin: 0 auto 6px;
+    }
+    .composer-body {
+      flex: 1;
+      padding: 18px 24px;
+      font: 400 18px/30px var(--font-body);
+      color: var(--color-text);
+    }
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 20px;
+      background: var(--color-accent);
+      vertical-align: text-bottom;
+      margin-left: 2px;
+    }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="09:41" appearance="light">
+    <div class="screen">
+      <div class="sheet-bg">
+        <div class="composer-sheet">
+          <div class="grab"></div>
+          <header class="min-nav">
+            <span class="nav-text-btn muted">取消</span>
+            <span class="send-circle" aria-label="保存笔记">
+              <ryugi-icon symbol="arrow.up" name="arrow-up" size="16"></ryugi-icon>
+            </span>
+          </header>
+          <div class="composer-body">
+            把每屏只留三个动作后，打开记一条不再有任何迟疑。<span class="inline-tag">#设计/极简</span><span class="cursor"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

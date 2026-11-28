@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../minimal-ios.css" />
+</head>
+<body>
+  <ryugi-ios-shell id="shell" time="09:41" appearance="light">
+    <div class="screen" id="root"></div>
+  </ryugi-ios-shell>
+  <script>
+    const props = window.ryugiProps || {};
+    const appearance = props.appearance === "dark" ? "dark" : "light";
+    const mode = props.mode || "default";
+    document.getElementById("shell").setAttribute("appearance", appearance);
+
+    const root = document.getElementById("root");
+    if (mode === "axl") root.classList.add("axl");
+
+    const topNav = `
+      <header class="min-nav">
+        <span class="nav-icon-btn" aria-label="筛选与设置">
+          <ryugi-icon symbol="line.3.horizontal" name="menu" size="20"></ryugi-icon>
+        </span>
+        <nav class="space-switch" aria-label="主空间">
+          <span class="active">笔记</span>
+          <span class="dot">·</span>
+          <span class="inactive">AI</span>
+        </nav>
+        <span class="nav-icon-btn" aria-label="随机读">
+          <ryugi-icon symbol="shuffle" name="shuffle" size="18"></ryugi-icon>
+        </span>
+      </header>
+    `;
+
+    if (mode === "filtered") {
+      root.innerHTML = `
+        ${topNav}
+        <div class="pull-search">
+          <ryugi-icon symbol="magnifyingglass" name="search" size="15"></ryugi-icon>
+          <span>搜索</span>
+        </div>
+        <div class="active-filter-line">
+          <span>筛选：#设计/极简</span>
+          <span style="color:var(--color-text);font-weight:500;">清除</span>
+        </div>
+        <main class="stream tight-top">
+          <section class="day-group">
+            <div class="day-head">今天</div>
+            <article class="note-entry">
+              <p class="note-text">去掉每条笔记外层的卡片和分隔线后，留白本身就成了结构。文字不再被困在盒子里。<span class="inline-tag">#设计/极简</span></p>
+              <div class="note-alert">
+                <span>云端版本已更新</span>
+                <span class="note-alert-action">查看并合并</span>
+              </div>
+            </article>
+            <article class="note-entry">
+              <div class="note-quote">
+                <span class="note-quote-bar"></span>
+                <p class="note-text">好的设计是尽可能少的设计。少，但更好——因为它回到纯粹与简单。<span class="inline-tag">#设计/极简</span></p>
+              </div>
+              <div class="note-source">《少，但是更好》</div>
+            </article>
+          </section>
+
+          <section class="day-group">
+            <div class="day-head">11月24日</div>
+            <article class="note-entry">
+              <p class="note-text">界面安静的前提，是出事时一定会说话。平时零提示，只有离线或冲突才在对应笔记旁出现一行字。<span class="inline-tag">#设计/极简</span></p>
+              <div class="note-alert" style="color:var(--color-text-secondary);">
+                <span>已存本机 · 待联网同步</span>
+                <span class="note-alert-action">立即重试</span>
+              </div>
+            </article>
+          </section>
+        </main>
+        <div class="undo-bar" role="status">
+          <span>已删除一条笔记</span>
+          <strong>撤销</strong>
+        </div>
+      `;
+    } else if (mode === "axl") {
+      root.innerHTML = `
+        ${topNav}
+        <main class="stream">
+          <section class="day-group">
+            <div class="day-head">今天</div>
+            <article class="note-entry">
+              <p class="note-text">去掉卡片和横线后，超大字号下反而更从容。<span class="inline-tag">#设计/极简</span></p>
+              <div class="note-alert">
+                <span>云端版本已更新</span>
+                <span class="note-alert-action">查看并合并</span>
+              </div>
+            </article>
+            <article class="note-entry">
+              <div class="note-quote">
+                <span class="note-quote-bar"></span>
+                <p class="note-text">少，但更好——它把注意力还给文字本身。</p>
+              </div>
+              <div class="note-source">《少，但是更好》</div>
+            </article>
+          </section>
+        </main>
+        <div class="min-fab" aria-label="记一条">
+          <ryugi-icon symbol="plus" name="plus" size="24"></ryugi-icon>
+        </div>
+      `;
+    } else {
+      root.innerHTML = `
+        ${topNav}
+        <main class="stream">
+          <section class="day-group">
+            <div class="day-head">今天</div>
+            <article class="note-entry">
+              <p class="note-text">去掉每条笔记外层的白卡片和分隔线后，留白本身就成了结构。界面退后一步，想法才浮出来。<span class="inline-tag">#设计/极简</span></p>
+            </article>
+            <article class="note-entry">
+              <div class="note-quote">
+                <span class="note-quote-bar"></span>
+                <p class="note-text">好的设计是尽可能少的设计。少，但更好——因为它回到纯粹、回到简单。<span class="inline-tag">#阅读/设计</span></p>
+              </div>
+              <div class="note-source">《少，但是更好》</div>
+            </article>
+            <article class="note-entry">
+              <p class="note-text">漫步不该是一个独立空间。每条笔记底部本来就该静默连着三条旧记忆，随机读只是挑一页翻开。</p>
+            </article>
+          </section>
+
+          <section class="day-group">
+            <div class="day-head">11月26日</div>
+            <article class="note-entry">
+              <div class="note-quote">
+                <span class="note-quote-bar"></span>
+                <p class="note-text">真正的简洁不是删掉必要功能，而是删掉让人分心的解释与装饰。<span class="inline-tag">#设计/产品</span></p>
+              </div>
+              <div class="note-source">《设计心理学》</div>
+            </article>
+            <article class="note-entry">
+              <p class="note-text">把同步图标和「已同步」绿点全部拿掉后，列表突然安静下来。系统正常运转时本来就不需要邀功。</p>
+            </article>
+          </section>
+        </main>
+        <div class="min-fab" aria-label="记一条">
+          <ryugi-icon symbol="plus" name="plus" size="22"></ryugi-icon>
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>

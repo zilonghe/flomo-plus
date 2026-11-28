@@ -1,0 +1,97 @@
+/* Weiji Extreme Minimalism — Platform-Neutral Semantic Tokens
+ * Light: Warm Paper & Deep Ink (#FAF8F4 / #1C1B19)
+ * Dark:  Charcoal Paper & Rice Ink (#151514 / #E8E5DE)
+ * Accent: Deep Pine (#1D4D3A / #9AC4AE) — strictly for clickable inline anchors (#tag, [1] citation) & active send
+ * All text / accent pairs verified >= 7.0:1 WCAG AAA
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* 2 Neutral Surfaces */
+  --color-bg: #FAF8F4;
+  --color-surface: #F2EFE8;
+  --color-fill: #EAE6DC;
+
+  /* 2 Ink Roles (3rd level created via 13px size + 0.04em tracking, never illegible grey) */
+  --color-text: #1C1B19;
+  --color-text-secondary: #4E4B45;
+  --color-text-tertiary: #4E4B45;
+
+  /* Inverse solid (for austere primary button / FAB) */
+  --color-inverse-bg: #1C1B19;
+  --color-inverse-text: #FAF8F4;
+
+  /* Single Hairline (structure boundaries only — never between notes) */
+  --color-separator: rgba(28, 27, 25, 0.10);
+  --color-quote-bar: rgba(28, 27, 25, 0.24);
+  --color-scrim: rgba(28, 27, 25, 0.32);
+
+  /* Monochrome Ink Heatmap Scale (collapsible, frameless) */
+  --heat-0: rgba(28, 27, 25, 0.06);
+  --heat-1: rgba(28, 27, 25, 0.20);
+  --heat-2: rgba(28, 27, 25, 0.38);
+  --heat-3: rgba(28, 27, 25, 0.62);
+  --heat-4: rgba(28, 27, 25, 0.88);
+
+  /* Single Narrow Accent (inline clickable anchors only, >= 8.4:1) */
+  --color-accent: #1D4D3A;
+  --color-on-accent: #FAF8F4;
+
+  /* Semantic Danger (>= 7.4:1) */
+  --color-danger: #9A2620;
+
+  /* Typography — 4 steps only */
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --font-serif: "New York", "Songti SC", "STSong", Georgia, serif;
+
+  --type-reader-ios: 400 20px/34px var(--font-serif);
+  --type-reader-web: 400 20px/35px var(--font-body);
+  --type-body: 400 17px/29px var(--font-body);
+  --type-body-ios: 400 16px/26px var(--font-body);
+  --type-ui: 400 14px/20px var(--font-body);
+  --type-meta: 400 13px/18px var(--font-body);
+
+  /* Spacing Rhythm (proximity replaces dividers) */
+  --space-inner: 8px;
+  --space-note-gap: 30px;
+  --space-day-gap: 44px;
+  --space-page-x: 24px;
+  --measure: 640px;
+
+  /* Minimal Radii */
+  --radius-control: 12px;
+  --radius-sheet: 24px;
+  --radius-pill: 999px;
+
+  /* Restraint Motion */
+  --motion-walk: 200ms ease-out;
+}
+
+[data-appearance="dark"] {
+  --color-bg: #151514;
+  --color-surface: #1F1E1C;
+  --color-fill: #272623;
+
+  --color-text: #E8E5DE;
+  --color-text-secondary: #B0ACA3;
+  --color-text-tertiary: #B0ACA3;
+
+  --color-inverse-bg: #E8E5DE;
+  --color-inverse-text: #151514;
+
+  --color-separator: rgba(232, 229, 222, 0.12);
+  --color-quote-bar: rgba(232, 229, 222, 0.28);
+  --color-scrim: rgba(0, 0, 0, 0.56);
+
+  --heat-0: rgba(232, 229, 222, 0.08);
+  --heat-1: rgba(232, 229, 222, 0.22);
+  --heat-2: rgba(232, 229, 222, 0.42);
+  --heat-3: rgba(232, 229, 222, 0.66);
+  --heat-4: rgba(232, 229, 222, 0.90);
+
+  --color-accent: #9AC4AE;
+  --color-on-accent: #151514;
+
+  --color-danger: #F59C95;
+}

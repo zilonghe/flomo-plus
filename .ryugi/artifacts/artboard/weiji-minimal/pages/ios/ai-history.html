@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../minimal-ios.css" />
+  <style>
+    .hist-group + .hist-group { margin-top: 22px; }
+    .hist-item {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      font: 400 15px/22px var(--font-body);
+      color: var(--color-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hist-item.active { font-weight: 600; }
+    .hist-item.muted { color: var(--color-text-secondary); }
+  </style>
+</head>
+<body>
+  <ryugi-ios-shell time="09:41" appearance="light">
+    <div class="screen">
+      <div style="padding:72px 24px 0;opacity:0.35;">
+        <div class="ai-empty-title">问问你的笔记</div>
+      </div>
+
+      <div class="scrim">
+        <aside class="drawer" aria-label="历史记录">
+          <div class="drawer-close-row">
+            <span class="nav-icon-btn" style="margin-right:-10px;" aria-label="关闭历史">
+              <ryugi-icon symbol="xmark" name="x" size="17"></ryugi-icon>
+            </span>
+          </div>
+
+          <div style="padding-top:8px;">
+            <div class="hist-group">
+              <div class="day-head" style="margin-bottom:8px;">今天</div>
+              <div class="hist-item active">本周回顾（近 7 天）</div>
+              <div class="hist-item muted">把笔记卡片去掉后的层次问题</div>
+            </div>
+
+            <div class="hist-group">
+              <div class="day-head" style="margin-bottom:8px;">本周</div>
+              <div class="hist-item muted">读书脉络 · 11 月</div>
+              <div class="hist-item muted">关于 Apple HIG 与 M3 的落地取舍</div>
+              <div class="hist-item muted">价值澄清 · 近 30 天</div>
+            </div>
+
+            <div class="hist-group">
+              <div class="day-head" style="margin-bottom:8px;">更早</div>
+              <div class="hist-item muted">长期主义与工程复杂度</div>
+              <div class="hist-item muted">10 月阅读摘录复盘</div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </ryugi-ios-shell>
+</body>
+</html>

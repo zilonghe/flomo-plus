@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../minimal-web.css" />
+</head>
+<body>
+  <div class="mobile-sheet">
+    <header class="mob-top">
+      <span class="mob-hit" aria-label="筛选与设置">
+        <ryugi-icon name="menu" size="20"></ryugi-icon>
+      </span>
+      <nav class="mob-switch" aria-label="主空间">
+        <span class="active">笔记</span>
+        <span style="color:var(--color-text-secondary);opacity:0.45;">·</span>
+        <span class="inactive">AI</span>
+      </nav>
+      <span class="mob-hit" aria-label="随机读">
+        <ryugi-icon name="shuffle" size="18"></ryugi-icon>
+      </span>
+    </header>
+
+    <main class="mob-body">
+      <section class="day-group">
+        <div class="day-head">今天</div>
+        <article class="note-entry">
+          <p class="note-text" style="font-size:16px;line-height:26px;">去掉每条笔记外层的白卡片和分隔线后，留白本身就成了结构。<span class="inline-tag">#设计/极简</span></p>
+        </article>
+        <article class="note-entry">
+          <div class="note-quote">
+            <span class="note-quote-bar"></span>
+            <p class="note-text" style="font-size:16px;line-height:26px;">好的设计是尽可能少的设计。少，但更好——因为它回到纯粹、回到简单。<span class="inline-tag">#阅读/设计</span></p>
+          </div>
+          <div class="note-source">《少，但是更好》</div>
+        </article>
+        <article class="note-entry">
+          <p class="note-text" style="font-size:16px;line-height:26px;">漫步不该是第二个空间。每篇正文底部静默列出三条相关旧记忆，随机读只是挑一页翻开。</p>
+        </article>
+      </section>
+
+      <section class="day-group">
+        <div class="day-head">11月26日</div>
+        <article class="note-entry">
+          <div class="note-quote">
+            <span class="note-quote-bar"></span>
+            <p class="note-text" style="font-size:16px;line-height:26px;">真正的简洁不是删掉必要功能，而是删掉让人分心的解释与装饰。<span class="inline-tag">#设计/产品</span></p>
+          </div>
+          <div class="note-source">《设计心理学》</div>
+        </article>
+      </section>
+    </main>
+
+    <div class="mob-fab" aria-label="记一条">
+      <ryugi-icon name="plus" size="22"></ryugi-icon>
+    </div>
+  </div>
+</body>
+</html>

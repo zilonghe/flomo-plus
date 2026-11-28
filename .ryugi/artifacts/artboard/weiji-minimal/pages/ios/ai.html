@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="../minimal-ios.css" />
+</head>
+<body>
+  <ryugi-ios-shell time="09:41" appearance="light">
+    <div class="screen" id="root"></div>
+  </ryugi-ios-shell>
+  <script>
+    const state = (window.ryugiProps || {}).state || "empty";
+    const root = document.getElementById("root");
+
+    const spaceHeader = (hasThread) => `
+      <header class="min-nav">
+        <span class="nav-text-btn muted">历史</span>
+        <nav class="space-switch" aria-label="主空间">
+          <span class="inactive">笔记</span>
+          <span class="dot">·</span>
+          <span class="active">AI</span>
+        </nav>
+        ${hasThread
+          ? `<div class="nav-group">
+               <span class="nav-text-btn">新对话</span>
+               <span class="nav-icon-btn" aria-label="会话选项">
+                 <ryugi-icon symbol="ellipsis" name="ellipsis" size="18"></ryugi-icon>
+               </span>
+             </div>`
+          : `<span class="nav-icon-btn" aria-label="选项">
+               <ryugi-icon symbol="ellipsis" name="ellipsis" size="18"></ryugi-icon>
+             </span>`}
+      </header>
+    `;
+
+    if (state === "empty") {
+      root.innerHTML = `
+        ${spaceHeader(false)}
+        <main class="ai-empty">
+          <div class="ai-empty-title">问问你的笔记</div>
+          <div class="lens-list" aria-label="预设视角">
+            <div class="lens-row">
+              <span>本周回顾</span>
+              <span class="scope">近 7 天 ›</span>
+            </div>
+            <div class="lens-row">
+              <span>读书脉络</span>
+              <span class="scope">本月 ›</span>
+            </div>
+            <div class="lens-row">
+              <span>价值澄清</span>
+              <span class="scope">本月 ›</span>
+            </div>
+            <div class="lens-row">
+              <span>逆向思考</span>
+              <span class="scope">本月 ›</span>
+            </div>
+          </div>
+        </main>
+        <div class="ai-composer-wrap">
+          <div class="ai-input-bar">
+            <span class="ai-input-placeholder">输入问题，或打 @ 引用笔记</span>
+            <span class="send-circle" style="opacity:0.35;" aria-label="发送">
+              <ryugi-icon symbol="arrow.up" name="arrow-up" size="16"></ryugi-icon>
+            </span>
+          </div>
+        </div>
+      `;
+    } else if (state === "guard") {
+      root.innerHTML = `
+        ${spaceHeader(true)}
+        <main class="ai-stream">
+          <div class="msg-user">本周回顾（近 7 天）</div>
+          <div class="msg-ref-line">正在检索本周笔记…</div>
+          <article class="msg-ai">
+            <p>你这一周的记录明显收敛到同一个命题：怎样在保留完整能力的前提下，把界面噪音减到接近零…</p>
+          </article>
+        </main>
+        <div class="ai-composer-wrap">
+          <div class="override-hint">本次模型：GPT-6.2 Astra</div>
+          <div class="ai-input-bar">
+            <span class="ai-input-placeholder">顺便把下周计划也理一下</span>
+            <span class="send-circle stop" aria-label="停止生成">
+              <ryugi-icon symbol="stop.fill" name="square" size="12"></ryugi-icon>
+            </span>
+          </div>
+        </div>
+
+        <div class="ios-alert-scrim">
+          <div class="ios-alert" role="alertdialog">
+            <div class="ios-alert-body">
+              <div class="ios-alert-title">AI 正在回复</div>
+              <div class="ios-alert-desc">切换会话会中止当前生成，未发送草稿会自动保留。</div>
+            </div>
+            <div class="ios-alert-actions">
+              <div class="ios-alert-btn">继续等待</div>
+              <div class="ios-alert-btn">停止并切换</div>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      root.innerHTML = `
+        ${spaceHeader(true)}
+        <main class="ai-stream">
+          <div class="msg-user">本周回顾（近 7 天）</div>
+          <div class="msg-ref-line">参考了 4 条笔记 ›</div>
+          <article class="msg-ai">
+            <p>你本周反复在思考一件事：<strong>把界面从「功能面板」还原回「素纸」</strong>。</p>
+            <p>第一，你发现卡片边框和分隔线都在消耗注意力，留白与按天分组已经足够撑起秩序 <span class="inline-cite">[1]</span>。</p>
+            <p>第二，漫步和洞察不需要独立的导航空间——相关记忆挂在每篇正文下方，视角直接融进 AI 空态，就能去掉一半跳板 <span class="inline-cite">[2]</span>。</p>
+            <p>下一步可以把这份精简先在画板上跑通明暗与大字号，确认没有误触再动手改双端。</p>
+          </article>
+        </main>
+        <div class="ai-composer-wrap">
+          <div class="ai-input-bar">
+            <span class="ai-input-placeholder">继续追问…</span>
+            <span class="send-circle" aria-label="发送">
+              <ryugi-icon symbol="arrow.up" name="arrow-up" size="16"></ryugi-icon>
+            </span>
+          </div>
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>
