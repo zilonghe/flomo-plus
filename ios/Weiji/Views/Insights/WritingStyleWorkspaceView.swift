@@ -26,6 +26,13 @@ struct WritingStyleWorkspaceView: View {
             VStack(alignment: .leading, spacing: 14) {
                 controls.noteCard()
                 InlineError(message: insights.writingStyleError ?? (store.isRelayMode ? InsightsStore.writingStyleRelayMessage : nil))
+                if !insights.writingStyleLoaded && !insights.loadingWritingStyle && insights.writingStyleError != nil {
+                    Button("重新加载") {
+                        Task { if let api = store.api { await insights.loadWritingStyle(api: api) } }
+                    }
+                    .buttonStyle(.weijiSecondary)
+                    .accessibilityIdentifier("style-retry-load-button")
+                }
                 rulesCard.noteCard()
                 anchorsCard.noteCard()
                 blindTestCard.noteCard()
@@ -68,12 +75,12 @@ struct WritingStyleWorkspaceView: View {
 
             Button("编辑规则") { rules = insights.writingStyleRulesText; sheet = .rules }
                 .buttonStyle(.weijiSecondary)
-                .disabled(busy)
+                .disabled(busy || !insights.writingStyleLoaded)
                 .accessibilityIdentifier("style-edit-button")
 
             Button("添加原句") { sheet = .anchors }
                 .buttonStyle(.weijiSecondary)
-                .disabled(busy || anchorIds.count >= InsightsStore.writingStyleMaxAnchors)
+                .disabled(busy || !insights.writingStyleLoaded || anchorIds.count >= InsightsStore.writingStyleMaxAnchors)
                 .accessibilityIdentifier("style-add-anchor-button")
         }
     }
@@ -188,6 +195,7 @@ struct WritingStyleWorkspaceView: View {
                             let clipped = clippedUTF16(value, to: InsightsStore.writingStyleMaxRules)
                             if clipped != value { rules = clipped }
                         }
+                        .disabled(insights.savingWritingStyle)
                         .noteCard()
                     Text("\(rules.utf16.count)/\(InsightsStore.writingStyleMaxRules)")
                         .font(Theme.TypeScale.meta.monospacedDigit()).foregroundStyle(Theme.ink2)
@@ -199,11 +207,15 @@ struct WritingStyleWorkspaceView: View {
             .navigationTitle("编辑规则")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { sheet = nil } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { sheet = nil }
+                        .disabled(insights.savingWritingStyle)
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        guard let api = store.api, let task = insights.saveWritingStyle(.init(rules: rules), api: api) else { return }
-                        Task { if await task.value, sheet == .rules { sheet = nil } }
+                        let submitted = rules
+                        guard let api = store.api, let task = insights.saveWritingStyle(.init(rules: submitted), api: api) else { return }
+                        Task { if await task.value, sheet == .rules, rules == submitted { sheet = nil } }
                     }
                     .disabled(busy || rules.utf16.count > InsightsStore.writingStyleMaxRules)
                 }
@@ -241,9 +253,8 @@ struct WritingStyleWorkspaceView: View {
     }
 
     private func addAnchor(_ id: String) {
-        let ids = insights.writingStyle?.anchors.map(\.id) ?? []
-        guard ids.count < InsightsStore.writingStyleMaxAnchors, !ids.contains(id) else { return }
-        saveAnchors(ids + [id])
+        guard let api = store.api else { return }
+        insights.addWritingStyleAnchor(id, api: api)
     }
 
     private func saveAnchors(_ ids: [String]) {

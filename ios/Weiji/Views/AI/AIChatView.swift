@@ -26,6 +26,7 @@ struct AIChatView: View {
         return session?.turns
     }
 
+    @ViewBuilder
     var body: some View {
         @Bindable var chat = store.chat
         let turns = Self.displayedTurns(session: chat.session, loadingSession: chat.loadingSession,
@@ -172,7 +173,8 @@ struct AIChatView: View {
         Button {
             chat.toggleWritingStyle(isRelayMode: store.isRelayMode)
         } label: {
-            Chip(text: "写作风格", symbol: "pencil.and.outline", selected: chat.useWritingStyle)
+            Chip(text: dynamicType.isAccessibilitySize ? "风格" : "写作风格",
+                 symbol: "pencil.and.outline", selected: chat.useWritingStyle)
                 .fixedSize()
                 .minTouchTarget()
         }

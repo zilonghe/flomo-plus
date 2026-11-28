@@ -11,18 +11,34 @@ struct ProfileWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("画像与风格", selection: $pane) {
-                Text("个人画像").tag(Pane.bio)
-                Text("写作风格").tag(Pane.style)
+            HStack(spacing: 4) {
+                paneButton("个人画像", pane: .bio, id: "profile-pane-bio")
+                paneButton("写作风格", pane: .style, id: "profile-pane-style")
             }
-            .pickerStyle(.segmented)
-            .frame(minHeight: 44)
+            .padding(3)
+            .background(Theme.subtle, in: Capsule())
             .padding(.horizontal, 16)
             if pane == .bio { biography }
             else { WritingStyleWorkspaceView(store: store) }
         }
     }
 
+    private func paneButton(_ title: String, pane target: Pane, id: String) -> some View {
+        let selected = pane == target
+        return Button { pane = target } label: {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(selected ? Theme.ink : Theme.ink2)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(selected ? Theme.paper : Color.clear, in: Capsule())
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier(id)
+    }
+
+    @ViewBuilder
     private var biography: some View {
         let enabled = insights.profile?.enabled == true
         ScrollView {

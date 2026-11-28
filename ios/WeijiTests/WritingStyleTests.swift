@@ -111,6 +111,7 @@ final class WritingStyleTests: XCTestCase {
         store.reset()
         try await eventually("重置取消盲测") { blind.isStopped }
         XCTAssertNil(store.writingStyle)
+        XCTAssertFalse(store.writingStyleLoaded)
         XCTAssertEqual(store.writingStyleRulesText, "")
         XCTAssertEqual(store.writingStyleScope.range, "all")
         XCTAssertTrue(store.suggestedAnchors.isEmpty)
@@ -129,6 +130,9 @@ final class WritingStyleTests: XCTestCase {
         let insights = InsightsStore()
         let chat = AIChatStore()
         wire.reply(chatPath, body: Self.sse("done", Self.history), stream: true)
+        wire.reply(stylePath, body: #"{"style":null}"#)
+        await insights.loadWritingStyle(api: api)
+        XCTAssertTrue(insights.writingStyleLoaded)
         wire.hold(stylePath, method: "GET")
         let staleGet = Task { await insights.loadWritingStyle(api: api) }
         try await eventually("旧 GET 已发出") { wire.waiting(self.stylePath, method: "GET") == 1 }
@@ -145,7 +149,7 @@ final class WritingStyleTests: XCTestCase {
 
         wire.reply(stylePath, body: Self.styleEnvelope)
         await insights.loadWritingStyle(api: api)
-        XCTAssertEqual(wire.requests(stylePath, method: "GET").count, 1)
+        XCTAssertEqual(wire.requests(stylePath, method: "GET").count, 2)
         chat.useWritingStyle = true
         chat.draft = "待发草稿"
         chat.send(api: api, options: .init(), profile: insights)
@@ -160,6 +164,8 @@ final class WritingStyleTests: XCTestCase {
         try await eventually("重置后放行") { !chat.sending && wire.requests(self.chatPath).count == 1 }
         XCTAssertNil(chat.error)
 
+        await insights.loadWritingStyle(api: api)
+        XCTAssertTrue(insights.writingStyleLoaded)
         wire.hold(stylePath, method: "POST")
         let pending = try XCTUnwrap(insights.saveWritingStyle(.init(rules: "等待的规则"), api: api))
         chat.draft = "等保存再发送"
@@ -186,7 +192,49 @@ final class WritingStyleTests: XCTestCase {
         _ = await resetSave.value
         await loading.value
         XCTAssertNil(insights.writingStyle)
-        XCTAssertEqual(wire.requests(stylePath, method: "GET").count, 1)
+        XCTAssertFalse(insights.writingStyleLoaded)
+        XCTAssertEqual(wire.requests(stylePath, method: "GET").count, 3)
+    }
+
+    func testWritingStyleAnchorAddRequiresSuccessfulLoadAndPreservesExistingAnchors() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let api = wire.api()
+        let insights = InsightsStore()
+        wire.reply(stylePath, status: 503, body: #"{"error":"暂时无法读取"}"#)
+        await insights.loadWritingStyle(api: api)
+        XCTAssertFalse(insights.writingStyleLoaded)
+        XCTAssertEqual(insights.writingStyleError, "暂时无法读取")
+        XCTAssertNil(insights.addWritingStyleAnchor("c", api: api))
+        XCTAssertNil(insights.saveWritingStyle(.init(rules: "不能覆盖"), api: api))
+        XCTAssertTrue(wire.requests(stylePath, method: "POST").isEmpty)
+
+        let ab = #"{"style":{"rules":"先说结论","anchorNoteIds":["a","b"],"anchors":[{"id":"a","createdAt":"2026-11-28","excerpt":"甲"},{"id":"b","createdAt":"2026-11-28","excerpt":"乙"}],"missingAnchorCount":0,"scope":{"range":"all","tzOffsetMinutes":0,"tags":[],"tagMode":"any"},"noteCount":12,"updatedAt":"2026-11-28","ready":true}}"#
+        let abc = ab.replacingOccurrences(of: #""a","b"]"#, with: #""a","b","c"]"#)
+            .replacingOccurrences(of: #""excerpt":"乙"}]"#, with: #""excerpt":"乙"},{"id":"c","createdAt":"2026-11-28","excerpt":"丙"}]"#)
+        wire.reply(stylePath, body: ab)
+        await insights.loadWritingStyle(api: api)
+        XCTAssertTrue(insights.writingStyleLoaded)
+        XCTAssertNil(insights.writingStyleError)
+        wire.reply(stylePath, method: "POST", body: abc)
+        let added = try XCTUnwrap(insights.addWritingStyleAnchor("c", api: api))
+        let addedSuccessfully = await added.value
+        XCTAssertTrue(addedSuccessfully)
+        let posts = wire.requests(stylePath, method: "POST")
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(posts.first?["anchorNoteIds"] as? [String], ["a", "b", "c"])
+        XCTAssertEqual(insights.writingStyle?.anchors.map(\.id), ["a", "b", "c"])
+
+        insights.reset()
+        wire.reply(stylePath, body: #"{"style":null}"#)
+        await insights.loadWritingStyle(api: api)
+        XCTAssertTrue(insights.writingStyleLoaded)
+        XCTAssertNil(insights.writingStyle)
+        wire.reply(stylePath, method: "POST", body: Self.styleEnvelope)
+        let firstAnchor = try XCTUnwrap(insights.addWritingStyleAnchor("note", api: api))
+        let firstAnchorSaved = await firstAnchor.value
+        XCTAssertTrue(firstAnchorSaved)
+        XCTAssertEqual(wire.requests(stylePath, method: "POST").last?["anchorNoteIds"] as? [String], ["note"])
     }
 
     func testWritingStyleRelayZeroSilentDowngradeOnProviderSwitchAndPendingSave() async throws {
@@ -219,6 +267,8 @@ final class WritingStyleTests: XCTestCase {
         try await eventually("允许主动关闭风格后发送") { !chat.sending && wire.requests(self.chatPath).count == 1 }
         XCTAssertNil(wire.requests(chatPath).first?["useWritingStyle"])
 
+        wire.reply(stylePath, body: Self.styleEnvelope)
+        await store.insights.loadWritingStyle(api: api)
         wire.hold(stylePath, method: "POST")
         store.setProvider(.openai)
         chat.toggleWritingStyle(isRelayMode: store.isRelayMode)
@@ -352,9 +402,9 @@ final class WritingStyleTests: XCTestCase {
         XCTAssertTrue(chat.draft.isEmpty)
         chat.draft = "加载期间刚输入"
         try XCTUnwrap(wire.take(sourcePath, method: "GET")).complete(body: Self.history)
-        try await eventually("完成源加载") { !chat.loadingSession && chat.session?.id == "history" }
-        // Let the rewrite continuation run before the next context switch could cancel it.
-        try await Task.sleep(for: .milliseconds(25))
+        await store.awaitPendingRewrite()
+        await chat.waitForIdle()
+        XCTAssertEqual(chat.session?.id, "history")
         XCTAssertEqual(wire.requests(chatPath).count, 1)
         XCTAssertEqual(chat.draft, "加载期间刚输入")
         XCTAssertTrue(chat.useWritingStyle)
@@ -423,6 +473,73 @@ final class WritingStyleTests: XCTestCase {
         XCTAssertTrue(chat.useWritingStyle)
         XCTAssertEqual(wire.requests(chatPath).count, 3)
         chat.stop()
+    }
+
+    func testRewriteWithStyleCancelsWhenSourceIsDeletedWhileWaitingForSave() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let (store, api, note) = try await connected(wire, mode: "gateway")
+        wire.reply(stylePath, body: Self.styleEnvelope)
+        await store.insights.loadWritingStyle(api: api)
+        wire.hold(stylePath, method: "POST")
+        let save = try XCTUnwrap(store.insights.saveWritingStyle(.init(rules: "正在保存"), api: api))
+        try await eventually("风格保存已挂起") { wire.waiting(self.stylePath, method: "POST") == 1 }
+        let response = try XCTUnwrap(wire.take(stylePath, method: "POST"))
+        wire.reply(sourcePath, body: #"{"session":null}"#)
+        wire.reply(chatPath, body: Self.sse("done", Self.history), stream: true)
+        store.rewriteWithStyle(note)
+        await store.awaitPendingRewrite()
+        XCTAssertTrue(store.chat.sending)
+        XCTAssertEqual(store.chat.sourceNoteId, note.id)
+        XCTAssertEqual(store.chat.recoverableDraft, AIChatStore.rewriteNotePrompt)
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+
+        await store.replace(with: [], etag: nil, persist: false)
+        XCTAssertFalse(store.chat.sending)
+        XCTAssertNil(store.chat.sourceNoteId)
+        XCTAssertEqual(store.chat.error, "原笔记已删除，已取消按风格改写。")
+        XCTAssertTrue(store.chat.recoverableDraft.isEmpty)
+        response.complete(body: Self.styleEnvelope)
+        let saved = await save.value
+        XCTAssertTrue(saved)
+        await store.awaitPendingRewrite()
+        await store.chat.waitForIdle()
+        XCTAssertTrue(wire.requests(chatPath).isEmpty)
+        XCTAssertNil(store.chat.session)
+    }
+
+    func testRewriteWithStyleSendsOnlyLatestNoteWhenSourceLoadsFinishOutOfOrder() async throws {
+        let wire = try StyleHTTP()
+        defer { wire.close() }
+        let (store, _, noteA) = try await connected(wire, mode: "gateway")
+        let noteB = Note(id: "note-b", body: "另一条笔记", createdAt: "2026-11-28", revision: 1)
+        await store.replace(with: [noteA, noteB], persist: false)
+        wire.hold(sourcePath)
+        let historyB = Self.history.replacingOccurrences(of: #""sourceNoteId":"note""#, with: #""sourceNoteId":"note-b""#)
+        wire.reply(chatPath, body: Self.sse("done", historyB), stream: true)
+
+        store.rewriteWithStyle(noteA)
+        try await eventually("第一条笔记的会话读取已挂起") { wire.waiting(self.sourcePath) == 1 }
+        let loadA = try XCTUnwrap(wire.take(sourcePath))
+        store.rewriteWithStyle(noteB)
+        try await eventually("第二条笔记的会话读取已挂起") { wire.waiting(self.sourcePath) == 1 }
+        let loadB = try XCTUnwrap(wire.take(sourcePath))
+        for (load, note) in [(loadA, noteA), (loadB, noteB)] {
+            let query = try XCTUnwrap(load.request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems)
+            XCTAssertEqual(query.first(where: { $0.name == "sourceNoteId" })?.value, note.id)
+        }
+        loadB.complete(body: #"{"session":null}"#)
+        await store.awaitPendingRewrite()
+        await store.chat.waitForIdle()
+        loadA.complete(body: Self.history)
+        try await eventually("旧读取已取消") { loadA.isStopped }
+        await store.awaitPendingRewrite()
+        await store.chat.waitForIdle()
+        let posts = wire.requests(chatPath)
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(posts.first?["sourceNoteId"] as? String, noteB.id)
+        XCTAssertEqual(posts.first?["useWritingStyle"] as? Bool, true)
+        XCTAssertEqual(store.chat.sourceNoteId, noteB.id)
     }
 
     private func connected(_ wire: StyleHTTP, mode: String) async throws -> (AppStore, WeijiAPIClient, Note) {
@@ -530,9 +647,14 @@ private final class StyleHTTP: @unchecked Sendable {
 private final class StyleProtocol: URLProtocol, @unchecked Sendable {
     private static let registryLock = NSLock()
     private static var handlers: [String: (StyleProtocol) -> Void] = [:]
-    private let lock = NSLock()
+    private static let deliveryKey = DispatchSpecificKey<Bool>()
+    private static let deliveryQueue: DispatchQueue = {
+        let queue = DispatchQueue(label: "weiji.tests.writing-style-protocol")
+        queue.setSpecific(key: deliveryKey, value: true)
+        return queue
+    }()
     private var stopped = false
-    var isStopped: Bool { lock.withLock { stopped } }
+    var isStopped: Bool { onDeliveryQueue { stopped } }
 
     static func register(_ host: String, handler: ((StyleProtocol) -> Void)?) {
         registryLock.withLock { handlers[host] = handler }
@@ -545,22 +667,33 @@ private final class StyleProtocol: URLProtocol, @unchecked Sendable {
         if let handler { handler(self) }
         else { complete(status: 500, body: "Unexpected request") }
     }
-    override func stopLoading() { lock.withLock { stopped = true } }
+    override func stopLoading() { onDeliveryQueue { stopped = true } }
+
+    private func onDeliveryQueue<T>(_ action: () -> T) -> T {
+        if DispatchQueue.getSpecific(key: Self.deliveryKey) == true { return action() }
+        return Self.deliveryQueue.sync(execute: action)
+    }
+
+    private func deliver(_ event: (URLProtocolClient) -> Void) {
+        onDeliveryQueue {
+            if !stopped, let client { event(client) }
+        }
+    }
 
     func begin(status: Int = 200, stream: Bool) {
-        guard !isStopped, let url = request.url else { return }
+        guard let url = request.url else { return }
         let headers = ["Content-Type": stream ? "text/event-stream" : "application/json"]
         guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) else { return }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        deliver { $0.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed) }
     }
 
     func write(_ body: String) {
-        if !isStopped { client?.urlProtocol(self, didLoad: Data(body.utf8)) }
+        deliver { $0.urlProtocol(self, didLoad: Data(body.utf8)) }
     }
 
     func complete(status: Int = 200, body: String, stream: Bool = false) {
         begin(status: status, stream: stream)
         write(body)
-        if !isStopped { client?.urlProtocolDidFinishLoading(self) }
+        deliver { $0.urlProtocolDidFinishLoading(self) }
     }
 }

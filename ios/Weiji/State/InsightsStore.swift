@@ -46,6 +46,7 @@ final class InsightsStore {
     @ObservationIgnored private var contextGeneration = 0
 
     private(set) var writingStyle: WritingStyle?
+    private(set) var writingStyleLoaded = false
     private(set) var writingStyleRulesText = ""
     var writingStyleScope = InsightScope()
     private(set) var suggestedAnchors: [WritingStyleAnchor] = []
@@ -125,6 +126,7 @@ final class InsightsStore {
         loadingWritingStyle = false
         savingWritingStyle = false
         applyWritingStyle(nil)
+        writingStyleLoaded = false
         suggestedAnchors = []
         writingStyleError = nil
         stopBlindTest()
@@ -409,6 +411,7 @@ final class InsightsStore {
             let response: WritingStyleResponse = try await api.get("/api/ai/writing-style")
             guard isCurrent(), styleSaveError == nil, !Task.isCancelled else { return }
             applyWritingStyle(response.style)
+            writingStyleLoaded = true
             writingStyleError = nil
         } catch is CancellationError {
         } catch {
@@ -424,6 +427,10 @@ final class InsightsStore {
 
     @discardableResult
     func saveWritingStyle(_ input: WritingStyleEdit, api: WeijiAPIClient) -> Task<Bool, Never>? {
+        guard writingStyleLoaded else {
+            writingStyleError = "尚未成功读取写作风格，请先重新加载。"
+            return nil
+        }
         guard !savingWritingStyle, !generatingWritingStyle else { return nil }
         styleSaveGeneration += 1
         styleGeneration += 1
@@ -442,6 +449,7 @@ final class InsightsStore {
                 let response: WritingStyleResponse = try await api.post("/api/ai/writing-style", input)
                 guard stamp == styleSaveGeneration, !Task.isCancelled else { return false }
                 applyWritingStyle(response.style)
+                writingStyleLoaded = true
                 styleSaveError = nil
                 return true
             } catch is CancellationError {
@@ -456,6 +464,17 @@ final class InsightsStore {
         }
         styleSaveTask = task
         return task
+    }
+
+    @discardableResult
+    func addWritingStyleAnchor(_ id: String, api: WeijiAPIClient) -> Task<Bool, Never>? {
+        guard writingStyleLoaded else {
+            writingStyleError = "尚未成功读取写作风格，请先重新加载。"
+            return nil
+        }
+        let ids = writingStyle?.anchors.map(\.id) ?? []
+        guard ids.count < Self.writingStyleMaxAnchors, !ids.contains(id) else { return nil }
+        return saveWritingStyle(.init(anchorNoteIds: ids + [id]), api: api)
     }
 
     func awaitWritingStyleSave() async throws {
@@ -496,6 +515,7 @@ final class InsightsStore {
                 }
                 guard stamp == styleGeneration, !Task.isCancelled else { return }
                 applyWritingStyle(response.style)
+                writingStyleLoaded = true
                 suggestedAnchors = response.suggestedAnchors
                 styleSaveError = nil
             } catch {

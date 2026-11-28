@@ -204,7 +204,7 @@ struct NoteReaderView: View {
             let icon = source == .ai ? (isPinned ? "pin.slash" : "pin") : "bubble.left"
             // The bottom bar otherwise reduces a Label to its icon, hiding the pin action's state.
             HStack(spacing: 6) {
-                Image(systemName: icon).accessibilityHidden(true)
+                if !dynamicType.isAccessibilitySize { Image(systemName: icon).accessibilityHidden(true) }
                 Text(title)
             }
             .minTouchTarget()
@@ -221,13 +221,14 @@ struct NoteReaderView: View {
             else { store.rewriteWithStyle(current) }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "pencil.and.outline").accessibilityHidden(true)
-                Text("按风格改写")
+                if !dynamicType.isAccessibilitySize { Image(systemName: "pencil.and.outline").accessibilityHidden(true) }
+                Text(dynamicType.isAccessibilitySize ? "改写" : "按风格改写")
             }
             .minTouchTarget()
         }
         .buttonStyle(.plain)
         .disabled(!canModify || !store.chat.canReference(current.id))
+        .accessibilityLabel("按风格改写")
         .accessibilityIdentifier("detail-rewrite-style-button")
     }
 

@@ -32,6 +32,7 @@ struct ChatRequestID {
 @Observable @MainActor
 final class AIChatStore {
     static let rewriteNotePrompt = "请基于这条笔记的真实内容，按我的写作风格改写成一段自然流畅的文字，保留原意和事实，不要编造经历。"
+    private static let rewriteSourceDeletedMessage = "原笔记已删除，已取消按风格改写。"
 
     var draft = ""
     var recoverableDraft: String { draft.isEmpty ? (inflightDraft ?? "") : draft }
@@ -39,6 +40,7 @@ final class AIChatStore {
     var useProfile = true
     var useWritingStyle = false
     @ObservationIgnored private var sendingWithStyle = false
+    @ObservationIgnored private var pendingRequiredSourceNoteId: String?
     private(set) var pins: [String] = []
     private(set) var session: ChatSession?
     private(set) var insight: InsightReport?
@@ -130,6 +132,11 @@ final class AIChatStore {
         validNoteIds = ids
         pins.removeAll { !ids.contains($0) }
         sourceNoteId = validSource(sourceNoteId)
+        if sending, let required = pendingRequiredSourceNoteId, !ids.contains(required) {
+            stop()
+            if draft == Self.rewriteNotePrompt { draft = "" }
+            error = Self.rewriteSourceDeletedMessage
+        }
     }
 
     func canReference(_ id: String) -> Bool { isValidNote(id) }
@@ -154,6 +161,7 @@ final class AIChatStore {
         loadingSession = false
         sending = false
         sendingWithStyle = false
+        pendingRequiredSourceNoteId = nil
         finishStreaming()
         streamedText = ""
         pendingQuestion = ""
@@ -285,9 +293,14 @@ final class AIChatStore {
     }
 
     func send(api: WeijiAPIClient, options: AIOptions, profile: InsightsStore,
+              requiredSourceNoteId: String? = nil,
               isRelayMode: @escaping @MainActor () -> Bool = { false }) {
         let styled = useWritingStyle
         guard !(styled && isRelayMode()) else { error = InsightsStore.writingStyleRelayMessage; return }
+        if let required = requiredSourceNoteId, sourceNoteId != required || !canReference(required) {
+            error = Self.rewriteSourceDeletedMessage
+            return
+        }
         guard !sending, !loadingSession, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let typed = draft
         draft = ""
@@ -298,6 +311,7 @@ final class AIChatStore {
         let stamp = generation
         sending = true
         sendingWithStyle = styled
+        pendingRequiredSourceNoteId = requiredSourceNoteId
         error = nil
         task = Task {
             defer {
@@ -305,6 +319,7 @@ final class AIChatStore {
                     finishStreaming()
                     sending = false
                     sendingWithStyle = false
+                    pendingRequiredSourceNoteId = nil
                     pendingQuestion = ""
                     streamedText = ""
                     inflightDraft = nil
@@ -315,6 +330,11 @@ final class AIChatStore {
                 if styled { try await profile.awaitWritingStyleSave() }
                 try Task.checkCancellation()
                 guard stamp == generation else { return }
+                if let required = requiredSourceNoteId, sourceNoteId != required || !canReference(required) {
+                    inflightDraft = nil
+                    error = Self.rewriteSourceDeletedMessage
+                    return
+                }
                 if styled && isRelayMode() {
                     reconcileRelayMode(true)
                     return
@@ -373,6 +393,10 @@ final class AIChatStore {
                 }
             }
         }
+    }
+
+    func waitForIdle() async {
+        if let task { await task.value }
     }
 
     private func updateSession(_ latest: ChatSession) {

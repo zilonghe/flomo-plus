@@ -5,24 +5,46 @@
   <link rel="stylesheet" href="../tokens.css" />
   <link rel="stylesheet" href="../weiji-ios.css" />
   <style>
+    .profile-panes {
+      display: flex; gap: 4px; flex-shrink: 0; margin: 0 16px; padding: 3px;
+      border-radius: 999px; background: var(--color-fill);
+    }
+    .profile-panes button {
+      flex: 1; min-width: 44px; min-height: 44px; border: 0; border-radius: 999px;
+      background: transparent; color: var(--color-text-secondary); font: 600 15px var(--font-body);
+    }
+    .profile-panes button[aria-pressed="true"] { background: var(--color-surface); color: var(--color-text); }
     .style-card { padding: 14px; border: 1px solid var(--color-hairline); border-radius: 18px; background: var(--color-surface); }
     .style-card h2 { font: 600 16px/22px var(--font-body); margin: 0 0 8px; }
     .style-card p { margin: 0; font: 400 14px/21px var(--font-body); }
     .style-row { display: flex; align-items: center; gap: 8px; }
     .style-row > * { flex: 1; }
     .style-row button { min-width: 44px; min-height: 44px; border: 0; }
+    .anchor-row { display: flex; align-items: center; gap: 8px; }
+    .anchor-row p { flex: 1; }
+    .anchor-row button {
+      display: grid; place-items: center; min-width: 44px; min-height: 44px;
+      border: 0; background: transparent; color: var(--color-text);
+    }
     .style-card input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--color-separator); border-radius: 10px; background: var(--color-surface); font: inherit; color: var(--color-text); }
   </style>
 </head>
 <body>
   <ryugi-ios-shell time="17:48" appearance="light">
     <div class="screen">
-      <div class="ios-nav"><span style="width:40px"></span><span class="ios-nav-title">画像</span><span style="width:40px"></span></div>
-      <div class="ios-scroll" style="padding-top:8px;">
-        <ryugi-ios-segmented value="style" style="width:100%;min-height:44px;">
-          <ryugi-ios-segment value="bio">个人画像</ryugi-ios-segment>
-          <ryugi-ios-segment value="style">写作风格</ryugi-ios-segment>
+      <div class="ios-nav">
+        <span class="ios-glass-btn" aria-label="快速记"><ryugi-icon symbol="square.and.pencil" name="square-pen" size="17"></ryugi-icon></span>
+        <ryugi-ios-segmented value="profile" size="sm" style="width:180px;">
+          <ryugi-ios-segment value="insights">洞察</ryugi-ios-segment>
+          <ryugi-ios-segment value="profile">画像</ryugi-ios-segment>
         </ryugi-ios-segmented>
+        <span style="width:40px"></span>
+      </div>
+      <div class="profile-panes">
+        <button type="button" aria-pressed="false">个人画像</button>
+        <button type="button" aria-pressed="true">写作风格</button>
+      </div>
+      <div class="ios-scroll" style="padding-top:8px;">
         <div class="style-card style-row">
           <button class="btn-primary">提炼风格</button>
           <button class="btn-secondary">编辑规则</button>
@@ -35,7 +57,10 @@
         </div>
         <div class="style-card">
           <h2>原句锚点 · 1/5</h2>
-          <p>先把最小的一步走通，再验证下一层假设。</p>
+          <div class="anchor-row">
+            <p>先把最小的一步走通，再验证下一层假设。</p>
+            <button type="button" aria-label="移除原句"><ryugi-icon symbol="minus.circle" name="circle-minus" size="17"></ryugi-icon></button>
+          </div>
         </div>
         <div class="style-card">
           <h2>盲测</h2>

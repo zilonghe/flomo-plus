@@ -5,6 +5,15 @@
   <link rel="stylesheet" href="../tokens.css" />
   <link rel="stylesheet" href="../weiji-ios.css" />
   <style>
+    .profile-panes {
+      display: flex; gap: 4px; flex-shrink: 0; margin: 0 16px; padding: 3px;
+      border-radius: 999px; background: var(--color-fill);
+    }
+    .profile-panes button {
+      flex: 1; min-width: 44px; min-height: 44px; border: 0; border-radius: 999px;
+      background: transparent; color: var(--color-text-secondary); font: 600 15px var(--font-body);
+    }
+    .profile-panes button[aria-pressed="true"] { background: var(--color-surface); color: var(--color-text); }
     .prof-bar {
       display: flex; align-items: center; gap: 8px;
       padding: 12px 14px; border-radius: 16px;
@@ -24,19 +33,18 @@
   <ryugi-ios-shell time="17:48" appearance="light">
     <div class="screen">
       <div class="ios-nav">
-        <span style="width:40px"></span>
-        <ryugi-ios-segmented value="profile" size="sm" style="width:154px;">
+        <span class="ios-glass-btn" aria-label="快速记"><ryugi-icon symbol="square.and.pencil" name="square-pen" size="17"></ryugi-icon></span>
+        <ryugi-ios-segmented value="profile" size="sm" style="width:180px;">
           <ryugi-ios-segment value="insights">洞察</ryugi-ios-segment>
           <ryugi-ios-segment value="profile">画像</ryugi-ios-segment>
         </ryugi-ios-segmented>
         <span style="width:40px"></span>
       </div>
-
+      <div class="profile-panes">
+        <button type="button" aria-pressed="true">个人画像</button>
+        <button type="button" aria-pressed="false">写作风格</button>
+      </div>
       <div class="ios-scroll" style="padding-top:8px;">
-        <ryugi-ios-segmented value="bio" style="width:100%;min-height:44px;">
-          <ryugi-ios-segment value="bio">个人画像</ryugi-ios-segment>
-          <ryugi-ios-segment value="style">写作风格</ryugi-ios-segment>
-        </ryugi-ios-segmented>
         <div class="prof-bar">
           <span class="chip selected">
             <ryugi-icon symbol="checkmark.circle.fill" name="circle-check" size="13"></ryugi-icon>
