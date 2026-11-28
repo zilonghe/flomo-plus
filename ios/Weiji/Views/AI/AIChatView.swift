@@ -109,11 +109,11 @@ struct AIChatView: View {
     }
 
     private func composer(_ chat: AIChatStore) -> some View {
-        @Bindable var chat = chat
+        let placeholder = chat.pins.isEmpty ? "问一问你的笔记" : "围绕引用笔记提问"
         let canSend = store.api != nil && !chat.loadingSession
             && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 4) {
-            TextField(chat.pins.isEmpty ? "问一问你的笔记" : "围绕引用笔记提问", text: $chat.draft, axis: .vertical)
+            TextField(placeholder, text: Binding(get: { chat.draft }, set: { chat.updateDraftFromUser($0) }), axis: .vertical)
                 .id(chat.composerResetCount)
                 .lineLimit(1...6)
                 .focused($writing)
@@ -323,7 +323,7 @@ struct AIChatView: View {
             VStack(spacing: 8) {
                 ForEach(hasPins ? Self.pinnedStarters : Self.starters, id: \.self) { prompt in
                     Button {
-                        chat.draft = prompt
+                        chat.updateDraftFromUser(prompt)
                         guard let api = store.api else { writing = true; return }
                         sendFeedback += 1
                         chat.send(api: api, options: store.options, profile: store.insights, isRelayMode: { store.isRelayMode })

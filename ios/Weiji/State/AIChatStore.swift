@@ -33,6 +33,14 @@ struct ChatRequestID {
 final class AIChatStore {
     static let rewriteNotePrompt = "请基于这条笔记的真实内容，按我的写作风格改写成一段自然流畅的文字，保留原意和事实，不要编造经历。"
     static let deletedRewriteSourceMessage = "原笔记已删除，已取消按风格改写。"
+    private static let postDeleteDraftKey = "post-delete"
+
+    struct RecoverableDraftSnapshot: Equatable, Sendable {
+        let activeContextKey: String
+        let activeDraft: String
+        let savedDrafts: [String: String]
+        var isEmpty: Bool { activeDraft.isEmpty && savedDrafts.isEmpty }
+    }
 
     private enum AutomaticPromptLocation {
         case none, inDraft, inFlight
@@ -44,21 +52,26 @@ final class AIChatStore {
         var promptLocation: AutomaticPromptLocation
     }
 
-    var draft = "" {
-        didSet {
-            if rewriteIntent?.promptLocation == .inDraft, draft != Self.rewriteNotePrompt {
-                rewriteIntent?.promptLocation = .none
-            }
+    var draft = ""
+    var recoverableDraftSnapshot: RecoverableDraftSnapshot {
+        let activeDraft: String
+        if !draft.isEmpty {
+            activeDraft = isOwnedInDraft(draft) ? "" : draft
+        } else if let inflight = inflightDraft, !inflight.isEmpty {
+            activeDraft = isOwnedInFlight(inflight) ? "" : inflight
+        } else {
+            activeDraft = ""
         }
+        let savedDrafts = draftsByKey.filter { key, text in
+            key != draftContextKey && key != Self.postDeleteDraftKey && !text.isEmpty
+                && (!key.hasPrefix("note:") || isValidNoteDraftContext(key))
+        }
+        return RecoverableDraftSnapshot(activeContextKey: draftContextKey, activeDraft: activeDraft, savedDrafts: savedDrafts)
     }
     var recoverableDraft: String {
-        if !draft.isEmpty {
-            return isOwnedInDraft(draft) ? "" : draft
-        }
-        if let inflight = inflightDraft, !inflight.isEmpty {
-            return isOwnedInFlight(inflight) ? "" : inflight
-        }
-        return draftsByKey["new"] ?? ""
+        if isOwnedInDraft(draft) || (draft.isEmpty && inflightDraft.map(isOwnedInFlight) == true) { return "" }
+        let snapshot = recoverableDraftSnapshot
+        return snapshot.activeDraft.isEmpty ? (snapshot.savedDrafts["new"] ?? "") : snapshot.activeDraft
     }
     private(set) var composerResetCount = 0
     var useProfile = true
@@ -85,6 +98,7 @@ final class AIChatStore {
     @ObservationIgnored private var validNoteIds: Set<String>?
     @ObservationIgnored private var pinsEditedDuringLoad = false
     @ObservationIgnored private var draftContextKey = "new"
+    // Only inactive contexts own an entry here; the input owns the active draft.
     @ObservationIgnored private var draftsByKey: [String: String] = [:]
     @ObservationIgnored private var requestID = ChatRequestID()
     @ObservationIgnored private var inflightDraft: String?
@@ -97,6 +111,27 @@ final class AIChatStore {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var sessionTask: Task<Bool, Never>?
     @ObservationIgnored private var listTask: Task<Void, Never>?
+
+    func updateDraftFromUser(_ text: String) {
+        if rewriteIntent?.promptLocation == .inDraft { rewriteIntent?.promptLocation = .none }
+        draft = text
+    }
+
+    func restoreRecoverableDrafts(_ snapshot: RecoverableDraftSnapshot) {
+        draftsByKey = snapshot.savedDrafts
+        let savedNew = draftsByKey.removeValue(forKey: "new") ?? ""
+        draftContextKey = "new"
+        let key = snapshot.activeContextKey
+        let active = snapshot.activeDraft
+        if Self.hasDraftText(savedNew), Self.hasDraftText(active),
+           key.hasPrefix("session:") || isValidNoteDraftContext(key) {
+            // Keep an independent history or note draft available in its original context.
+            draftsByKey[key] = active
+            draft = savedNew
+        } else {
+            draft = Self.appendDraft(savedNew, active)
+        }
+    }
 
     func start(source: String? = nil, pins: [String] = [], insight: InsightReport? = nil,
                useWritingStyle: Bool = false, rewriteSourceNoteId: String? = nil) {
@@ -121,15 +156,19 @@ final class AIChatStore {
         // An abandoned automatic prompt must not come back as an ordinary saved draft.
         if isOwnedInDraft(draft) { draft = "" }
         rewriteIntent = nil
-        // Stop can restore the interrupted question; save it under the context it came from.
-        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            draftsByKey.removeValue(forKey: draftContextKey)
-        } else {
-            draftsByKey[draftContextKey] = draft
-        }
         if nextKey != draftContextKey {
+            // Stop can restore the interrupted question before the old context is saved.
+            if draftContextKey == Self.postDeleteDraftKey {
+                if Self.hasDraftText(draft) {
+                    draftsByKey["new"] = Self.appendDraft(draftsByKey["new"] ?? "", draft)
+                }
+            } else if Self.hasDraftText(draft) {
+                draftsByKey[draftContextKey] = draft
+            } else {
+                draftsByKey.removeValue(forKey: draftContextKey)
+            }
             draftContextKey = nextKey
-            draft = draftsByKey[nextKey] ?? ""
+            draft = draftsByKey.removeValue(forKey: nextKey) ?? ""
         } else if resetNew && nextKey == "new" {
             draft = ""
             draftsByKey.removeValue(forKey: nextKey)
@@ -192,37 +231,38 @@ final class AIChatStore {
 
     private func cancelDeletedRewrite(_ intent: RewriteIntent) {
         let unsent = sending ? inflightDraft : nil
-        let next = draft
-        let unsentIsAuto = intent.promptLocation == .inFlight && unsent == Self.rewriteNotePrompt
-        let nextIsAuto = intent.promptLocation == .inDraft && next == Self.rewriteNotePrompt
+        let keepUnsent = unsent.map(isOwnedInFlight) == true ? "" : (unsent ?? "")
+        let keepNext = isOwnedInDraft(draft) ? "" : draft
+        let preserved = Self.appendDraft(keepUnsent, keepNext)
         stop()
-        let keepUnsent = unsentIsAuto ? nil : unsent
-        let keepNext = nextIsAuto ? "" : next
-        let preserved: String
-        if let keepUnsent, !keepUnsent.isEmpty {
-            preserved = keepNext.isEmpty ? keepUnsent : keepUnsent + "\n\n" + keepNext
-        } else {
-            preserved = keepNext
-        }
         draftsByKey.removeValue(forKey: "note:\(intent.sourceNoteId)")
         rewriteIntent = nil
         if intent.introducedByRewrite {
+            if draftContextKey.hasPrefix("session:") { draftsByKey.removeValue(forKey: draftContextKey) }
             session = nil
             sourceNoteId = nil
             useWritingStyle = false
         }
-        if preserved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            draft = ""
-        } else {
-            if intent.introducedByRewrite, draftContextKey.hasPrefix("session:") {
-                draftsByKey.removeValue(forKey: draftContextKey)
-            }
+        if Self.hasDraftText(preserved) {
+            let savedNew = draftsByKey.removeValue(forKey: "new") ?? ""
             draftContextKey = "new"
-            let existingNew = draftsByKey["new"] ?? ""
-            draft = existingNew.isEmpty || existingNew == preserved ? preserved : existingNew + "\n\n" + preserved
-            draftsByKey["new"] = draft
+            draft = Self.appendDraft(savedNew, preserved)
+        } else {
+            draftContextKey = Self.postDeleteDraftKey
+            draft = ""
         }
         error = Self.deletedRewriteSourceMessage
+    }
+
+    private static func hasDraftText(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func appendDraft(_ earlier: String, _ later: String) -> String {
+        let hasEarlier = hasDraftText(earlier)
+        let hasLater = hasDraftText(later)
+        if hasEarlier && hasLater { return earlier + "\n\n" + later }
+        return hasEarlier ? earlier : later
     }
 
     private func validateRequiredSource(_ required: String?) -> Bool {
@@ -232,6 +272,10 @@ final class AIChatStore {
     }
 
     func canReference(_ id: String) -> Bool { isValidNote(id) }
+
+    private func isValidNoteDraftContext(_ key: String) -> Bool {
+        key.hasPrefix("note:") && canReference(String(key.dropFirst("note:".count)))
+    }
 
     private func isValidNote(_ id: String) -> Bool { validNoteIds?.contains(id) ?? true }
 
@@ -263,7 +307,7 @@ final class AIChatStore {
     func restorePendingSessionDraftIfPresent() -> Bool {
         guard let id = session?.id else { return false }
         let key = "session:\(id)"
-        guard let pending = draftsByKey[key], !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard let pending = draftsByKey.removeValue(forKey: key), Self.hasDraftText(pending) else { return false }
         draftContextKey = key
         draft = pending
         return true
@@ -467,15 +511,12 @@ final class AIChatStore {
                 updateSession(latest)
                 rewriteIntent = nil
                 if styled { useWritingStyle = false }
-                let previousKey = draftContextKey
                 let nextKey = "session:\(latest.id)"
-                draftsByKey.removeValue(forKey: previousKey)
-                draftContextKey = nextKey
                 // Sending from a note/walk/insight entry can converge into an existing session that already holds an unsent draft.
-                if previousKey != nextKey,
-                   draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let preserved = draftsByKey[nextKey] {
-                    draft = preserved
+                if nextKey != draftContextKey {
+                    let saved = draftsByKey.removeValue(forKey: nextKey) ?? ""
+                    draftContextKey = nextKey
+                    draft = Self.appendDraft(saved, draft)
                 }
                 insight = nil
                 requestID.clear()

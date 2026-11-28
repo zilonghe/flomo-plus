@@ -97,7 +97,7 @@ final class AppStore {
     @ObservationIgnored private let makeTransport: () -> URLSession?
     @ObservationIgnored private let runSearch: @Sendable (NoteIndex, String, NoteFilter) -> [Note]
     @ObservationIgnored private var accountKey: NoteCacheStore.Key?
-    @ObservationIgnored private var rejectedChatDraft: (key: NoteCacheStore.Key, text: String)?
+    @ObservationIgnored private var rejectedChatDraft: (key: NoteCacheStore.Key, snapshot: AIChatStore.RecoverableDraftSnapshot)?
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private(set) var searchTask: Task<Void, Never>?
@@ -208,7 +208,9 @@ final class AppStore {
                     await self?.rejectConnection(config, failure: failure, generation: stamp)
                 })
                 api = client
-                if let rejectedChatDraft, rejectedChatDraft.key == key { chat.draft = rejectedChatDraft.text }
+                if let rejectedChatDraft, rejectedChatDraft.key == key {
+                    chat.restoreRecoverableDrafts(rejectedChatDraft.snapshot)
+                }
                 rejectedChatDraft = nil
                 settingsSection = nil
                 if let confirmedSnapshot {
@@ -344,7 +346,7 @@ final class AppStore {
         guard generation == connectionGeneration else { return }
         offlineFallbackAllowed = false
         let key = accountKey
-        let recoverable = chat.recoverableDraft
+        let recoverable = chat.recoverableDraftSnapshot
         if let key, !recoverable.isEmpty { rejectedChatDraft = (key, recoverable) }
         resetConnection(to: config)
         settingsSection = nil
